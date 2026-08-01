@@ -53,6 +53,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.have_setup_status = False
         self.latest_status = None
         self.mm_per_full_step = 0.0
+        self.pending_measurement = None
 
         self.setWindowTitle("Conveyor and Light Barrier Setup")
         self.resize(850, 610)
@@ -236,6 +237,7 @@ class ConveyorSetupWindow(QMainWindow):
         if connected:
             self.statusBar().showMessage(f"ADS online: {AMS_NET_ID} / {PLC_IP}")
         else:
+            self.pending_measurement = None
             self.statusBar().showMessage(f"ADS offline: {message or 'reconnecting'}")
             for index in range(6):
                 self._set_barrier_indicator(index, None)
@@ -288,9 +290,12 @@ class ConveyorSetupWindow(QMainWindow):
         self.measured_distance.setText(
             f'{status["distance_mm"]:.3f} mm' if status["valid"] else "-"
         )
-        self.measurement_state.setText(
-            BARRIER_STATUS_TEXT.get(status["status_code"], "Unknown state")
-        )
+        if self.pending_measurement and not status["ready_to_execute"]:
+            self.measurement_state.setText("Enabling conveyor drive")
+        else:
+            self.measurement_state.setText(
+                BARRIER_STATUS_TEXT.get(status["status_code"], "Unknown state")
+            )
         for label, spacing in zip(self.spacing_labels, status["sensor_spacings"]):
             label.setText(f"{spacing:.3f} mm")
 
@@ -299,20 +304,36 @@ class ConveyorSetupWindow(QMainWindow):
         error = bool(status["drive_error"])
         can_start = (
             self.connected
-            and ready
             and not active
             and not status["drive_busy"]
             and not error
+            and self.pending_measurement is None
             and self.mm_per_full_step > 0.0
             and self.first_sensor.currentData() != self.second_sensor.currentData()
         )
         self.start_button.setEnabled(can_start)
-        self.stop_button.setEnabled(self.connected and (active or status["drive_busy"] or error))
-        self.first_sensor.setEnabled(not active)
-        self.second_sensor.setEnabled(not active)
-        self.measurement_speed.setEnabled(not active)
-        self.maximum_travel.setEnabled(not active)
+        self.stop_button.setEnabled(
+            self.connected
+            and (active or status["drive_busy"] or error or self.pending_measurement is not None)
+        )
+        settings_enabled = not active and self.pending_measurement is None
+        self.first_sensor.setEnabled(settings_enabled)
+        self.second_sensor.setEnabled(settings_enabled)
+        self.measurement_speed.setEnabled(settings_enabled)
+        self.maximum_travel.setEnabled(settings_enabled)
         self._update_apply_state()
+
+        if (
+            self.pending_measurement
+            and ready
+            and not status["drive_busy"]
+            and not error
+        ):
+            command = self.pending_measurement
+            self.pending_measurement = None
+            self.ads.start_barrier_calibration(*command)
+            self.start_button.setEnabled(False)
+            self.measurement_state.setText("Starting rightward measurement")
 
     def _update_calibration_display(self) -> None:
         if self.mm_per_full_step > 0.0:
@@ -374,14 +395,25 @@ class ConveyorSetupWindow(QMainWindow):
             self.measurement_speed.value(),
             self.mm_per_full_step,
         )
-        self.ads.start_barrier_calibration(
-            first_sensor, second_sensor, max_steps, speed_full_steps
-        )
+        command = (first_sensor, second_sensor, max_steps, speed_full_steps)
+        if self.latest_status and self.latest_status["ready_to_execute"]:
+            self.ads.start_barrier_calibration(*command)
+            self.measurement_state.setText("Starting rightward measurement")
+        else:
+            self.pending_measurement = command
+            self.ads.write_now(
+                {
+                    "MAIN.GuiConveyorEnabled": False,
+                    "MAIN.GuiConveyorCalibrationMode": True,
+                },
+                "setup_enable_drive",
+            )
+            self.measurement_state.setText("Enabling conveyor drive")
         self.start_button.setEnabled(False)
         self.apply_button.setEnabled(False)
-        self.measurement_state.setText("Starting rightward measurement")
 
     def _stop_measurement(self) -> None:
+        self.pending_measurement = None
         self.ads.stop_setup_motion()
         self.measurement_state.setText("Stopping")
 

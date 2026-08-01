@@ -873,7 +873,29 @@ class AdsController(QObject):
 
     @pyqtSlot(object)
     def on_initial_snapshot(self, snapshot: dict) -> None:
-        self.calibration_cache.update(snapshot["calibration"])
+        calibration = dict(snapshot["calibration"])
+        if (
+            not bool(calibration["valid"])
+            or float(calibration["mm_per_full_step"]) <= 0.0
+        ):
+            calibration.update(
+                {
+                    "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
+                    "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
+                    "valid": True,
+                }
+            )
+            snapshot = dict(snapshot)
+            snapshot["calibration"] = calibration
+            self.write_now(
+                {
+                    "MAIN.GuiCalibrationMarkerDistanceMm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
+                    "MAIN.GuiConveyorMmPerFullStep": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
+                    "MAIN.GuiConveyorCalibrationValid": True,
+                },
+                "default_conveyor_calibration",
+            )
+        self.calibration_cache.update(calibration)
         self.initial_snapshot_ready.emit(snapshot)
 
     @pyqtSlot(object)

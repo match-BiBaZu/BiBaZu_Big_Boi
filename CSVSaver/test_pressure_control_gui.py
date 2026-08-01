@@ -67,6 +67,35 @@ class AdsThreadTests(unittest.TestCase):
         )
         controller.shutdown()
 
+    def test_invalid_plc_calibration_is_replaced_on_initial_snapshot(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        writes = []
+        snapshots = []
+        controller.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+        controller.initial_snapshot_ready.connect(snapshots.append)
+        snapshot = {
+            "calibration": {
+                "marker_distance_mm": 315.0,
+                "jog_steps": 100,
+                "jog_speed_full_steps_per_sec": 10.0,
+                "mm_per_full_step": 0.0,
+                "valid": False,
+            }
+        }
+
+        controller.on_initial_snapshot(snapshot)
+
+        self.assertTrue(snapshots[0]["calibration"]["valid"])
+        self.assertAlmostEqual(
+            snapshots[0]["calibration"]["mm_per_full_step"], 0.32960026
+        )
+        self.assertEqual(writes[0][1], "default_conveyor_calibration")
+        self.assertTrue(writes[0][0]["MAIN.GuiConveyorCalibrationValid"])
+        controller.shutdown()
+
     def test_debounce_keeps_only_latest_value(self):
         controller = gui.AdsController()
         controller.connected = True
@@ -334,6 +363,54 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertEqual(
             writes[0][0], {"MAIN.GuiSensorSpacing12Mm": 10.0}
         )
+        window.ads.connected = False
+        window.close()
+
+    def test_measurement_enables_drive_before_starting_when_not_ready(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        window.ads.connected = True
+        window.connected = True
+        window.mm_per_full_step = 0.32960026
+        window.latest_status = {"ready_to_execute": False}
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        window._start_measurement()
+
+        self.assertEqual(writes[0][1], "setup_enable_drive")
+        self.assertTrue(writes[0][0]["MAIN.GuiConveyorCalibrationMode"])
+        self.assertIsNotNone(window.pending_measurement)
+
+        ready_status = {
+            "light_barriers": [True] * 6,
+            "internal_position": 0,
+            "ready_to_execute": True,
+            "drive_busy": False,
+            "drive_error": False,
+            "active": False,
+            "first_captured": False,
+            "second_captured": False,
+            "valid": False,
+            "first_position": 0,
+            "second_position": 0,
+            "difference_increments": 0,
+            "distance_mm": 0.0,
+            "status_code": 0,
+            "first_sensor": 1,
+            "second_sensor": 2,
+            "mm_per_full_step": 0.32960026,
+            "conveyor_calibration_valid": True,
+            "full_steps_per_sec": 0.0,
+            "velocity_raw": 0,
+            "sensor_spacings": (100.0, 100.0, 100.0),
+        }
+        window._on_setup_status(ready_status)
+
+        self.assertEqual(writes[1][1], "barrier_calibration_start")
+        self.assertIsNone(window.pending_measurement)
         window.ads.connected = False
         window.close()
 
