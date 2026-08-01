@@ -23,10 +23,14 @@ VAR
 	OffsetDelayCycles2		: INT  := 0; //velocity-derived delay cycles for the second nozzle array
 	OffsetDelayCycles3		: INT  := 0;
 	OffsetDelayCycles4		: INT  := 0;
-	NozzleEndCycles1		: INT  := 100;
-	NozzleEndCycles2		: INT  := 100;
-	NozzleEndCycles3		: INT  := 100;
-	NozzleEndCycles4		: INT  := 100;
+	LatchedDelayCycles1		: INT  := 0;
+	LatchedDelayCycles2		: INT  := 0;
+	LatchedDelayCycles3		: INT  := 0;
+	LatchedDelayCycles4		: INT  := 0;
+	LatchedNozzleEndCycles1	: INT  := 100;
+	LatchedNozzleEndCycles2	: INT  := 100;
+	LatchedNozzleEndCycles3	: INT  := 100;
+	LatchedNozzleEndCycles4	: INT  := 100;
 	
 	TimeDelay				: BOOL := 0;
 	DelayCounter			: INT  := 0;
@@ -79,10 +83,8 @@ VAR
 	GuiNozzleEnabled16		: BOOL := TRUE;
 	GuiResetVelocityEstimates	: BOOL := FALSE;
 	GuiSensorSpacing12Mm	: REAL := 22.0;
-	GuiSensorSpacing34Mm	: REAL := 100.0;
-	GuiSensorSpacing56Mm	: REAL := 100.0;
-	GuiMinTravelTimeMs		: UINT := 20;
-	GuiMaxTravelTimeMs		: UINT := 2000;
+	GuiSensorSpacing34Mm	: REAL := 37.3;
+	GuiSensorSpacing56Mm	: REAL := 55.0;
 	GuiConveyorEnabled		: BOOL := FALSE;
 	GuiVelocityCheckMode	: BOOL := FALSE;
 	GuiConveyorReverse		: BOOL := FALSE;
@@ -197,6 +199,25 @@ VAR
 	LightBarrier4FallingEdge	: BOOL := FALSE;
 	LightBarrier5FallingEdge	: BOOL := FALSE;
 	LightBarrier6FallingEdge	: BOOL := FALSE;
+	LightBarrierEventClockMs	: UDINT := 0; //1 ms PLC task cycle counter
+	LightBarrierEventCount1	: UDINT := 0;
+	LightBarrierEventCount2	: UDINT := 0;
+	LightBarrierEventCount3	: UDINT := 0;
+	LightBarrierEventCount4	: UDINT := 0;
+	LightBarrierEventCount5	: UDINT := 0;
+	LightBarrierEventCount6	: UDINT := 0;
+	LightBarrierLastEventTimeMs1	: UDINT := 0;
+	LightBarrierLastEventTimeMs2	: UDINT := 0;
+	LightBarrierLastEventTimeMs3	: UDINT := 0;
+	LightBarrierLastEventTimeMs4	: UDINT := 0;
+	LightBarrierLastEventTimeMs5	: UDINT := 0;
+	LightBarrierLastEventTimeMs6	: UDINT := 0;
+	LightBarrierLastEventPosition1	: UDINT := 0;
+	LightBarrierLastEventPosition2	: UDINT := 0;
+	LightBarrierLastEventPosition3	: UDINT := 0;
+	LightBarrierLastEventPosition4	: UDINT := 0;
+	LightBarrierLastEventPosition5	: UDINT := 0;
+	LightBarrierLastEventPosition6	: UDINT := 0;
 	Array1TriggerPending		: BOOL := FALSE;
 	Array2TriggerPending		: BOOL := FALSE;
 	Array3TriggerPending		: BOOL := FALSE;
@@ -329,6 +350,7 @@ END_VAR
       <ST><![CDATA[NozzlePressure := TO_REAL(RawNozzlePressure) * 10.0 / 32767.0;
 NozzlePressure2 := TO_REAL(RawNozzlePressure2) * 10.0 / 32767.0;
 LogPressureTrigger := FALSE;
+LightBarrierEventClockMs := LightBarrierEventClockMs + 1;
 
 IF GuiResetVelocityEstimates THEN
 	LastVelocityTimeMs := 0;
@@ -364,14 +386,6 @@ Array1Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND 
 Array2Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled2 AND (GuiNozzleEnabled5 OR GuiNozzleEnabled6 OR GuiNozzleEnabled7 OR GuiNozzleEnabled8);
 Array3Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled3 AND (GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
 Array4Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled4 AND (GuiNozzleEnabled13 OR GuiNozzleEnabled14 OR GuiNozzleEnabled15 OR GuiNozzleEnabled16);
-
-IF GuiMinTravelTimeMs < 1 THEN
-	GuiMinTravelTimeMs := 1;
-END_IF
-
-IF GuiMaxTravelTimeMs < GuiMinTravelTimeMs THEN
-	GuiMaxTravelTimeMs := GuiMinTravelTimeMs;
-END_IF
 
 IF GuiConveyorSpeedMmPerSec < 0.0 THEN
 	GuiConveyorSpeedMmPerSec := 0.0;
@@ -813,6 +827,38 @@ LightBarrier4FallingEdge := (NOT LightBarrierStable4) AND LastLightBarrier4;
 LightBarrier5FallingEdge := (NOT LightBarrierStable5) AND LastLightBarrier5;
 LightBarrier6FallingEdge := (NOT LightBarrierStable6) AND LastLightBarrier6;
 
+// Record every accepted stable transition at PLC-cycle resolution for ADS diagnostics.
+IF LightBarrierStable1 <> LastLightBarrier1 THEN
+	LightBarrierEventCount1 := LightBarrierEventCount1 + 1;
+	LightBarrierLastEventTimeMs1 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition1 := StepperInternalPosition;
+END_IF
+IF LightBarrierStable2 <> LastLightBarrier2 THEN
+	LightBarrierEventCount2 := LightBarrierEventCount2 + 1;
+	LightBarrierLastEventTimeMs2 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition2 := StepperInternalPosition;
+END_IF
+IF LightBarrierStable3 <> LastLightBarrier3 THEN
+	LightBarrierEventCount3 := LightBarrierEventCount3 + 1;
+	LightBarrierLastEventTimeMs3 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition3 := StepperInternalPosition;
+END_IF
+IF LightBarrierStable4 <> LastLightBarrier4 THEN
+	LightBarrierEventCount4 := LightBarrierEventCount4 + 1;
+	LightBarrierLastEventTimeMs4 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition4 := StepperInternalPosition;
+END_IF
+IF LightBarrierStable5 <> LastLightBarrier5 THEN
+	LightBarrierEventCount5 := LightBarrierEventCount5 + 1;
+	LightBarrierLastEventTimeMs5 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition5 := StepperInternalPosition;
+END_IF
+IF LightBarrierStable6 <> LastLightBarrier6 THEN
+	LightBarrierEventCount6 := LightBarrierEventCount6 + 1;
+	LightBarrierLastEventTimeMs6 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition6 := StepperInternalPosition;
+END_IF
+
 // Accept either signal polarity, but only after the new state remains stable for the debounce time.
 // The candidate position is captured on the first cycle of the ultimately stable transition.
 IF BarrierCalibrationActive THEN
@@ -922,11 +968,6 @@ END_IF
 IF LightBarrier2FallingEdge THEN
 	IF VelocityTimingActive AND (TIME_TO_INT(VelocityTimer.ET) > 0) AND (GuiSensorSpacing12Mm > 0.0) THEN
 		LastVelocityTimeMs := TIME_TO_INT(VelocityTimer.ET);
-		IF LastVelocityTimeMs < UINT_TO_INT(GuiMinTravelTimeMs) THEN
-			LastVelocityTimeMs := UINT_TO_INT(GuiMinTravelTimeMs);
-		ELSIF LastVelocityTimeMs > UINT_TO_INT(GuiMaxTravelTimeMs) THEN
-			LastVelocityTimeMs := UINT_TO_INT(GuiMaxTravelTimeMs);
-		END_IF
 		EstimatedVelocityMmPerSec := GuiSensorSpacing12Mm * 1000.0 / TO_REAL(LastVelocityTimeMs);
 		EstimatedVelocityMmPerSec1 := EstimatedVelocityMmPerSec;
 		VelocityMeasurementValid := TRUE;
@@ -949,11 +990,6 @@ END_IF
 IF LightBarrier4FallingEdge THEN
 	IF VelocityTiming2Active AND (TIME_TO_INT(VelocityTimer2.ET) > 0) AND (GuiSensorSpacing34Mm > 0.0) THEN
 		LastVelocityTime2Ms := TIME_TO_INT(VelocityTimer2.ET);
-		IF LastVelocityTime2Ms < UINT_TO_INT(GuiMinTravelTimeMs) THEN
-			LastVelocityTime2Ms := UINT_TO_INT(GuiMinTravelTimeMs);
-		ELSIF LastVelocityTime2Ms > UINT_TO_INT(GuiMaxTravelTimeMs) THEN
-			LastVelocityTime2Ms := UINT_TO_INT(GuiMaxTravelTimeMs);
-		END_IF
 		EstimatedVelocityMmPerSec2 := GuiSensorSpacing34Mm * 1000.0 / TO_REAL(LastVelocityTime2Ms);
 		VelocityMeasurement2Valid := TRUE;
 	END_IF
@@ -978,11 +1014,6 @@ END_IF
 IF LightBarrier6FallingEdge THEN
 	IF VelocityTiming3Active AND (TIME_TO_INT(VelocityTimer3.ET) > 0) AND (GuiSensorSpacing56Mm > 0.0) THEN
 		LastVelocityTime3Ms := TIME_TO_INT(VelocityTimer3.ET);
-		IF LastVelocityTime3Ms < UINT_TO_INT(GuiMinTravelTimeMs) THEN
-			LastVelocityTime3Ms := UINT_TO_INT(GuiMinTravelTimeMs);
-		ELSIF LastVelocityTime3Ms > UINT_TO_INT(GuiMaxTravelTimeMs) THEN
-			LastVelocityTime3Ms := UINT_TO_INT(GuiMaxTravelTimeMs);
-		END_IF
 		EstimatedVelocityMmPerSec3 := GuiSensorSpacing56Mm * 1000.0 / TO_REAL(LastVelocityTime3Ms);
 		EstimatedVelocityMmPerSec4 := EstimatedVelocityMmPerSec3;
 		VelocityMeasurement3Valid := TRUE;
@@ -1147,11 +1178,6 @@ DelayDurationCycles2 := DelayDurationCycles2 + OffsetDelayCycles2;
 DelayDurationCycles3 := DelayDurationCycles3 + OffsetDelayCycles3;
 DelayDurationCycles4 := DelayDurationCycles4 + OffsetDelayCycles4;
 
-NozzleEndCycles1 := DelayDurationCycles + ShotDurationCycles;
-NozzleEndCycles2 := DelayDurationCycles2 + ShotDurationCycles2;
-NozzleEndCycles3 := DelayDurationCycles3 + ShotDurationCycles3;
-NozzleEndCycles4 := DelayDurationCycles4 + ShotDurationCycles4;
-
 CASE State OF
 	0:
 		Enable0 := TRUE;
@@ -1169,6 +1195,8 @@ CASE State OF
 		ELSIF Array1TriggerPending THEN
 			Array1TriggerPending := FALSE;
 			Counter := 0;
+			LatchedDelayCycles1 := DelayDurationCycles;
+			LatchedNozzleEndCycles1 := DelayDurationCycles + ShotDurationCycles;
 			PressureSum := 0.0;
 			PressureSum1 := 0.0;
 			PressureSum2 := 0.0;
@@ -1187,10 +1215,10 @@ CASE State OF
 			State := 2;
 		ELSE
 			Counter := Counter + 1;
-			OpenValve1 := GuiArrayEnabled1 AND GuiNozzleEnabled1 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
-			OpenValve2 := GuiArrayEnabled1 AND GuiNozzleEnabled2 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
-			OpenValve3 := GuiArrayEnabled1 AND GuiNozzleEnabled3 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
-			OpenValve4 := GuiArrayEnabled1 AND GuiNozzleEnabled4 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
+			OpenValve1 := GuiArrayEnabled1 AND GuiNozzleEnabled1 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
+			OpenValve2 := GuiArrayEnabled1 AND GuiNozzleEnabled2 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
+			OpenValve3 := GuiArrayEnabled1 AND GuiNozzleEnabled3 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
+			OpenValve4 := GuiArrayEnabled1 AND GuiNozzleEnabled4 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
 
 			IF OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4 THEN
 				PressureSum := PressureSum + NozzlePressure;
@@ -1209,7 +1237,7 @@ CASE State OF
 				END_IF
 			END_IF
 
-			IF Counter > NozzleEndCycles1 THEN
+			IF Counter > LatchedNozzleEndCycles1 THEN
 				OpenValve1 := FALSE;
 				OpenValve2 := FALSE;
 				OpenValve3 := FALSE;
@@ -1253,6 +1281,8 @@ CASE State2 OF
 		ELSIF Array2TriggerPending THEN
 			Array2TriggerPending := FALSE;
 			Counter2 := 0;
+			LatchedDelayCycles2 := DelayDurationCycles2;
+			LatchedNozzleEndCycles2 := DelayDurationCycles2 + ShotDurationCycles2;
 			State2 := State2 + 1;
 		END_IF
 	3:
@@ -1265,12 +1295,12 @@ CASE State2 OF
 			State2 := 2;
 		ELSE
 			Counter2 := Counter2 + 1;
-			OpenValve5 := GuiArrayEnabled2 AND GuiNozzleEnabled5 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
-			OpenValve6 := GuiArrayEnabled2 AND GuiNozzleEnabled6 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
-			OpenValve7 := GuiArrayEnabled2 AND GuiNozzleEnabled7 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
-			OpenValve8 := GuiArrayEnabled2 AND GuiNozzleEnabled8 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
+			OpenValve5 := GuiArrayEnabled2 AND GuiNozzleEnabled5 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve6 := GuiArrayEnabled2 AND GuiNozzleEnabled6 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve7 := GuiArrayEnabled2 AND GuiNozzleEnabled7 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve8 := GuiArrayEnabled2 AND GuiNozzleEnabled8 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
 
-			IF Counter2 > NozzleEndCycles2 THEN
+			IF Counter2 > LatchedNozzleEndCycles2 THEN
 				OpenValve5 := FALSE;
 				OpenValve6 := FALSE;
 				OpenValve7 := FALSE;
@@ -1299,6 +1329,8 @@ CASE State3 OF
 		ELSIF Array3TriggerPending THEN
 			Array3TriggerPending := FALSE;
 			Counter3 := 0;
+			LatchedDelayCycles3 := DelayDurationCycles3;
+			LatchedNozzleEndCycles3 := DelayDurationCycles3 + ShotDurationCycles3;
 			State3 := State3 + 1;
 		END_IF
 
@@ -1312,12 +1344,12 @@ CASE State3 OF
 			State3 := 2;
 		ELSE
 			Counter3 := Counter3 + 1;
-			OpenValve9 := GuiArrayEnabled3 AND GuiNozzleEnabled9 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
-			OpenValve10 := GuiArrayEnabled3 AND GuiNozzleEnabled10 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
-			OpenValve11 := GuiArrayEnabled3 AND GuiNozzleEnabled11 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
-			OpenValve12 := GuiArrayEnabled3 AND GuiNozzleEnabled12 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
+			OpenValve9 := GuiArrayEnabled3 AND GuiNozzleEnabled9 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve10 := GuiArrayEnabled3 AND GuiNozzleEnabled10 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve11 := GuiArrayEnabled3 AND GuiNozzleEnabled11 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve12 := GuiArrayEnabled3 AND GuiNozzleEnabled12 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
 
-			IF Counter3 > NozzleEndCycles3 THEN
+			IF Counter3 > LatchedNozzleEndCycles3 THEN
 				OpenValve9 := FALSE;
 				OpenValve10 := FALSE;
 				OpenValve11 := FALSE;
@@ -1344,6 +1376,8 @@ CASE State4 OF
 		ELSIF Array4TriggerPending THEN
 			Array4TriggerPending := FALSE;
 			Counter4 := 0;
+			LatchedDelayCycles4 := DelayDurationCycles4;
+			LatchedNozzleEndCycles4 := DelayDurationCycles4 + ShotDurationCycles4;
 			State4 := State4 + 1;
 		END_IF
 
@@ -1357,12 +1391,12 @@ CASE State4 OF
 			State4 := 2;
 		ELSE
 			Counter4 := Counter4 + 1;
-			OpenValve13 := GuiArrayEnabled4 AND GuiNozzleEnabled13 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
-			OpenValve14 := GuiArrayEnabled4 AND GuiNozzleEnabled14 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
-			OpenValve15 := GuiArrayEnabled4 AND GuiNozzleEnabled15 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
-			OpenValve16 := GuiArrayEnabled4 AND GuiNozzleEnabled16 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
+			OpenValve13 := GuiArrayEnabled4 AND GuiNozzleEnabled13 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve14 := GuiArrayEnabled4 AND GuiNozzleEnabled14 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve15 := GuiArrayEnabled4 AND GuiNozzleEnabled15 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve16 := GuiArrayEnabled4 AND GuiNozzleEnabled16 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
 
-			IF Counter4 > NozzleEndCycles4 THEN
+			IF Counter4 > LatchedNozzleEndCycles4 THEN
 				OpenValve13 := FALSE;
 				OpenValve14 := FALSE;
 				OpenValve15 := FALSE;

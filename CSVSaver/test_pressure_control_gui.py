@@ -59,6 +59,8 @@ class AdsThreadTests(unittest.TestCase):
 
     def test_first_light_barrier_spacing_default_is_calibrated_value(self):
         self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 22.0)
+        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 37.3)
+        self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 55.0)
 
     def test_provisional_conveyor_calibration_is_the_gui_default(self):
         controller = gui.AdsController()
@@ -171,7 +173,7 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 46)
+        self.assertEqual(len(plc.read_calls[0]), 44)
         self.assertEqual(snapshot["light_barriers"], [False] * 6)
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 6)
         self.assertEqual(snapshot["debounce_ms"], 0)

@@ -149,21 +149,6 @@ class VelocityPlausibilityDialog(QDialog):
         if self.latest_status:
             distance = float(self.latest_status["sensor_spacings"][self._pair_index()])
             self.distance_label.setText(f"{distance:.3f} mm")
-            minimum_time, maximum_time = self.latest_status.get(
-                "travel_time_bounds", (1, 30000)
-            )
-            if distance > 0.0 and minimum_time > 0 and maximum_time > 0:
-                minimum_speed = max(0.1, distance * 1000.0 / maximum_time)
-                maximum_speed = min(500.0, distance * 1000.0 / minimum_time)
-                maximum_speed = max(minimum_speed, maximum_speed)
-                with QSignalBlocker(self.target_speed_input):
-                    current_speed = self.target_speed_input.value()
-                    self.target_speed_input.setRange(minimum_speed, maximum_speed)
-                    self.target_speed_input.setValue(current_speed)
-                self.target_speed_input.setToolTip(
-                    f"Valid for the PLC timing window: {minimum_speed:.3f} to "
-                    f"{maximum_speed:.3f} mm/s"
-                )
 
     def _start(self) -> None:
         self.target_speed = self.target_speed_input.value()
