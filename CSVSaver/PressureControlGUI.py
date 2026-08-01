@@ -60,10 +60,14 @@ PULSE_MIN_MS = 1
 PULSE_MAX_MS = 500
 SENSOR_SPACING_MIN_MM = 1.0
 SENSOR_SPACING_MAX_MM = 5000.0
+SENSOR_SPACING_12_DEFAULT_MM = 22.0
 OFFSET_MIN_MM = 0.0
 OFFSET_MAX_MM = 5000.0
 TRAVEL_TIME_MIN_MS = 1
 TRAVEL_TIME_MAX_MS = 30000
+LIGHT_BARRIER_DEBOUNCE_MIN_MS = 1
+LIGHT_BARRIER_DEBOUNCE_MAX_MS = 200
+LIGHT_BARRIER_DEBOUNCE_DEFAULT_MS = 20
 CONVEYOR_SPEED_MIN_MM_PER_SEC = 0.0
 CONVEYOR_SPEED_MAX_MM_PER_SEC = 5000.0
 CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC = 1.0
@@ -533,6 +537,7 @@ class AdsWorker(QObject):
             "MAIN.GuiSensorSpacing56Mm",
             "MAIN.GuiMinTravelTimeMs",
             "MAIN.GuiMaxTravelTimeMs",
+            "MAIN.GuiBarrierCalibrationDebounceMs",
             "MAIN.GuiConveyorEnabled",
             "MAIN.GuiConveyorReverse",
             "MAIN.GuiConveyorSpeedMmPerSec",
@@ -579,6 +584,9 @@ class AdsWorker(QObject):
             "travel_time_bounds": (
                 int(values["MAIN.GuiMinTravelTimeMs"]),
                 int(values["MAIN.GuiMaxTravelTimeMs"]),
+            ),
+            "light_barrier_debounce_ms": int(
+                values["MAIN.GuiBarrierCalibrationDebounceMs"]
             ),
             "conveyor": {
                 "enabled": bool(values["MAIN.GuiConveyorEnabled"]),
@@ -663,6 +671,7 @@ class AdsWorker(QObject):
     def read_setup_snapshot(self) -> dict:
         names = [
             *[f"MAIN.LightBarrierOn{index}" for index in range(1, 7)],
+            *[f"MAIN.LightBarrierStable{index}" for index in range(1, 7)],
             "MAIN.StepperInternalPosition",
             "MAIN.StepperPosReadyToExecute",
             "MAIN.StepperPosBusy",
@@ -701,6 +710,10 @@ class AdsWorker(QObject):
         values = self.read_values(names)
         return {
             "light_barriers": [
+                bool(values[f"MAIN.LightBarrierStable{index}"])
+                for index in range(1, 7)
+            ],
+            "raw_light_barriers": [
                 bool(values[f"MAIN.LightBarrierOn{index}"])
                 for index in range(1, 7)
             ],
@@ -1651,7 +1664,7 @@ class PressureControlWindow(QMainWindow):
         self.sensor_spacing_12.setSuffix(" mm")
         self.sensor_spacing_12.setDecimals(1)
         self.sensor_spacing_12.setSingleStep(1.0)
-        self.sensor_spacing_12.setValue(100.0)
+        self.sensor_spacing_12.setValue(SENSOR_SPACING_12_DEFAULT_MM)
         self.sensor_spacing_12.setToolTip("Physical distance between light barrier 1 and light barrier 2")
         machine_layout.addWidget(self.sensor_spacing_12)
         machine_layout.addSpacing(20)
@@ -1692,6 +1705,18 @@ class PressureControlWindow(QMainWindow):
         self.max_travel_time.setValue(2000)
         self.max_travel_time.setToolTip("Clamp measured sensor travel times longer than this value")
         machine_layout.addWidget(self.max_travel_time)
+        machine_layout.addSpacing(20)
+        machine_layout.addWidget(QLabel("Light barrier debounce"))
+        self.light_barrier_debounce = QSpinBox()
+        self.light_barrier_debounce.setRange(
+            LIGHT_BARRIER_DEBOUNCE_MIN_MS, LIGHT_BARRIER_DEBOUNCE_MAX_MS
+        )
+        self.light_barrier_debounce.setSuffix(" ms")
+        self.light_barrier_debounce.setValue(LIGHT_BARRIER_DEBOUNCE_DEFAULT_MS)
+        self.light_barrier_debounce.setToolTip(
+            "Stable signal time used by velocity measurement and every valve trigger"
+        )
+        machine_layout.addWidget(self.light_barrier_debounce)
         machine_layout.addSpacing(20)
         self.conveyor_enabled = QCheckBox("Conveyor")
         self.conveyor_enabled.setChecked(False)
@@ -1818,6 +1843,13 @@ class PressureControlWindow(QMainWindow):
         self.max_travel_time.valueChanged.connect(
             lambda value: self.write_travel_time_bound("MAIN.GuiMaxTravelTimeMs", value, "Max travel time")
         )
+        self.light_barrier_debounce.valueChanged.connect(
+            lambda value: self.ads.queue_write(
+                "MAIN.GuiBarrierCalibrationDebounceMs",
+                int(value),
+                "Light barrier debounce",
+            )
+        )
         self.conveyor_enabled.stateChanged.connect(
             lambda _state: self.write_conveyor_setting("enabled", self.conveyor_enabled.isChecked())
         )
@@ -1884,6 +1916,7 @@ class PressureControlWindow(QMainWindow):
     def apply_initial_snapshot(self, snapshot: dict) -> None:
         spacing_12, spacing_34, spacing_56 = snapshot["sensor_spacings"]
         min_travel_time, max_travel_time = snapshot["travel_time_bounds"]
+        light_barrier_debounce = snapshot["light_barrier_debounce_ms"]
         conveyor_settings = snapshot["conveyor"]
         calibration = snapshot["calibration"]
         self.conveyor_calibration = {
@@ -1897,6 +1930,7 @@ class PressureControlWindow(QMainWindow):
             QSignalBlocker(self.sensor_spacing_56),
             QSignalBlocker(self.min_travel_time),
             QSignalBlocker(self.max_travel_time),
+            QSignalBlocker(self.light_barrier_debounce),
             QSignalBlocker(self.conveyor_enabled),
             QSignalBlocker(self.conveyor_reverse),
             QSignalBlocker(self.conveyor_speed),
@@ -1907,6 +1941,7 @@ class PressureControlWindow(QMainWindow):
             self.sensor_spacing_56.setValue(spacing_56)
             self.min_travel_time.setValue(min_travel_time)
             self.max_travel_time.setValue(max_travel_time)
+            self.light_barrier_debounce.setValue(light_barrier_debounce)
             self.conveyor_enabled.setChecked(bool(conveyor_settings["enabled"]))
             self.conveyor_reverse.setChecked(bool(conveyor_settings["reverse"]))
             self.conveyor_speed.setValue(float(conveyor_settings["speed_mm_per_sec"]))
@@ -1968,6 +2003,9 @@ class PressureControlWindow(QMainWindow):
             "MAIN.GuiSensorSpacing56Mm": float(self.sensor_spacing_56.value()),
             "MAIN.GuiMinTravelTimeMs": int(self.min_travel_time.value()),
             "MAIN.GuiMaxTravelTimeMs": int(self.max_travel_time.value()),
+            "MAIN.GuiBarrierCalibrationDebounceMs": int(
+                self.light_barrier_debounce.value()
+            ),
             "MAIN.GuiConveyorEnabled": self.conveyor_enabled.isChecked(),
             "MAIN.GuiConveyorReverse": self.conveyor_reverse.isChecked(),
             "MAIN.GuiConveyorSpeedMmPerSec": float(self.conveyor_speed.value()),
@@ -2170,6 +2208,7 @@ class PressureControlWindow(QMainWindow):
             "sensor_spacing_56_mm": self.sensor_spacing_56.value(),
             "min_travel_time_ms": self.min_travel_time.value(),
             "max_travel_time_ms": self.max_travel_time.value(),
+            "light_barrier_debounce_ms": self.light_barrier_debounce.value(),
             "conveyor_enabled": self.conveyor_enabled.isChecked(),
             "conveyor_reverse": self.conveyor_reverse.isChecked(),
             "conveyor_speed_mm_per_sec": self.conveyor_speed.value(),
@@ -2237,6 +2276,12 @@ class PressureControlWindow(QMainWindow):
                 }
             min_travel_time = int(profile.get("min_travel_time_ms", self.min_travel_time.value()))
             max_travel_time = int(profile.get("max_travel_time_ms", self.max_travel_time.value()))
+            light_barrier_debounce = int(
+                profile.get(
+                    "light_barrier_debounce_ms",
+                    self.light_barrier_debounce.value(),
+                )
+            )
             if "min_travel_time_ms" not in profile and "max_velocity_mm_per_sec" in profile:
                 max_velocity = float(profile["max_velocity_mm_per_sec"])
                 if max_velocity > 0.0:
@@ -2251,6 +2296,7 @@ class PressureControlWindow(QMainWindow):
                 QSignalBlocker(self.sensor_spacing_56),
                 QSignalBlocker(self.min_travel_time),
                 QSignalBlocker(self.max_travel_time),
+                QSignalBlocker(self.light_barrier_debounce),
                 QSignalBlocker(self.conveyor_enabled),
                 QSignalBlocker(self.conveyor_reverse),
                 QSignalBlocker(self.conveyor_speed),
@@ -2261,6 +2307,7 @@ class PressureControlWindow(QMainWindow):
                 self.sensor_spacing_56.setValue(spacing_56)
                 self.min_travel_time.setValue(min_travel_time)
                 self.max_travel_time.setValue(max_travel_time)
+                self.light_barrier_debounce.setValue(light_barrier_debounce)
                 self.conveyor_enabled.setChecked(conveyor_enabled)
                 self.conveyor_reverse.setChecked(conveyor_reverse)
                 self.conveyor_speed.setValue(conveyor_speed)
