@@ -168,8 +168,9 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 28)
+        self.assertEqual(len(plc.read_calls[0]), 29)
         self.assertEqual(snapshot["light_barriers"], [False] * 6)
+        self.assertEqual(snapshot["debounce_ms"], 0)
 
     def test_barrier_calibration_start_is_one_safe_batch(self):
         controller = gui.AdsController()
@@ -177,7 +178,7 @@ class AdsThreadTests(unittest.TestCase):
         writes = []
         controller.write_requested.connect(lambda values, context: writes.append((values, context)))
 
-        controller.start_barrier_calibration(1, 2, 3000, 30.0)
+        controller.start_barrier_calibration(1, 2, 3000, 30.0, 20)
 
         values, context = writes[0]
         self.assertEqual(context, "barrier_calibration_start")
@@ -185,6 +186,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertTrue(values["MAIN.GuiConveyorCalibrationMode"])
         self.assertEqual(values["MAIN.GuiBarrierCalibrationFirstSensor"], 1)
         self.assertEqual(values["MAIN.GuiBarrierCalibrationSecondSensor"], 2)
+        self.assertEqual(values["MAIN.GuiBarrierCalibrationDebounceMs"], 20)
         self.assertEqual(values["MAIN.GuiCalibrationJogSteps"], 3000)
         self.assertTrue(values["MAIN.GuiBarrierCalibrationStart"])
         self.assertTrue(values["MAIN.GuiCalibrationMoveRight"])
@@ -341,6 +343,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
             "status_code": 3,
             "first_sensor": 1,
             "second_sensor": 2,
+            "debounce_ms": 20,
             "mm_per_full_step": 1.0 / 3.0,
             "conveyor_calibration_valid": True,
             "full_steps_per_sec": 30.0,
@@ -360,6 +363,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertEqual(window.barrier_labels[0].text(), "ON")
         self.assertEqual(window.barrier_labels[1].text(), "OFF")
         self.assertEqual(window.measured_distance.text(), "10.000 mm")
+        self.assertEqual(window.debounce_time.value(), 20)
         self.assertEqual(
             writes[0][0], {"MAIN.GuiSensorSpacing12Mm": 10.0}
         )
@@ -401,6 +405,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
             "status_code": 0,
             "first_sensor": 1,
             "second_sensor": 2,
+            "debounce_ms": 20,
             "mm_per_full_step": 0.32960026,
             "conveyor_calibration_valid": True,
             "full_steps_per_sec": 0.0,
@@ -410,6 +415,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window._on_setup_status(ready_status)
 
         self.assertEqual(writes[1][1], "barrier_calibration_start")
+        self.assertEqual(writes[1][0]["MAIN.GuiBarrierCalibrationDebounceMs"], 20)
         self.assertIsNone(window.pending_measurement)
         window.ads.connected = False
         window.close()

@@ -141,6 +141,7 @@ VAR
 	LastConveyorCalibrationMode	: BOOL := FALSE;
 	GuiBarrierCalibrationFirstSensor	: UINT := 1;
 	GuiBarrierCalibrationSecondSensor	: UINT := 2;
+	GuiBarrierCalibrationDebounceMs	: UINT := 20;
 	GuiBarrierCalibrationStart	: BOOL := FALSE;
 	BarrierCalibrationActive	: BOOL := FALSE;
 	BarrierCalibrationFirstCaptured	: BOOL := FALSE;
@@ -151,8 +152,14 @@ VAR
 	BarrierCalibrationDifferenceIncrements	: UDINT := 0;
 	BarrierCalibrationDistanceMm	: REAL := 0.0;
 	BarrierCalibrationPositionDelta	: LINT := 0;
-	BarrierCalibrationFirstEdge	: BOOL := FALSE;
-	BarrierCalibrationSecondEdge	: BOOL := FALSE;
+	BarrierCalibrationFirstState	: BOOL := FALSE;
+	BarrierCalibrationSecondState	: BOOL := FALSE;
+	BarrierCalibrationFirstInitialState	: BOOL := FALSE;
+	BarrierCalibrationSecondInitialState	: BOOL := FALSE;
+	BarrierCalibrationFirstCandidatePosition	: UDINT := 0;
+	BarrierCalibrationSecondCandidatePosition	: UDINT := 0;
+	BarrierCalibrationFirstStableCycles	: UINT := 0;
+	BarrierCalibrationSecondStableCycles	: UINT := 0;
 	BarrierCalibrationAbortRequested	: BOOL := FALSE;
 	BarrierCalibrationStatusCode	: UINT := 0; //0 ready, 1 waiting first, 2 waiting second, 3 complete, 4 invalid/cancelled, 5 drive error
 
@@ -398,6 +405,34 @@ IF GuiConveyorCalibrationMode AND NOT LastConveyorCalibrationMode THEN
 END_IF
 LastConveyorCalibrationMode := GuiConveyorCalibrationMode;
 
+IF GuiBarrierCalibrationDebounceMs < 1 THEN
+	GuiBarrierCalibrationDebounceMs := 1;
+ELSIF GuiBarrierCalibrationDebounceMs > 200 THEN
+	GuiBarrierCalibrationDebounceMs := 200;
+END_IF
+
+CASE GuiBarrierCalibrationFirstSensor OF
+	1: BarrierCalibrationFirstState := LightBarrierOn1;
+	2: BarrierCalibrationFirstState := LightBarrierOn2;
+	3: BarrierCalibrationFirstState := LightBarrierOn3;
+	4: BarrierCalibrationFirstState := LightBarrierOn4;
+	5: BarrierCalibrationFirstState := LightBarrierOn5;
+	6: BarrierCalibrationFirstState := LightBarrierOn6;
+ELSE
+	BarrierCalibrationFirstState := FALSE;
+END_CASE
+
+CASE GuiBarrierCalibrationSecondSensor OF
+	1: BarrierCalibrationSecondState := LightBarrierOn1;
+	2: BarrierCalibrationSecondState := LightBarrierOn2;
+	3: BarrierCalibrationSecondState := LightBarrierOn3;
+	4: BarrierCalibrationSecondState := LightBarrierOn4;
+	5: BarrierCalibrationSecondState := LightBarrierOn5;
+	6: BarrierCalibrationSecondState := LightBarrierOn6;
+ELSE
+	BarrierCalibrationSecondState := FALSE;
+END_CASE
+
 // Prepare a light-barrier spacing measurement before the GUI starts a long relative move.
 IF GuiBarrierCalibrationStart THEN
 	IF GuiConveyorCalibrationMode
@@ -419,6 +454,12 @@ IF GuiBarrierCalibrationStart THEN
 		BarrierCalibrationSecondPosition := 0;
 		BarrierCalibrationDifferenceIncrements := 0;
 		BarrierCalibrationDistanceMm := 0.0;
+		BarrierCalibrationFirstInitialState := BarrierCalibrationFirstState;
+		BarrierCalibrationSecondInitialState := BarrierCalibrationSecondState;
+		BarrierCalibrationFirstCandidatePosition := 0;
+		BarrierCalibrationSecondCandidatePosition := 0;
+		BarrierCalibrationFirstStableCycles := 0;
+		BarrierCalibrationSecondStableCycles := 0;
 		BarrierCalibrationStatusCode := 1;
 	ELSE
 		BarrierCalibrationActive := FALSE;
@@ -667,58 +708,60 @@ LightBarrier4FallingEdge := (NOT LightBarrierOn4) AND LastLightBarrier4;
 LightBarrier5FallingEdge := (NOT LightBarrierOn5) AND LastLightBarrier5;
 LightBarrier6FallingEdge := (NOT LightBarrierOn6) AND LastLightBarrier6;
 
-CASE GuiBarrierCalibrationFirstSensor OF
-	1: BarrierCalibrationFirstEdge := LightBarrier1FallingEdge;
-	2: BarrierCalibrationFirstEdge := LightBarrier2FallingEdge;
-	3: BarrierCalibrationFirstEdge := LightBarrier3FallingEdge;
-	4: BarrierCalibrationFirstEdge := LightBarrier4FallingEdge;
-	5: BarrierCalibrationFirstEdge := LightBarrier5FallingEdge;
-	6: BarrierCalibrationFirstEdge := LightBarrier6FallingEdge;
-ELSE
-	BarrierCalibrationFirstEdge := FALSE;
-END_CASE
-
-CASE GuiBarrierCalibrationSecondSensor OF
-	1: BarrierCalibrationSecondEdge := LightBarrier1FallingEdge;
-	2: BarrierCalibrationSecondEdge := LightBarrier2FallingEdge;
-	3: BarrierCalibrationSecondEdge := LightBarrier3FallingEdge;
-	4: BarrierCalibrationSecondEdge := LightBarrier4FallingEdge;
-	5: BarrierCalibrationSecondEdge := LightBarrier5FallingEdge;
-	6: BarrierCalibrationSecondEdge := LightBarrier6FallingEdge;
-ELSE
-	BarrierCalibrationSecondEdge := FALSE;
-END_CASE
-
-// Latch the internal motor position in the PLC cycle in which each selected barrier switches off.
+// Accept either signal polarity, but only after the new state remains stable for the debounce time.
+// The candidate position is captured on the first cycle of the ultimately stable transition.
 IF BarrierCalibrationActive THEN
-	IF NOT BarrierCalibrationFirstCaptured AND BarrierCalibrationFirstEdge THEN
-		BarrierCalibrationFirstPosition := StepperInternalPosition;
-		BarrierCalibrationFirstCaptured := TRUE;
-		BarrierCalibrationStatusCode := 2;
-	ELSIF BarrierCalibrationFirstCaptured
-		AND NOT BarrierCalibrationSecondCaptured
-		AND BarrierCalibrationSecondEdge THEN
-		BarrierCalibrationSecondPosition := StepperInternalPosition;
-		BarrierCalibrationSecondCaptured := TRUE;
-		BarrierCalibrationPositionDelta := DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationSecondPosition))
-			- DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationFirstPosition));
-		IF BarrierCalibrationPositionDelta < 0 THEN
-			BarrierCalibrationPositionDelta := -BarrierCalibrationPositionDelta;
-		END_IF
-		IF BarrierCalibrationPositionDelta > 0 THEN
-			BarrierCalibrationDifferenceIncrements := LINT_TO_UDINT(BarrierCalibrationPositionDelta);
-			BarrierCalibrationDistanceMm :=
-				TO_REAL(BarrierCalibrationDifferenceIncrements) / 64.0 * GuiConveyorMmPerFullStep;
-			BarrierCalibrationValid := TRUE;
-			BarrierCalibrationStatusCode := 3;
+	IF NOT BarrierCalibrationFirstCaptured THEN
+		IF BarrierCalibrationFirstState <> BarrierCalibrationFirstInitialState THEN
+			IF BarrierCalibrationFirstStableCycles = 0 THEN
+				BarrierCalibrationFirstCandidatePosition := StepperInternalPosition;
+			END_IF
+			IF BarrierCalibrationFirstStableCycles < GuiBarrierCalibrationDebounceMs THEN
+				BarrierCalibrationFirstStableCycles := BarrierCalibrationFirstStableCycles + 1;
+			END_IF
+			IF BarrierCalibrationFirstStableCycles >= GuiBarrierCalibrationDebounceMs THEN
+				BarrierCalibrationFirstPosition := BarrierCalibrationFirstCandidatePosition;
+				BarrierCalibrationFirstCaptured := TRUE;
+				BarrierCalibrationStatusCode := 2;
+			END_IF
 		ELSE
-			BarrierCalibrationDifferenceIncrements := 0;
-			BarrierCalibrationDistanceMm := 0.0;
-			BarrierCalibrationValid := FALSE;
-			BarrierCalibrationStatusCode := 4;
+			BarrierCalibrationFirstStableCycles := 0;
 		END_IF
-		BarrierCalibrationActive := FALSE;
-		GuiCalibrationStop := TRUE;
+	ELSIF BarrierCalibrationFirstCaptured
+		AND NOT BarrierCalibrationSecondCaptured THEN
+		IF BarrierCalibrationSecondState <> BarrierCalibrationSecondInitialState THEN
+			IF BarrierCalibrationSecondStableCycles = 0 THEN
+				BarrierCalibrationSecondCandidatePosition := StepperInternalPosition;
+			END_IF
+			IF BarrierCalibrationSecondStableCycles < GuiBarrierCalibrationDebounceMs THEN
+				BarrierCalibrationSecondStableCycles := BarrierCalibrationSecondStableCycles + 1;
+			END_IF
+			IF BarrierCalibrationSecondStableCycles >= GuiBarrierCalibrationDebounceMs THEN
+				BarrierCalibrationSecondPosition := BarrierCalibrationSecondCandidatePosition;
+				BarrierCalibrationSecondCaptured := TRUE;
+				BarrierCalibrationPositionDelta := DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationSecondPosition))
+					- DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationFirstPosition));
+				IF BarrierCalibrationPositionDelta < 0 THEN
+					BarrierCalibrationPositionDelta := -BarrierCalibrationPositionDelta;
+				END_IF
+				IF BarrierCalibrationPositionDelta > 0 THEN
+					BarrierCalibrationDifferenceIncrements := LINT_TO_UDINT(BarrierCalibrationPositionDelta);
+					BarrierCalibrationDistanceMm :=
+						TO_REAL(BarrierCalibrationDifferenceIncrements) / 64.0 * GuiConveyorMmPerFullStep;
+					BarrierCalibrationValid := TRUE;
+					BarrierCalibrationStatusCode := 3;
+				ELSE
+					BarrierCalibrationDifferenceIncrements := 0;
+					BarrierCalibrationDistanceMm := 0.0;
+					BarrierCalibrationValid := FALSE;
+					BarrierCalibrationStatusCode := 4;
+				END_IF
+				BarrierCalibrationActive := FALSE;
+				GuiCalibrationStop := TRUE;
+			END_IF
+		ELSE
+			BarrierCalibrationSecondStableCycles := 0;
+		END_IF
 	END_IF
 END_IF
 

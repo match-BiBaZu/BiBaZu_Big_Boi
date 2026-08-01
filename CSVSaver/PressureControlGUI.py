@@ -677,6 +677,7 @@ class AdsWorker(QObject):
             "MAIN.BarrierCalibrationStatusCode",
             "MAIN.GuiBarrierCalibrationFirstSensor",
             "MAIN.GuiBarrierCalibrationSecondSensor",
+            "MAIN.GuiBarrierCalibrationDebounceMs",
             "MAIN.GuiConveyorMmPerFullStep",
             "MAIN.GuiConveyorCalibrationValid",
             "MAIN.ConveyorFullStepsPerSec",
@@ -708,6 +709,7 @@ class AdsWorker(QObject):
             "status_code": int(values["MAIN.BarrierCalibrationStatusCode"]),
             "first_sensor": int(values["MAIN.GuiBarrierCalibrationFirstSensor"]),
             "second_sensor": int(values["MAIN.GuiBarrierCalibrationSecondSensor"]),
+            "debounce_ms": int(values["MAIN.GuiBarrierCalibrationDebounceMs"]),
             "mm_per_full_step": float(values["MAIN.GuiConveyorMmPerFullStep"]),
             "conveyor_calibration_valid": bool(
                 values["MAIN.GuiConveyorCalibrationValid"]
@@ -995,7 +997,12 @@ class AdsController(QObject):
         self.setup_polling_requested.emit(enabled)
 
     def start_barrier_calibration(
-        self, first_sensor: int, second_sensor: int, max_steps: int, speed: float
+        self,
+        first_sensor: int,
+        second_sensor: int,
+        max_steps: int,
+        speed: float,
+        debounce_ms: int,
     ) -> None:
         self.write_now(
             {
@@ -1003,6 +1010,7 @@ class AdsController(QObject):
                 "MAIN.GuiConveyorCalibrationMode": True,
                 "MAIN.GuiBarrierCalibrationFirstSensor": int(first_sensor),
                 "MAIN.GuiBarrierCalibrationSecondSensor": int(second_sensor),
+                "MAIN.GuiBarrierCalibrationDebounceMs": int(debounce_ms),
                 "MAIN.GuiCalibrationJogSteps": int(max_steps),
                 "MAIN.GuiCalibrationJogSpeedFullStepsPerSec": float(speed),
                 "MAIN.GuiBarrierCalibrationStart": True,

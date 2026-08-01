@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QStatusBar,
     QStyle,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -54,6 +55,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.latest_status = None
         self.mm_per_full_step = 0.0
         self.pending_measurement = None
+        self.debounce_initialized = False
 
         self.setWindowTitle("Conveyor and Light Barrier Setup")
         self.resize(850, 610)
@@ -138,6 +140,15 @@ class ConveyorSetupWindow(QMainWindow):
         self.maximum_travel.setSuffix(" mm")
         self.maximum_travel.setValue(1000.0)
         form.addRow("Maximum travel", self.maximum_travel)
+
+        self.debounce_time = QSpinBox()
+        self.debounce_time.setRange(1, 200)
+        self.debounce_time.setSuffix(" ms")
+        self.debounce_time.setValue(20)
+        self.debounce_time.setToolTip(
+            "Required stable signal time before a light barrier transition is accepted"
+        )
+        form.addRow("Signal stable time", self.debounce_time)
         measurement_layout.addLayout(form, 0, 0, 2, 1)
 
         result_form = QFormLayout()
@@ -233,6 +244,7 @@ class ConveyorSetupWindow(QMainWindow):
     def _on_connection_changed(self, connected: bool, message: str) -> None:
         self.connected = connected
         self.have_setup_status = False
+        self.debounce_initialized = False
         self._set_controls_enabled(connected)
         if connected:
             self.statusBar().showMessage(f"ADS online: {AMS_NET_ID} / {PLC_IP}")
@@ -254,6 +266,10 @@ class ConveyorSetupWindow(QMainWindow):
     def _on_setup_status(self, status: dict) -> None:
         self.have_setup_status = True
         self.latest_status = status
+        if not self.debounce_initialized:
+            with QSignalBlocker(self.debounce_time):
+                self.debounce_time.setValue(status["debounce_ms"])
+            self.debounce_initialized = True
         for index, barrier_state in enumerate(status["light_barriers"]):
             self._set_barrier_indicator(index, barrier_state)
 
@@ -321,6 +337,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.second_sensor.setEnabled(settings_enabled)
         self.measurement_speed.setEnabled(settings_enabled)
         self.maximum_travel.setEnabled(settings_enabled)
+        self.debounce_time.setEnabled(settings_enabled)
         self._update_apply_state()
 
         if (
@@ -395,7 +412,13 @@ class ConveyorSetupWindow(QMainWindow):
             self.measurement_speed.value(),
             self.mm_per_full_step,
         )
-        command = (first_sensor, second_sensor, max_steps, speed_full_steps)
+        command = (
+            first_sensor,
+            second_sensor,
+            max_steps,
+            speed_full_steps,
+            self.debounce_time.value(),
+        )
         if self.latest_status and self.latest_status["ready_to_execute"]:
             self.ads.start_barrier_calibration(*command)
             self.measurement_state.setText("Starting rightward measurement")
