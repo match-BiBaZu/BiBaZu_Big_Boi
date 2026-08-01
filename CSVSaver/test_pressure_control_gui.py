@@ -129,6 +129,49 @@ class AdsThreadTests(unittest.TestCase):
 
         self.assertEqual(plc.write_calls, [gui.AdsWorker.SAFE_STOP_VALUES])
 
+    def test_mm_jog_is_rounded_to_full_steps(self):
+        full_steps, actual_distance, full_steps_per_sec = gui.calculate_conveyor_jog(
+            1.0, 10.0, 0.3296
+        )
+
+        self.assertEqual(full_steps, 3)
+        self.assertAlmostEqual(actual_distance, 0.9888)
+        self.assertAlmostEqual(full_steps_per_sec, 10.0 / 0.3296)
+
+    def test_jog_dialog_sends_calibrated_relative_move(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        controller.calibration_cache.update(
+            {
+                "valid": True,
+                "mm_per_full_step": 0.3296,
+                "jog_speed_full_steps_per_sec": 32.0,
+            }
+        )
+        writes = []
+        controller.write_requested.connect(lambda values, context: writes.append((values, context)))
+        dialog = gui.ConveyorJogDialog(controller)
+        dialog.refresh_status(
+            {
+                "busy": False,
+                "error": False,
+                "ready_to_execute": True,
+                "status_code": 0,
+            }
+        )
+        dialog.distance.setValue(1.0)
+
+        dialog._move("right")
+
+        self.assertEqual(writes[0][0]["MAIN.GuiCalibrationJogSteps"], 3)
+        self.assertTrue(writes[0][0]["MAIN.GuiCalibrationMoveRight"])
+        self.assertAlmostEqual(
+            writes[0][0]["MAIN.GuiCalibrationJogSpeedFullStepsPerSec"],
+            dialog.speed.value() / 0.3296,
+        )
+        dialog.close()
+        controller.shutdown()
+
     def test_slow_ads_write_does_not_block_gui_thread(self):
         plc = FakePlc(write_delay=0.5)
         worker = gui.AdsWorker()

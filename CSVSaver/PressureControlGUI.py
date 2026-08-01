@@ -74,8 +74,21 @@ CALIBRATION_POLL_INTERVAL_MS = 100
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
 CALIBRATION_JOG_STEPS_DEFAULT = 100
 CALIBRATION_JOG_SPEED_DEFAULT = 10.0
+CONVEYOR_JOG_DISTANCE_DEFAULT_MM = 1.0
+CONVEYOR_JOG_DISTANCE_MAX_MM = 5000.0
 
 pyads.set_timeout(ADS_TIMEOUT_MS)
+
+
+def calculate_conveyor_jog(
+    distance_mm: float, speed_mm_per_sec: float, mm_per_full_step: float
+) -> tuple[int, float, float]:
+    if mm_per_full_step <= 0.0:
+        raise ValueError("Conveyor calibration is invalid")
+    full_steps = max(1, min(100000, int((distance_mm / mm_per_full_step) + 0.5)))
+    actual_distance_mm = full_steps * mm_per_full_step
+    full_steps_per_sec = max(1.0, min(500.0, speed_mm_per_sec / mm_per_full_step))
+    return full_steps, actual_distance_mm, full_steps_per_sec
 
 
 @dataclass(frozen=True)
@@ -1254,6 +1267,169 @@ class ConveyorCalibrationDialog(QDialog):
         super().closeEvent(event)
 
 
+class ConveyorJogDialog(QDialog):
+    def __init__(self, ads: AdsController, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.ads = ads
+        self.mm_per_full_step = float(self.ads.calibration_cache["mm_per_full_step"])
+        self._calibration_mode_requested = False
+        self.setWindowTitle("Conveyor Jogging")
+        self.setModal(True)
+        self.setMinimumWidth(470)
+        self._build_ui()
+        self._connect_signals()
+        self._update_command_preview()
+
+        self.ads.calibration_status_ready.connect(self.refresh_status)
+        self.ads.operation_failed.connect(self._on_ads_error)
+        self._calibration_mode_requested = True
+        self.ads.enter_calibration()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        settings = QGroupBox("Jog Settings")
+        form = QFormLayout(settings)
+        self.distance = QDoubleSpinBox()
+        self.distance.setRange(0.1, CONVEYOR_JOG_DISTANCE_MAX_MM)
+        self.distance.setDecimals(2)
+        self.distance.setSingleStep(1.0)
+        self.distance.setSuffix(" mm")
+        self.distance.setValue(CONVEYOR_JOG_DISTANCE_DEFAULT_MM)
+        form.addRow("Move distance", self.distance)
+
+        self.speed = QDoubleSpinBox()
+        self.speed.setRange(self.mm_per_full_step, 500.0 * self.mm_per_full_step)
+        self.speed.setDecimals(2)
+        self.speed.setSingleStep(max(0.1, self.mm_per_full_step))
+        self.speed.setSuffix(" mm/s")
+        initial_speed = float(
+            self.ads.calibration_cache.get(
+                "jog_speed_full_steps_per_sec", CALIBRATION_JOG_SPEED_DEFAULT
+            )
+        ) * self.mm_per_full_step
+        self.speed.setValue(initial_speed)
+        form.addRow("Jog speed", self.speed)
+
+        self.command_preview = QLabel()
+        form.addRow("Commanded movement", self.command_preview)
+        layout.addWidget(settings)
+
+        movement_layout = QHBoxLayout()
+        self.move_left_button = QPushButton("Move Left")
+        self.move_left_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+        )
+        self.move_left_button.setEnabled(False)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
+        self.move_right_button = QPushButton("Move Right")
+        self.move_right_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+        )
+        self.move_right_button.setEnabled(False)
+        movement_layout.addWidget(self.move_left_button)
+        movement_layout.addWidget(self.stop_button)
+        movement_layout.addWidget(self.move_right_button)
+        layout.addLayout(movement_layout)
+
+        status_box = QGroupBox("Jog Status")
+        status_form = QFormLayout(status_box)
+        self.state_label = QLabel("Connecting")
+        status_form.addRow("State", self.state_label)
+        layout.addWidget(status_box)
+
+        close_layout = QHBoxLayout()
+        close_layout.addStretch(1)
+        self.close_button = QPushButton("Close")
+        close_layout.addWidget(self.close_button)
+        layout.addLayout(close_layout)
+
+    def _connect_signals(self) -> None:
+        self.distance.valueChanged.connect(self._update_command_preview)
+        self.speed.valueChanged.connect(self._update_command_preview)
+        self.move_left_button.clicked.connect(lambda: self._move("left"))
+        self.move_right_button.clicked.connect(lambda: self._move("right"))
+        self.stop_button.clicked.connect(self._stop)
+        self.close_button.clicked.connect(self.close)
+
+    def _jog_values(self) -> tuple[int, float, float]:
+        return calculate_conveyor_jog(
+            self.distance.value(), self.speed.value(), self.mm_per_full_step
+        )
+
+    def _update_command_preview(self) -> None:
+        full_steps, actual_distance_mm, _speed = self._jog_values()
+        self.command_preview.setText(
+            f"{actual_distance_mm:.3f} mm ({full_steps} full steps)"
+        )
+
+    def _move(self, direction: str) -> None:
+        full_steps, actual_distance_mm, full_steps_per_sec = self._jog_values()
+        self.ads.command_calibration_move(direction, full_steps, full_steps_per_sec)
+        self.move_left_button.setEnabled(False)
+        self.move_right_button.setEnabled(False)
+        self.distance.setEnabled(False)
+        self.speed.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.state_label.setText(f"Moving {actual_distance_mm:.3f} mm")
+
+    def _stop(self) -> None:
+        self.ads.stop_calibration_move()
+        self.state_label.setText("Stopping")
+
+    @pyqtSlot(object)
+    def refresh_status(self, status: dict) -> None:
+        busy = bool(status["busy"])
+        error = bool(status["error"])
+        ready = bool(status["ready_to_execute"])
+        controls_enabled = ready and not busy and not error
+        self.move_left_button.setEnabled(controls_enabled)
+        self.move_right_button.setEnabled(controls_enabled)
+        self.distance.setEnabled(not busy)
+        self.speed.setEnabled(not busy)
+        self.stop_button.setEnabled(busy or error)
+
+        state_text = ConveyorCalibrationDialog.STATUS_TEXT.get(
+            status["status_code"], "Unknown state"
+        )
+        if error:
+            state_text = "EL7047 error"
+        elif not ready:
+            state_text = "Drive not ready - verify Positioning Interface PDOs"
+        self.state_label.setText(state_text)
+
+    @pyqtSlot(str, str)
+    def _on_ads_error(self, _context: str, message: str) -> None:
+        self.state_label.setText(message)
+        self.move_left_button.setEnabled(False)
+        self.move_right_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+
+    def _leave_calibration_mode(self) -> None:
+        if not self._calibration_mode_requested:
+            return
+        self._calibration_mode_requested = False
+        try:
+            self.ads.calibration_status_ready.disconnect(self.refresh_status)
+            self.ads.operation_failed.disconnect(self._on_ads_error)
+        except (TypeError, RuntimeError):
+            pass
+        self.ads.leave_calibration()
+
+    def done(self, result: int) -> None:
+        self._leave_calibration_mode()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._leave_calibration_mode()
+        super().closeEvent(event)
+
+
 class PressureControlWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -1407,6 +1583,8 @@ class PressureControlWindow(QMainWindow):
         self.reconnect_button = QPushButton("Reconnect")
         self.calibrate_conveyor_button = QPushButton("Calibrate Conveyor")
         self.calibrate_conveyor_button.setToolTip("Open the conveyor step calibration")
+        self.jog_conveyor_button = QPushButton("Jog Conveyor")
+        self.jog_conveyor_button.setToolTip("Move the conveyor by a calibrated distance")
         self.logging_status = QLabel("Logging: offline")
         self.logging_status.setMinimumWidth(170)
         self.load_button = QPushButton("Load Profile")
@@ -1415,6 +1593,7 @@ class PressureControlWindow(QMainWindow):
 
         button_layout.addWidget(self.reconnect_button)
         button_layout.addWidget(self.calibrate_conveyor_button)
+        button_layout.addWidget(self.jog_conveyor_button)
         button_layout.addWidget(self.logging_status)
         button_layout.addStretch(1)
         button_layout.addWidget(self.load_button)
@@ -1433,6 +1612,7 @@ class PressureControlWindow(QMainWindow):
         self.ads.operation_failed.connect(self.on_ads_error)
         self.reconnect_button.clicked.connect(self.reconnect)
         self.calibrate_conveyor_button.clicked.connect(self.open_conveyor_calibration)
+        self.jog_conveyor_button.clicked.connect(self.open_conveyor_jogging)
         self.load_button.clicked.connect(self.load_profile)
         self.save_button.clicked.connect(self.save_profile)
         self.write_all_button.clicked.connect(self.write_all_values)
@@ -1701,6 +1881,21 @@ class PressureControlWindow(QMainWindow):
             )
         else:
             self.statusBar().showMessage("Conveyor calibration closed")
+
+    def open_conveyor_jogging(self) -> None:
+        if not self.ads.is_connected:
+            self.statusBar().showMessage("Conveyor jogging: ADS offline")
+            return
+        calibration = self.ads.calibration_cache
+        if not bool(calibration["valid"]) or float(calibration["mm_per_full_step"]) <= 0.0:
+            self.statusBar().showMessage("Conveyor jogging: calibrate the conveyor first")
+            return
+
+        with QSignalBlocker(self.conveyor_enabled):
+            self.conveyor_enabled.setChecked(False)
+        dialog = ConveyorJogDialog(self.ads, self)
+        dialog.exec()
+        self.statusBar().showMessage("Conveyor jogging closed")
 
     @pyqtSlot(object)
     def apply_live_snapshot(self, snapshot: dict) -> None:
