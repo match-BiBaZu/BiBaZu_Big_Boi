@@ -168,7 +168,7 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 29)
+        self.assertEqual(len(plc.read_calls[0]), 40)
         self.assertEqual(snapshot["light_barriers"], [False] * 6)
         self.assertEqual(snapshot["debounce_ms"], 0)
 
@@ -190,6 +190,58 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(values["MAIN.GuiCalibrationJogSteps"], 3000)
         self.assertTrue(values["MAIN.GuiBarrierCalibrationStart"])
         self.assertTrue(values["MAIN.GuiCalibrationMoveRight"])
+        controller.shutdown()
+
+    def test_velocity_check_starts_constant_safe_conveyor_motion(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        writes = []
+        controller.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        controller.start_velocity_check(12.5)
+
+        values, context = writes[0]
+        self.assertEqual(context, "velocity_check_start")
+        self.assertTrue(values["MAIN.GuiVelocityCheckMode"])
+        self.assertTrue(values["MAIN.GuiResetVelocityEstimates"])
+        self.assertTrue(values["MAIN.GuiConveyorEnabled"])
+        self.assertFalse(values["MAIN.GuiConveyorCalibrationMode"])
+        self.assertEqual(values["MAIN.GuiConveyorSpeedMmPerSec"], 12.5)
+        self.assertNotIn("MAIN.GuiCalibrationMoveRight", values)
+        controller.shutdown()
+
+    def test_velocity_plausibility_uses_spacing_and_switch_time(self):
+        result = setup_gui.calculate_velocity_plausibility(20.0, 2000, 10.0, 5.0)
+
+        self.assertAlmostEqual(result["measured_speed"], 10.0)
+        self.assertAlmostEqual(result["deviation_percent"], 0.0)
+        self.assertTrue(result["plausible"])
+
+    def test_velocity_dialog_accepts_only_a_fresh_measurement(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        dialog = setup_gui.VelocityPlausibilityDialog(controller)
+        dialog.target_speed_input.setValue(10.0)
+        dialog._start()
+        waiting = {
+            "sensor_spacings": (20.0, 100.0, 100.0),
+            "velocity_valid": (False, False, False),
+            "velocity_times_ms": (0, 0, 0),
+        }
+        complete = {
+            **waiting,
+            "velocity_valid": (True, False, False),
+            "velocity_times_ms": (2000, 0, 0),
+        }
+
+        dialog._on_status(waiting)
+        dialog._on_status(complete)
+
+        self.assertEqual(dialog.measured_speed_label.text(), "10.000 mm/s")
+        self.assertEqual(dialog.verdict_label.text(), "Plausible")
+        dialog._stop()
         controller.shutdown()
 
     def test_leaving_calibration_writes_safe_state_together(self):

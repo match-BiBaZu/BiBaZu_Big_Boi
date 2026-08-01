@@ -84,6 +84,7 @@ VAR
 	GuiMinTravelTimeMs		: UINT := 20;
 	GuiMaxTravelTimeMs		: UINT := 2000;
 	GuiConveyorEnabled		: BOOL := FALSE;
+	GuiVelocityCheckMode	: BOOL := FALSE;
 	GuiConveyorReverse		: BOOL := FALSE;
 	GuiConveyorReset		: BOOL := FALSE;
 	GuiConveyorSpeedMmPerSec	: REAL := 0.0;
@@ -346,10 +347,10 @@ VelocityTimer(IN := VelocityTimingActive, PT := T#30S);
 VelocityTimer2(IN := VelocityTiming2Active, PT := T#30S);
 VelocityTimer3(IN := VelocityTiming3Active, PT := T#30S);
 
-Array1Active := NOT GuiConveyorCalibrationMode AND GuiArrayEnabled1 AND (GuiNozzleEnabled1 OR GuiNozzleEnabled2 OR GuiNozzleEnabled3 OR GuiNozzleEnabled4);
-Array2Active := NOT GuiConveyorCalibrationMode AND GuiArrayEnabled2 AND (GuiNozzleEnabled5 OR GuiNozzleEnabled6 OR GuiNozzleEnabled7 OR GuiNozzleEnabled8);
-Array3Active := NOT GuiConveyorCalibrationMode AND GuiArrayEnabled3 AND (GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
-Array4Active := NOT GuiConveyorCalibrationMode AND GuiArrayEnabled4 AND (GuiNozzleEnabled13 OR GuiNozzleEnabled14 OR GuiNozzleEnabled15 OR GuiNozzleEnabled16);
+Array1Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled1 AND (GuiNozzleEnabled1 OR GuiNozzleEnabled2 OR GuiNozzleEnabled3 OR GuiNozzleEnabled4);
+Array2Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled2 AND (GuiNozzleEnabled5 OR GuiNozzleEnabled6 OR GuiNozzleEnabled7 OR GuiNozzleEnabled8);
+Array3Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled3 AND (GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
+Array4Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled4 AND (GuiNozzleEnabled13 OR GuiNozzleEnabled14 OR GuiNozzleEnabled15 OR GuiNozzleEnabled16);
 
 IF GuiMinTravelTimeMs < 1 THEN
 	GuiMinTravelTimeMs := 1;
@@ -1316,8 +1317,8 @@ LastArray1ValveCommand := Array1ValveCommand;
 LastArray2ValveCommand := Array2ValveCommand;
 LastArray3ValveCommand := Array3ValveCommand;
 
-// Calibration movement must never trigger a nozzle, even if a state was active on entry.
-IF GuiConveyorCalibrationMode THEN
+// Setup movement must never trigger a nozzle, even if a state was active on entry.
+IF GuiConveyorCalibrationMode OR GuiVelocityCheckMode THEN
 	Array1TriggerPending := FALSE;
 	Array2TriggerPending := FALSE;
 	Array3TriggerPending := FALSE;

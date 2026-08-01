@@ -436,6 +436,7 @@ class AdsWorker(QObject):
     SAFE_STOP_VALUES = {
         "MAIN.GuiCalibrationStop": True,
         "MAIN.GuiConveyorCalibrationMode": False,
+        "MAIN.GuiVelocityCheckMode": False,
         "MAIN.GuiConveyorEnabled": False,
     }
 
@@ -685,6 +686,17 @@ class AdsWorker(QObject):
             "MAIN.GuiSensorSpacing12Mm",
             "MAIN.GuiSensorSpacing34Mm",
             "MAIN.GuiSensorSpacing56Mm",
+            "MAIN.LastVelocityTimeMs",
+            "MAIN.LastVelocityTime2Ms",
+            "MAIN.LastVelocityTime3Ms",
+            "MAIN.VelocityMeasurementValid",
+            "MAIN.VelocityMeasurement2Valid",
+            "MAIN.VelocityMeasurement3Valid",
+            "MAIN.EstimatedVelocityMmPerSec1",
+            "MAIN.EstimatedVelocityMmPerSec2",
+            "MAIN.EstimatedVelocityMmPerSec3",
+            "MAIN.GuiMinTravelTimeMs",
+            "MAIN.GuiMaxTravelTimeMs",
         ]
         values = self.read_values(names)
         return {
@@ -720,6 +732,25 @@ class AdsWorker(QObject):
                 float(values["MAIN.GuiSensorSpacing12Mm"]),
                 float(values["MAIN.GuiSensorSpacing34Mm"]),
                 float(values["MAIN.GuiSensorSpacing56Mm"]),
+            ),
+            "velocity_times_ms": (
+                int(values["MAIN.LastVelocityTimeMs"]),
+                int(values["MAIN.LastVelocityTime2Ms"]),
+                int(values["MAIN.LastVelocityTime3Ms"]),
+            ),
+            "velocity_valid": (
+                bool(values["MAIN.VelocityMeasurementValid"]),
+                bool(values["MAIN.VelocityMeasurement2Valid"]),
+                bool(values["MAIN.VelocityMeasurement3Valid"]),
+            ),
+            "estimated_velocities": (
+                float(values["MAIN.EstimatedVelocityMmPerSec1"]),
+                float(values["MAIN.EstimatedVelocityMmPerSec2"]),
+                float(values["MAIN.EstimatedVelocityMmPerSec3"]),
+            ),
+            "travel_time_bounds": (
+                int(values["MAIN.GuiMinTravelTimeMs"]),
+                int(values["MAIN.GuiMaxTravelTimeMs"]),
             ),
         }
 
@@ -1021,6 +1052,19 @@ class AdsController(QObject):
 
     def stop_setup_motion(self) -> None:
         self.write_now(dict(AdsWorker.SAFE_STOP_VALUES), "setup_stop")
+
+    def start_velocity_check(self, speed_mm_per_sec: float) -> None:
+        self.write_now(
+            {
+                "MAIN.GuiCalibrationStop": False,
+                "MAIN.GuiConveyorCalibrationMode": False,
+                "MAIN.GuiVelocityCheckMode": True,
+                "MAIN.GuiResetVelocityEstimates": True,
+                "MAIN.GuiConveyorSpeedMmPerSec": float(speed_mm_per_sec),
+                "MAIN.GuiConveyorEnabled": True,
+            },
+            "velocity_check_start",
+        )
 
     def reconnect(self) -> None:
         self.write_timer.stop()

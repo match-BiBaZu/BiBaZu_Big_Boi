@@ -4,6 +4,7 @@ from PyQt6.QtCore import QSignalBlocker, pyqtSlot
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
@@ -46,6 +47,194 @@ BARRIER_STATUS_TEXT = {
 }
 
 
+def calculate_velocity_plausibility(
+    distance_mm: float,
+    travel_time_ms: int,
+    target_speed_mm_per_sec: float,
+    tolerance_percent: float,
+) -> dict:
+    if distance_mm <= 0.0 or travel_time_ms <= 0 or target_speed_mm_per_sec <= 0.0:
+        raise ValueError("Distance, travel time and target speed must be positive")
+    measured_speed = distance_mm * 1000.0 / travel_time_ms
+    difference = measured_speed - target_speed_mm_per_sec
+    deviation_percent = abs(difference) / target_speed_mm_per_sec * 100.0
+    return {
+        "measured_speed": measured_speed,
+        "difference": difference,
+        "deviation_percent": deviation_percent,
+        "plausible": deviation_percent <= tolerance_percent,
+    }
+
+
+class VelocityPlausibilityDialog(QDialog):
+    def __init__(self, ads: AdsController, parent=None) -> None:
+        super().__init__(parent)
+        self.ads = ads
+        self.running = False
+        self.saw_invalid_measurement = False
+        self.target_speed = 0.0
+        self.latest_status = None
+
+        self.setWindowTitle("Conveyor Speed Plausibility Check")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        settings = QGroupBox("Test Settings")
+        settings_form = QFormLayout(settings)
+        self.sensor_pair = QComboBox()
+        self.sensor_pair.addItem("Light barriers 1-2", 0)
+        self.sensor_pair.addItem("Light barriers 3-4", 1)
+        self.sensor_pair.addItem("Light barriers 5-6", 2)
+        self.target_speed_input = QDoubleSpinBox()
+        self.target_speed_input.setRange(0.1, 500.0)
+        self.target_speed_input.setDecimals(2)
+        self.target_speed_input.setSuffix(" mm/s")
+        self.target_speed_input.setValue(10.0)
+        self.tolerance_input = QDoubleSpinBox()
+        self.tolerance_input.setRange(0.1, 100.0)
+        self.tolerance_input.setDecimals(1)
+        self.tolerance_input.setSuffix(" %")
+        self.tolerance_input.setValue(10.0)
+        self.distance_label = QLabel("-")
+        settings_form.addRow("Sensor pair", self.sensor_pair)
+        settings_form.addRow("Target conveyor speed", self.target_speed_input)
+        settings_form.addRow("Allowed deviation", self.tolerance_input)
+        settings_form.addRow("Calibrated spacing", self.distance_label)
+        layout.addWidget(settings)
+
+        results = QGroupBox("Measurement")
+        results_form = QFormLayout(results)
+        self.travel_time_label = QLabel("-")
+        self.measured_speed_label = QLabel("-")
+        self.difference_label = QLabel("-")
+        self.deviation_label = QLabel("-")
+        self.verdict_label = QLabel("Waiting")
+        self.run_state_label = QLabel("Stopped")
+        results_form.addRow("Barrier travel time", self.travel_time_label)
+        results_form.addRow("Measured speed", self.measured_speed_label)
+        results_form.addRow("Difference", self.difference_label)
+        results_form.addRow("Deviation", self.deviation_label)
+        results_form.addRow("Result", self.verdict_label)
+        results_form.addRow("Conveyor", self.run_state_label)
+        layout.addWidget(results)
+
+        buttons = QHBoxLayout()
+        self.start_button = QPushButton("Start Constant Speed")
+        self.start_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
+        self.stop_button.setEnabled(False)
+        self.close_button = QPushButton("Close")
+        buttons.addWidget(self.start_button)
+        buttons.addWidget(self.stop_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.close_button)
+        layout.addLayout(buttons)
+
+        self.start_button.clicked.connect(self._start)
+        self.stop_button.clicked.connect(self._stop)
+        self.close_button.clicked.connect(self.accept)
+        self.sensor_pair.currentIndexChanged.connect(self._refresh_distance)
+        self.ads.setup_status_ready.connect(self._on_status)
+
+    def _pair_index(self) -> int:
+        return int(self.sensor_pair.currentData())
+
+    def _refresh_distance(self) -> None:
+        if self.latest_status:
+            distance = float(self.latest_status["sensor_spacings"][self._pair_index()])
+            self.distance_label.setText(f"{distance:.3f} mm")
+            minimum_time, maximum_time = self.latest_status.get(
+                "travel_time_bounds", (1, 30000)
+            )
+            if distance > 0.0 and minimum_time > 0 and maximum_time > 0:
+                minimum_speed = max(0.1, distance * 1000.0 / maximum_time)
+                maximum_speed = min(500.0, distance * 1000.0 / minimum_time)
+                maximum_speed = max(minimum_speed, maximum_speed)
+                with QSignalBlocker(self.target_speed_input):
+                    current_speed = self.target_speed_input.value()
+                    self.target_speed_input.setRange(minimum_speed, maximum_speed)
+                    self.target_speed_input.setValue(current_speed)
+                self.target_speed_input.setToolTip(
+                    f"Valid for the PLC timing window: {minimum_speed:.3f} to "
+                    f"{maximum_speed:.3f} mm/s"
+                )
+
+    def _start(self) -> None:
+        self.target_speed = self.target_speed_input.value()
+        self.saw_invalid_measurement = False
+        self.travel_time_label.setText("-")
+        self.measured_speed_label.setText("-")
+        self.difference_label.setText("-")
+        self.deviation_label.setText("-")
+        self.verdict_label.setText("Waiting for a fresh barrier measurement")
+        self.run_state_label.setText("Starting")
+        self.running = True
+        self.sensor_pair.setEnabled(False)
+        self.target_speed_input.setEnabled(False)
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.ads.start_velocity_check(self.target_speed)
+
+    def _stop(self) -> None:
+        if self.running:
+            self.ads.stop_setup_motion()
+        self.running = False
+        self.run_state_label.setText("Stopped")
+        self.sensor_pair.setEnabled(True)
+        self.target_speed_input.setEnabled(True)
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+
+    @pyqtSlot(object)
+    def _on_status(self, status: dict) -> None:
+        self.latest_status = status
+        self._refresh_distance()
+        if not self.running:
+            return
+        pair_index = self._pair_index()
+        valid = bool(status["velocity_valid"][pair_index])
+        if not valid:
+            self.saw_invalid_measurement = True
+            self.run_state_label.setText("Running - place the rod on the conveyor")
+            return
+        if not self.saw_invalid_measurement:
+            return
+
+        travel_time_ms = int(status["velocity_times_ms"][pair_index])
+        distance_mm = float(status["sensor_spacings"][pair_index])
+        try:
+            result = calculate_velocity_plausibility(
+                distance_mm,
+                travel_time_ms,
+                self.target_speed,
+                self.tolerance_input.value(),
+            )
+        except ValueError:
+            return
+        self.saw_invalid_measurement = False
+        self.travel_time_label.setText(f"{travel_time_ms} ms")
+        self.measured_speed_label.setText(f'{result["measured_speed"]:.3f} mm/s')
+        self.difference_label.setText(f'{result["difference"]:+.3f} mm/s')
+        self.deviation_label.setText(f'{result["deviation_percent"]:.2f} %')
+        if result["plausible"]:
+            self.verdict_label.setText("Plausible")
+            self.verdict_label.setStyleSheet("color: #15803d; font-weight: 600;")
+        else:
+            self.verdict_label.setText("Outside tolerance")
+            self.verdict_label.setStyleSheet("color: #b91c1c; font-weight: 600;")
+        self.run_state_label.setText("Running - stop when finished")
+
+    def closeEvent(self, event) -> None:
+        self._stop()
+        super().closeEvent(event)
+
+
 class ConveyorSetupWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -81,6 +270,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.speed_conversion = QLabel("-")
         self.calibrate_button = QPushButton("Calibrate Conveyor")
         self.jog_button = QPushButton("Jog Conveyor")
+        self.plausibility_button = QPushButton("Plausibility Check")
         self.calibrate_button.setToolTip("Calibrate conveyor travel per motor full step")
         self.jog_button.setToolTip("Move the conveyor by a calibrated distance")
         conveyor_layout.addWidget(QLabel("Calibration"), 0, 0)
@@ -89,6 +279,7 @@ class ConveyorSetupWindow(QMainWindow):
         conveyor_layout.addWidget(self.speed_conversion, 1, 1)
         conveyor_layout.addWidget(self.calibrate_button, 0, 2)
         conveyor_layout.addWidget(self.jog_button, 1, 2)
+        conveyor_layout.addWidget(self.plausibility_button, 2, 2)
         conveyor_layout.setColumnStretch(1, 1)
         layout.addWidget(conveyor_group)
 
@@ -209,6 +400,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.ads.write_finished.connect(self._on_write_finished)
         self.calibrate_button.clicked.connect(self._open_conveyor_calibration)
         self.jog_button.clicked.connect(self._open_conveyor_jogging)
+        self.plausibility_button.clicked.connect(self._open_plausibility_check)
         self.start_button.clicked.connect(self._start_measurement)
         self.stop_button.clicked.connect(self._stop_measurement)
         self.apply_button.clicked.connect(self._apply_measurement)
@@ -218,6 +410,7 @@ class ConveyorSetupWindow(QMainWindow):
     def _set_controls_enabled(self, enabled: bool) -> None:
         self.calibrate_button.setEnabled(enabled)
         self.jog_button.setEnabled(enabled and self.mm_per_full_step > 0.0)
+        self.plausibility_button.setEnabled(enabled and self.mm_per_full_step > 0.0)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(enabled)
         self.apply_button.setEnabled(False)
@@ -367,6 +560,9 @@ class ConveyorSetupWindow(QMainWindow):
         else:
             self.calibration_factor.setText("Not calibrated")
         self.jog_button.setEnabled(self.connected and self.mm_per_full_step > 0.0)
+        self.plausibility_button.setEnabled(
+            self.connected and self.mm_per_full_step > 0.0
+        )
 
     def _update_apply_state(self) -> None:
         valid = bool(self.latest_status and self.latest_status["valid"])
@@ -402,6 +598,14 @@ class ConveyorSetupWindow(QMainWindow):
         dialog = ConveyorJogDialog(self.ads, self)
         dialog.exec()
         self.ads.set_setup_polling(True)
+
+    def _open_plausibility_check(self) -> None:
+        if not self.connected or self.mm_per_full_step <= 0.0:
+            return
+        dialog = VelocityPlausibilityDialog(self.ads, self)
+        if self.latest_status:
+            dialog._on_status(self.latest_status)
+        dialog.exec()
 
     def _start_measurement(self) -> None:
         first_sensor, second_sensor = self._selected_sensors()
