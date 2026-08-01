@@ -1,0 +1,4 @@
+{
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "matlab.matlabpath": "C:\\Program Files\\MATLAB\\R2026a\\bin\\matlab.exe"
+}

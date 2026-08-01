@@ -1,0 +1,854 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="MAIN" Id="{e80dba2a-67f9-4c18-8302-7ea92125d6c4}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+	State					: INT  := 0; //state machine to control valves and motion terminal
+	State2					: INT  := 2; //state machine for nozzle array 2
+	State3					: INT  := 0; //state machine for nozzle array 3 and second VTEM unit
+	State4					: INT  := 2; //state machine for nozzle array 4
+	Counter					: INT  := 0; //timer counter that is in multiples of the PLC task time
+	Counter2				: INT  := 0; //timer counter for the second nozzle array
+	Counter3				: INT  := 0;
+	Counter4				: INT  := 0;
+	ShotDurationCycles		: INT  := 100; //100 cycles at 1 ms task time = 100 ms nozzle impulse
+	ShotDurationCycles2		: INT  := 100; //pulse duration for the second nozzle array
+	ShotDurationCycles3		: INT  := 100;
+	ShotDurationCycles4		: INT  := 100;
+	DelayDurationCycles		: INT  := 0; //delay cycles at 1 ms task time
+	DelayDurationCycles2	: INT  := 0; //delay cycles for the second nozzle array
+	DelayDurationCycles3	: INT  := 0;
+	DelayDurationCycles4	: INT  := 0;
+	OffsetDelayCycles1		: INT  := 0; //velocity-derived delay cycles for the first nozzle array
+	OffsetDelayCycles2		: INT  := 0; //velocity-derived delay cycles for the second nozzle array
+	OffsetDelayCycles3		: INT  := 0;
+	OffsetDelayCycles4		: INT  := 0;
+	NozzleEndCycles1		: INT  := 100;
+	NozzleEndCycles2		: INT  := 100;
+	NozzleEndCycles3		: INT  := 100;
+	NozzleEndCycles4		: INT  := 100;
+	
+	TimeDelay				: BOOL := 0;
+	DelayCounter			: INT  := 0;
+	DelayCounter2			: INT  := 0;
+	VelocityTimer			: TON;
+	VelocityTimer2			: TON;
+	VelocityTimer3			: TON;
+	LastVelocityTimeMs		: INT  := 0;
+	LastVelocityTime2Ms		: INT  := 0;
+	LastVelocityTime3Ms		: INT  := 0;
+	VelocityTimingActive	: BOOL := FALSE;
+	VelocityTiming2Active	: BOOL := FALSE;
+	VelocityTiming3Active	: BOOL := FALSE;
+	VelocityMeasurementValid: BOOL := FALSE;
+	VelocityMeasurement2Valid: BOOL := FALSE;
+	VelocityMeasurement3Valid: BOOL := FALSE;
+
+	//GUI control values written through ADS
+	GuiPressureMbar1		: INT  := 3000;
+	GuiPressureMbar2		: INT  := 3000;
+	GuiPressureMbar3		: INT  := 3000;
+	GuiPressureMbar4		: INT  := 3000;
+	GuiDelayMs1				: UINT := 0;
+	GuiDelayMs2				: UINT := 0;
+	GuiDelayMs3				: UINT := 0;
+	GuiDelayMs4				: UINT := 0;
+	GuiPulseDurationMs1		: UINT := 100;
+	GuiPulseDurationMs2		: UINT := 100;
+	GuiPulseDurationMs3		: UINT := 100;
+	GuiPulseDurationMs4		: UINT := 100;
+	GuiArrayEnabled1		: BOOL := TRUE;
+	GuiArrayEnabled2		: BOOL := TRUE;
+	GuiArrayEnabled3		: BOOL := FALSE;
+	GuiArrayEnabled4		: BOOL := FALSE;
+	GuiNozzleEnabled1		: BOOL := TRUE;
+	GuiNozzleEnabled2		: BOOL := TRUE;
+	GuiNozzleEnabled3		: BOOL := TRUE;
+	GuiNozzleEnabled4		: BOOL := TRUE;
+	GuiNozzleEnabled5		: BOOL := TRUE;
+	GuiNozzleEnabled6		: BOOL := TRUE;
+	GuiNozzleEnabled7		: BOOL := TRUE;
+	GuiNozzleEnabled8		: BOOL := TRUE;
+	GuiNozzleEnabled9		: BOOL := TRUE;
+	GuiNozzleEnabled10		: BOOL := TRUE;
+	GuiNozzleEnabled11		: BOOL := TRUE;
+	GuiNozzleEnabled12		: BOOL := TRUE;
+	GuiNozzleEnabled13		: BOOL := TRUE;
+	GuiNozzleEnabled14		: BOOL := TRUE;
+	GuiNozzleEnabled15		: BOOL := TRUE;
+	GuiNozzleEnabled16		: BOOL := TRUE;
+	GuiResetVelocityEstimates	: BOOL := FALSE;
+	GuiSensorSpacing12Mm	: REAL := 100.0;
+	GuiSensorSpacing34Mm	: REAL := 100.0;
+	GuiSensorSpacing56Mm	: REAL := 100.0;
+	GuiMinTravelTimeMs		: UINT := 20;
+	GuiMaxTravelTimeMs		: UINT := 2000;
+	GuiConveyorEnabled		: BOOL := FALSE;
+	GuiConveyorReverse		: BOOL := FALSE;
+	GuiConveyorReset		: BOOL := FALSE;
+	GuiConveyorSpeedMmPerSec	: REAL := 0.0;
+	GuiConveyorMaxSpeedMmPerSec	: REAL := 1000.0;
+	GuiOffsetMm1			: REAL := 0.0;
+	GuiOffsetMm2			: REAL := 0.0;
+	GuiOffsetMm3			: REAL := 0.0;
+	GuiOffsetMm4			: REAL := 0.0;
+	EstimatedVelocityMmPerSec	: REAL := 0.0;
+	EstimatedVelocityMmPerSec1	: REAL := 0.0;
+	EstimatedVelocityMmPerSec2	: REAL := 0.0;
+	EstimatedVelocityMmPerSec3	: REAL := 0.0;
+	EstimatedVelocityMmPerSec4	: REAL := 0.0;
+	EstimatedOffsetDelayMs1		: REAL := 0.0;
+	EstimatedOffsetDelayMs2		: REAL := 0.0;
+	EstimatedOffsetDelayMs3		: REAL := 0.0;
+	EstimatedOffsetDelayMs4		: REAL := 0.0;
+	Array1Active			: BOOL := FALSE;
+	Array2Active			: BOOL := FALSE;
+	Array3Active			: BOOL := FALSE;
+	Array4Active			: BOOL := FALSE;
+	ConveyorSpeedMmPerSec	: REAL := 0.0; //limited conveyor speed command in mm/s
+	ConveyorVelocityRatio	: REAL := 0.0;
+	ConveyorVelocityRaw		: INT := 0; //-32767..32767 command for EL7047 STM Velocity
+
+	//IO Variables
+	//EL 1018
+	LightBarrierOn1 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierOn2 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierOn3 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierOn4 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierOn5 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierOn6 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LastLightBarrier1		: BOOL := FALSE; //used for rising edge detection
+	LastLightBarrier2		: BOOL := FALSE; //used for rising edge detection
+	LastLightBarrier3		: BOOL := FALSE; //used for rising edge detection
+	LastLightBarrier4		: BOOL := FALSE; //used for rising edge detection
+	LastLightBarrier5		: BOOL := FALSE; //used for rising edge detection
+	LastLightBarrier6		: BOOL := FALSE; //used for rising edge detection
+	LightBarrier1FallingEdge	: BOOL := FALSE;
+	LightBarrier2FallingEdge	: BOOL := FALSE;
+	LightBarrier3FallingEdge	: BOOL := FALSE;
+	LightBarrier4FallingEdge	: BOOL := FALSE;
+	LightBarrier5FallingEdge	: BOOL := FALSE;
+	LightBarrier6FallingEdge	: BOOL := FALSE;
+	Array1TriggerPending		: BOOL := FALSE;
+	Array2TriggerPending		: BOOL := FALSE;
+	Array3TriggerPending		: BOOL := FALSE;
+	Array4TriggerPending		: BOOL := FALSE;
+	
+	//EL 3068
+	RawNozzlePressure AT %I*: INT  := 0; //The raw analogue input reading from the EL3068 terminal (max 32767)
+	NozzlePressure			: REAL := 0.0; //converted to pressure value in bar
+	
+	RawNozzlePressure2 AT %I*: INT := 0; //raw reading from the second pressure sensor
+	NozzlePressure2          : REAL := 0.0; //converted to pressure value in bar
+	
+	
+	//Digital valve outputs
+	//0 to close valve 1 to open valve
+	OpenValve1 AT %Q*		: BOOL := 0;
+	OpenValve2 AT %Q*		: BOOL := 0;
+	OpenValve3 AT %Q*		: BOOL := 0;
+	OpenValve4 AT %Q*		: BOOL := 0;
+	OpenValve5 AT %Q*		: BOOL := 0;
+	OpenValve6 AT %Q*		: BOOL := 0;
+	OpenValve7 AT %Q*		: BOOL := 0;
+	OpenValve8 AT %Q*		: BOOL := 0;
+	OpenValve9 AT %Q*		: BOOL := 0;
+	OpenValve10 AT %Q*		: BOOL := 0;
+	OpenValve11 AT %Q*		: BOOL := 0;
+	OpenValve12 AT %Q*		: BOOL := 0;
+	OpenValve13 AT %Q*		: BOOL := 0;
+	OpenValve14 AT %Q*		: BOOL := 0;
+	OpenValve15 AT %Q*		: BOOL := 0;
+	OpenValve16 AT %Q*		: BOOL := 0;
+
+	//EL7047 stepper terminal, predefined PDO assignment "Velocity control compact"
+	StepperStmStatus AT %I*			: WORD := 0; //link to Term 14 STM Status/Status
+	StepperWcState AT %I*			: BOOL := FALSE; //optional: link to Term 14 WcState
+	StepperInfoDataState AT %I*		: UINT := 0; //optional: link to Term 14 InfoData/State
+	StepperControlEnable AT %Q*		: BOOL := FALSE; //link to STM Control/Control/Enable
+	StepperControlReset AT %Q*		: BOOL := FALSE; //link to STM Control/Control/Reset
+	StepperControlReduceTorque AT %Q*	: BOOL := FALSE; //link to STM Control/Control/Reduce torque
+	StepperControlDigitalOutput1 AT %Q*	: BOOL := FALSE; //link to STM Control/Control/Digital output 1
+	StepperVelocity AT %Q*			: INT := 0; //link to STM Velocity/Velocity
+	
+	//VTEM Motion Terminal Variables
+	FBValveControlV0		: FestoVTEMdc.FB_ValveControl; //Renaming function in program
+	Valve0_IN AT %I*		: ARRAY [0..2] OF WORD;			//Input for VTEM Valves
+	Valve0_OUT AT %Q*		: ARRAY [0..2] OF WORD;			//Output for VTEM Valves starts at QB0 and increases by 6 for every sequential insel
+	Enable0					: BOOL := FALSE;				//Enables VTEM Valves
+	Acknowledge0			: BOOL := FALSE;				//Acknowledges the Enabling variable. Must be done after enable is set to true
+	ValveMode0				: BYTE := 3;					//Motion app used
+	AppControl0				: BYTE := 3;					//0 = no valves, 1 = Valve02 only, 2 = valve04 only, 3 = both valves
+	AppOption0				: BYTE;							//only used for motion apps 1 and 2
+	PresValueV02			: INT  := 0;					//set pressure for V02 in thousandths of bar (1000 = 1 bar)
+	PresValueV04			: INT  := 0;					//set pressure for V04
+	ActValveMode0			: BYTE;							
+	ActValveState0			: BYTE;
+	ActAppState0			: INT;
+	ActPresValueV02			: INT;							//Actual pressure output for V02
+	ActPresValueV04			: INT;							//Actual pressure output for V04
+	ResponseToValveModeSet0	: INT;							//Gives status of VTEM Terminal
+	ErrorCode0				: INT;							//Must = 0, otherwise lookup errorcode
+
+	FBValveControlV1		: FestoVTEMdc.FB_ValveControl; //Pressure control for VTEM unit 1
+	Valve1_IN AT %I*		: ARRAY [0..2] OF WORD;			//Input for VTEM unit 1 valves
+	Valve1_OUT AT %Q*		: ARRAY [0..2] OF WORD;			//Output for VTEM unit 1 valves, link to the next 6-byte insel
+	Enable1					: BOOL := FALSE;				//Enables VTEM unit 1 valves
+	Acknowledge1			: BOOL := FALSE;				//Acknowledges unit 1 enabling variable
+	ValveMode1				: BYTE := 3;					//Motion app used
+	AppControl1				: BYTE := 3;					//0 = no valves, 1 = Valve02 only, 2 = valve04 only, 3 = both valves
+	AppOption1				: BYTE;							//only used for motion apps 1 and 2
+	PresValueV12			: INT := 0;						//set pressure for unit 1 V02, used by nozzle array 3
+	PresValueV14			: INT := 0;						//set pressure for unit 1 V04, used by nozzle array 4
+	ActValveMode1			: BYTE;
+	ActValveState1			: BYTE;
+	ActAppState1			: INT;
+	ActPresValueV12			: INT;							//Actual pressure output for unit 1 V02
+	ActPresValueV14			: INT;							//Actual pressure output for unit 1 V04
+	ResponseToValveModeSet1	: INT;							//Gives status of VTEM unit 1
+	ErrorCode1				: INT;							//Must = 0, otherwise lookup errorcode
+	
+	//Pressure Variables
+	PressureSum             : REAL  := 0.0;                 //sum of data points recorded by pressure sensor
+	PressurePoints          : INT   := 0;                   //value for number of data points recorded by pressure sensor	
+	PressureSum1            : REAL  := 0.0;                 //sum of pressure from nozzle 1
+	PressureSum2            : REAL  := 0.0;                 //sum of pressure from nozzle 2
+	PressurePoints1         : INT   := 0;
+	PressurePoints2         : INT   := 0;
+	
+	AvgPressure             : REAL  := 0.0;                 //average pressure between the two nozzles
+	AvgPressureN1           : REAL  := 0.0;                 //average pressure of the first nozzle
+	AvgPressureN2           : REAL  := 0.0;                 //average pressure of the second nozzle 
+	ShotCounter				: UDINT := 0;					//increments once for every completed nozzle shot
+	LogPressureTrigger		: BOOL  := FALSE;				//one PLC-cycle pulse when a new shot value is ready
+	
+	N1PressureValues        : ARRAY [0..1000] OF REAL;        //array for the output of pressure values for nozzle 1
+	N2PressureValues        : ARRAY [0..1000] OF REAL;        //array for the ouput of pressure values for nozzle 2
+
+	NozzlePressures         : ARRAY [0..1000, 0..1] OF REAL;
+
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[NozzlePressure := TO_REAL(RawNozzlePressure) * 10.0 / 32767.0;
+NozzlePressure2 := TO_REAL(RawNozzlePressure2) * 10.0 / 32767.0;
+LogPressureTrigger := FALSE;
+
+IF GuiResetVelocityEstimates THEN
+	LastVelocityTimeMs := 0;
+	LastVelocityTime2Ms := 0;
+	LastVelocityTime3Ms := 0;
+	VelocityTimingActive := FALSE;
+	VelocityTiming2Active := FALSE;
+	VelocityTiming3Active := FALSE;
+	VelocityMeasurementValid := FALSE;
+	VelocityMeasurement2Valid := FALSE;
+	VelocityMeasurement3Valid := FALSE;
+	EstimatedVelocityMmPerSec := 0.0;
+	EstimatedVelocityMmPerSec1 := 0.0;
+	EstimatedVelocityMmPerSec2 := 0.0;
+	EstimatedVelocityMmPerSec3 := 0.0;
+	EstimatedVelocityMmPerSec4 := 0.0;
+	EstimatedOffsetDelayMs1 := 0.0;
+	EstimatedOffsetDelayMs2 := 0.0;
+	EstimatedOffsetDelayMs3 := 0.0;
+	EstimatedOffsetDelayMs4 := 0.0;
+	OffsetDelayCycles1 := 0;
+	OffsetDelayCycles2 := 0;
+	OffsetDelayCycles3 := 0;
+	OffsetDelayCycles4 := 0;
+	GuiResetVelocityEstimates := FALSE;
+END_IF
+
+VelocityTimer(IN := VelocityTimingActive, PT := T#30S);
+VelocityTimer2(IN := VelocityTiming2Active, PT := T#30S);
+VelocityTimer3(IN := VelocityTiming3Active, PT := T#30S);
+
+Array1Active := GuiArrayEnabled1 AND (GuiNozzleEnabled1 OR GuiNozzleEnabled2 OR GuiNozzleEnabled3 OR GuiNozzleEnabled4);
+Array2Active := GuiArrayEnabled2 AND (GuiNozzleEnabled5 OR GuiNozzleEnabled6 OR GuiNozzleEnabled7 OR GuiNozzleEnabled8);
+Array3Active := GuiArrayEnabled3 AND (GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
+Array4Active := GuiArrayEnabled4 AND (GuiNozzleEnabled13 OR GuiNozzleEnabled14 OR GuiNozzleEnabled15 OR GuiNozzleEnabled16);
+
+IF GuiMinTravelTimeMs < 1 THEN
+	GuiMinTravelTimeMs := 1;
+END_IF
+
+IF GuiMaxTravelTimeMs < GuiMinTravelTimeMs THEN
+	GuiMaxTravelTimeMs := GuiMinTravelTimeMs;
+END_IF
+
+IF GuiConveyorSpeedMmPerSec < 0.0 THEN
+	GuiConveyorSpeedMmPerSec := 0.0;
+ELSIF GuiConveyorSpeedMmPerSec > 5000.0 THEN
+	GuiConveyorSpeedMmPerSec := 5000.0;
+END_IF
+
+IF GuiConveyorMaxSpeedMmPerSec < 1.0 THEN
+	GuiConveyorMaxSpeedMmPerSec := 1.0;
+ELSIF GuiConveyorMaxSpeedMmPerSec > 5000.0 THEN
+	GuiConveyorMaxSpeedMmPerSec := 5000.0;
+END_IF
+
+ConveyorSpeedMmPerSec := GuiConveyorSpeedMmPerSec;
+IF ConveyorSpeedMmPerSec > GuiConveyorMaxSpeedMmPerSec THEN
+	ConveyorSpeedMmPerSec := GuiConveyorMaxSpeedMmPerSec;
+END_IF
+
+IF GuiConveyorEnabled THEN
+	StepperControlEnable := TRUE;
+	ConveyorVelocityRatio := ConveyorSpeedMmPerSec / GuiConveyorMaxSpeedMmPerSec;
+	IF ConveyorVelocityRatio > 1.0 THEN
+		ConveyorVelocityRatio := 1.0;
+	END_IF
+	ConveyorVelocityRaw := REAL_TO_INT(ConveyorVelocityRatio * 32767.0);
+	IF GuiConveyorReverse THEN
+		ConveyorVelocityRaw := -ConveyorVelocityRaw;
+	END_IF
+ELSE
+	StepperControlEnable := FALSE;
+	ConveyorVelocityRatio := 0.0;
+	ConveyorVelocityRaw := 0;
+END_IF
+
+StepperVelocity := ConveyorVelocityRaw;
+StepperControlReset := GuiConveyorReset;
+GuiConveyorReset := FALSE;
+StepperControlReduceTorque := FALSE;
+StepperControlDigitalOutput1 := FALSE;
+
+LightBarrier1FallingEdge := (NOT LightBarrierOn1) AND LastLightBarrier1;
+LightBarrier2FallingEdge := (NOT LightBarrierOn2) AND LastLightBarrier2;
+LightBarrier3FallingEdge := (NOT LightBarrierOn3) AND LastLightBarrier3;
+LightBarrier4FallingEdge := (NOT LightBarrierOn4) AND LastLightBarrier4;
+LightBarrier5FallingEdge := (NOT LightBarrierOn5) AND LastLightBarrier5;
+LightBarrier6FallingEdge := (NOT LightBarrierOn6) AND LastLightBarrier6;
+
+IF LightBarrier2FallingEdge AND Array1Active AND (State <= 2) THEN
+	Array1TriggerPending := TRUE;
+END_IF
+
+IF LightBarrier4FallingEdge AND Array2Active AND (State2 = 2) THEN
+	Array2TriggerPending := TRUE;
+END_IF
+
+IF LightBarrier6FallingEdge AND Array3Active AND (State3 <= 2) THEN
+	Array3TriggerPending := TRUE;
+END_IF
+
+IF LightBarrier6FallingEdge AND Array4Active AND (State4 = 2) THEN
+	Array4TriggerPending := TRUE;
+END_IF
+
+// Falling edge on light barrier 1 starts the velocity timing window.
+IF LightBarrier1FallingEdge THEN
+	VelocityTimingActive := FALSE;
+	VelocityTimer(IN := FALSE, PT := T#30S);
+	VelocityTimingActive := TRUE;
+	VelocityMeasurementValid := FALSE;
+	EstimatedVelocityMmPerSec := 0.0;
+	EstimatedVelocityMmPerSec1 := 0.0;
+	EstimatedOffsetDelayMs1 := 0.0;
+	OffsetDelayCycles1 := 0;
+END_IF
+
+// Light barriers 1 and 2 measure velocity for nozzle array 1.
+// Light barrier 2 is also the physical trigger for nozzle array 1.
+IF LightBarrier2FallingEdge THEN
+	IF VelocityTimingActive AND (TIME_TO_INT(VelocityTimer.ET) > 0) AND (GuiSensorSpacing12Mm > 0.0) THEN
+		LastVelocityTimeMs := TIME_TO_INT(VelocityTimer.ET);
+		IF LastVelocityTimeMs < UINT_TO_INT(GuiMinTravelTimeMs) THEN
+			LastVelocityTimeMs := UINT_TO_INT(GuiMinTravelTimeMs);
+		ELSIF LastVelocityTimeMs > UINT_TO_INT(GuiMaxTravelTimeMs) THEN
+			LastVelocityTimeMs := UINT_TO_INT(GuiMaxTravelTimeMs);
+		END_IF
+		EstimatedVelocityMmPerSec := GuiSensorSpacing12Mm * 1000.0 / TO_REAL(LastVelocityTimeMs);
+		EstimatedVelocityMmPerSec1 := EstimatedVelocityMmPerSec;
+		VelocityMeasurementValid := TRUE;
+	END_IF
+	VelocityTimingActive := FALSE;
+END_IF
+
+// Light barriers 3 and 4 measure velocity for nozzle array 2.
+IF LightBarrier3FallingEdge THEN
+	VelocityTiming2Active := FALSE;
+	VelocityTimer2(IN := FALSE, PT := T#30S);
+	VelocityTiming2Active := TRUE;
+	VelocityMeasurement2Valid := FALSE;
+	EstimatedVelocityMmPerSec2 := 0.0;
+	EstimatedOffsetDelayMs2 := 0.0;
+	OffsetDelayCycles2 := 0;
+END_IF
+
+// Light barrier 4 completes the array 2 velocity measurement and triggers array 2.
+IF LightBarrier4FallingEdge THEN
+	IF VelocityTiming2Active AND (TIME_TO_INT(VelocityTimer2.ET) > 0) AND (GuiSensorSpacing34Mm > 0.0) THEN
+		LastVelocityTime2Ms := TIME_TO_INT(VelocityTimer2.ET);
+		IF LastVelocityTime2Ms < UINT_TO_INT(GuiMinTravelTimeMs) THEN
+			LastVelocityTime2Ms := UINT_TO_INT(GuiMinTravelTimeMs);
+		ELSIF LastVelocityTime2Ms > UINT_TO_INT(GuiMaxTravelTimeMs) THEN
+			LastVelocityTime2Ms := UINT_TO_INT(GuiMaxTravelTimeMs);
+		END_IF
+		EstimatedVelocityMmPerSec2 := GuiSensorSpacing34Mm * 1000.0 / TO_REAL(LastVelocityTime2Ms);
+		VelocityMeasurement2Valid := TRUE;
+	END_IF
+	VelocityTiming2Active := FALSE;
+END_IF
+
+// Light barriers 5 and 6 measure velocity for nozzle arrays 3 and 4.
+IF LightBarrier5FallingEdge THEN
+	VelocityTiming3Active := FALSE;
+	VelocityTimer3(IN := FALSE, PT := T#30S);
+	VelocityTiming3Active := TRUE;
+	VelocityMeasurement3Valid := FALSE;
+	EstimatedVelocityMmPerSec3 := 0.0;
+	EstimatedVelocityMmPerSec4 := 0.0;
+	EstimatedOffsetDelayMs3 := 0.0;
+	EstimatedOffsetDelayMs4 := 0.0;
+	OffsetDelayCycles3 := 0;
+	OffsetDelayCycles4 := 0;
+END_IF
+
+// Light barrier 6 completes the array 3/4 velocity measurement and triggers arrays 3 and 4.
+IF LightBarrier6FallingEdge THEN
+	IF VelocityTiming3Active AND (TIME_TO_INT(VelocityTimer3.ET) > 0) AND (GuiSensorSpacing56Mm > 0.0) THEN
+		LastVelocityTime3Ms := TIME_TO_INT(VelocityTimer3.ET);
+		IF LastVelocityTime3Ms < UINT_TO_INT(GuiMinTravelTimeMs) THEN
+			LastVelocityTime3Ms := UINT_TO_INT(GuiMinTravelTimeMs);
+		ELSIF LastVelocityTime3Ms > UINT_TO_INT(GuiMaxTravelTimeMs) THEN
+			LastVelocityTime3Ms := UINT_TO_INT(GuiMaxTravelTimeMs);
+		END_IF
+		EstimatedVelocityMmPerSec3 := GuiSensorSpacing56Mm * 1000.0 / TO_REAL(LastVelocityTime3Ms);
+		EstimatedVelocityMmPerSec4 := EstimatedVelocityMmPerSec3;
+		VelocityMeasurement3Valid := TRUE;
+	END_IF
+	VelocityTiming3Active := FALSE;
+END_IF
+
+IF GuiPressureMbar1 < 0 THEN
+	PresValueV02 := 0;
+ELSIF GuiPressureMbar1 > 6000 THEN
+	PresValueV02 := 6000;
+ELSE
+	PresValueV02 := GuiPressureMbar1;
+END_IF
+
+IF GuiPressureMbar2 < 0 THEN
+	PresValueV04 := 0;
+ELSIF GuiPressureMbar2 > 6000 THEN
+	PresValueV04 := 6000;
+ELSE
+	PresValueV04 := GuiPressureMbar2;
+END_IF
+
+IF GuiPressureMbar3 < 0 THEN
+	PresValueV12 := 0;
+ELSIF GuiPressureMbar3 > 6000 THEN
+	PresValueV12 := 6000;
+ELSE
+	PresValueV12 := GuiPressureMbar3;
+END_IF
+
+IF GuiPressureMbar4 < 0 THEN
+	PresValueV14 := 0;
+ELSIF GuiPressureMbar4 > 6000 THEN
+	PresValueV14 := 6000;
+ELSE
+	PresValueV14 := GuiPressureMbar4;
+END_IF
+
+IF GuiPulseDurationMs1 < 1 THEN
+	ShotDurationCycles := 1;
+ELSIF GuiPulseDurationMs1 > 500 THEN
+	ShotDurationCycles := 500;
+ELSE
+	ShotDurationCycles := UINT_TO_INT(GuiPulseDurationMs1);
+END_IF
+
+IF GuiPulseDurationMs2 < 1 THEN
+	ShotDurationCycles2 := 1;
+ELSIF GuiPulseDurationMs2 > 500 THEN
+	ShotDurationCycles2 := 500;
+ELSE
+	ShotDurationCycles2 := UINT_TO_INT(GuiPulseDurationMs2);
+END_IF
+
+IF GuiPulseDurationMs3 < 1 THEN
+	ShotDurationCycles3 := 1;
+ELSIF GuiPulseDurationMs3 > 500 THEN
+	ShotDurationCycles3 := 500;
+ELSE
+	ShotDurationCycles3 := UINT_TO_INT(GuiPulseDurationMs3);
+END_IF
+
+IF GuiPulseDurationMs4 < 1 THEN
+	ShotDurationCycles4 := 1;
+ELSIF GuiPulseDurationMs4 > 500 THEN
+	ShotDurationCycles4 := 500;
+ELSE
+	ShotDurationCycles4 := UINT_TO_INT(GuiPulseDurationMs4);
+END_IF
+
+IF GuiDelayMs1 > 1000 THEN
+	DelayDurationCycles := 1000;
+ELSE
+	DelayDurationCycles := UINT_TO_INT(GuiDelayMs1);
+END_IF
+
+IF GuiDelayMs2 > 1000 THEN
+	DelayDurationCycles2 := 1000;
+ELSE
+	DelayDurationCycles2 := UINT_TO_INT(GuiDelayMs2);
+END_IF
+
+IF GuiDelayMs3 > 1000 THEN
+	DelayDurationCycles3 := 1000;
+ELSE
+	DelayDurationCycles3 := UINT_TO_INT(GuiDelayMs3);
+END_IF
+
+IF GuiDelayMs4 > 1000 THEN
+	DelayDurationCycles4 := 1000;
+ELSE
+	DelayDurationCycles4 := UINT_TO_INT(GuiDelayMs4);
+END_IF
+
+IF VelocityMeasurementValid AND (EstimatedVelocityMmPerSec1 > 0.0) THEN
+	IF GuiOffsetMm1 < 0.0 THEN
+		EstimatedOffsetDelayMs1 := 0.0;
+	ELSE
+		EstimatedOffsetDelayMs1 := GuiOffsetMm1 * 1000.0 / EstimatedVelocityMmPerSec1;
+	END_IF
+ELSE
+	EstimatedOffsetDelayMs1 := 0.0;
+END_IF
+
+IF VelocityMeasurement2Valid AND (EstimatedVelocityMmPerSec2 > 0.0) THEN
+	IF GuiOffsetMm2 < 0.0 THEN
+		EstimatedOffsetDelayMs2 := 0.0;
+	ELSE
+		EstimatedOffsetDelayMs2 := GuiOffsetMm2 * 1000.0 / EstimatedVelocityMmPerSec2;
+	END_IF
+ELSE
+	EstimatedOffsetDelayMs2 := 0.0;
+END_IF
+
+IF VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec3 > 0.0) THEN
+	IF GuiOffsetMm3 < 0.0 THEN
+		EstimatedOffsetDelayMs3 := 0.0;
+	ELSE
+		EstimatedOffsetDelayMs3 := GuiOffsetMm3 * 1000.0 / EstimatedVelocityMmPerSec3;
+	END_IF
+ELSE
+	EstimatedOffsetDelayMs3 := 0.0;
+END_IF
+
+IF VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec4 > 0.0) THEN
+	IF GuiOffsetMm4 < 0.0 THEN
+		EstimatedOffsetDelayMs4 := 0.0;
+	ELSE
+		EstimatedOffsetDelayMs4 := GuiOffsetMm4 * 1000.0 / EstimatedVelocityMmPerSec4;
+	END_IF
+ELSE
+	EstimatedOffsetDelayMs4 := 0.0;
+END_IF
+
+IF EstimatedOffsetDelayMs1 > 30000.0 THEN
+	OffsetDelayCycles1 := 30000;
+ELSE
+	OffsetDelayCycles1 := REAL_TO_INT(EstimatedOffsetDelayMs1);
+END_IF
+
+IF EstimatedOffsetDelayMs2 > 30000.0 THEN
+	OffsetDelayCycles2 := 30000;
+ELSE
+	OffsetDelayCycles2 := REAL_TO_INT(EstimatedOffsetDelayMs2);
+END_IF
+
+IF EstimatedOffsetDelayMs3 > 30000.0 THEN
+	OffsetDelayCycles3 := 30000;
+ELSE
+	OffsetDelayCycles3 := REAL_TO_INT(EstimatedOffsetDelayMs3);
+END_IF
+
+IF EstimatedOffsetDelayMs4 > 30000.0 THEN
+	OffsetDelayCycles4 := 30000;
+ELSE
+	OffsetDelayCycles4 := REAL_TO_INT(EstimatedOffsetDelayMs4);
+END_IF
+
+DelayDurationCycles := DelayDurationCycles + OffsetDelayCycles1;
+DelayDurationCycles2 := DelayDurationCycles2 + OffsetDelayCycles2;
+DelayDurationCycles3 := DelayDurationCycles3 + OffsetDelayCycles3;
+DelayDurationCycles4 := DelayDurationCycles4 + OffsetDelayCycles4;
+
+NozzleEndCycles1 := DelayDurationCycles + ShotDurationCycles;
+NozzleEndCycles2 := DelayDurationCycles2 + ShotDurationCycles2;
+NozzleEndCycles3 := DelayDurationCycles3 + ShotDurationCycles3;
+NozzleEndCycles4 := DelayDurationCycles4 + ShotDurationCycles4;
+
+CASE State OF
+	0:
+		Enable0 := TRUE;
+		Acknowledge0 := FALSE;
+		State := State + 1;
+		
+	1:
+		Enable0 := TRUE;
+		Acknowledge0 := TRUE;
+		State := State + 1;
+	2:
+		//start nozzle array 1 on the falling edge of light barrier 2
+		IF NOT Array1Active THEN
+			Array1TriggerPending := FALSE;
+		ELSIF Array1TriggerPending THEN
+			Array1TriggerPending := FALSE;
+			Counter := 0;
+			PressureSum := 0.0;
+			PressureSum1 := 0.0;
+			PressureSum2 := 0.0;
+			PressurePoints := 0;
+			PressurePoints1 := 0;
+			PressurePoints2 := 0;
+			State := State + 1;
+		END_IF
+	3:
+		IF NOT Array1Active THEN
+			OpenValve1 := FALSE;
+			OpenValve2 := FALSE;
+			OpenValve3 := FALSE;
+			OpenValve4 := FALSE;
+			Counter := 0;
+			State := 2;
+		ELSE
+			Counter := Counter + 1;
+			OpenValve1 := GuiArrayEnabled1 AND GuiNozzleEnabled1 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
+			OpenValve2 := GuiArrayEnabled1 AND GuiNozzleEnabled2 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
+			OpenValve3 := GuiArrayEnabled1 AND GuiNozzleEnabled3 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
+			OpenValve4 := GuiArrayEnabled1 AND GuiNozzleEnabled4 AND (Counter > DelayDurationCycles) AND (Counter <= NozzleEndCycles1);
+
+			IF OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4 THEN
+				PressureSum := PressureSum + NozzlePressure;
+				PressureSum1 := PressureSum1 + NozzlePressure;
+				PressurePoints := PressurePoints + 1;
+				PressurePoints1 := PressurePoints1 + 1;
+				IF PressurePoints1 <= 1000 THEN
+					N1PressureValues[PressurePoints1] := NozzlePressure;
+				END_IF
+				PressureSum := PressureSum + NozzlePressure2;
+				PressureSum2 := PressureSum2 + NozzlePressure2;
+				PressurePoints := PressurePoints + 1;
+				PressurePoints2 := PressurePoints2 + 1;
+				IF PressurePoints2 <= 1000 THEN
+					N2PressureValues[PressurePoints2] := NozzlePressure2;
+				END_IF
+			END_IF
+
+			IF Counter > NozzleEndCycles1 THEN
+				OpenValve1 := FALSE;
+				OpenValve2 := FALSE;
+				OpenValve3 := FALSE;
+				OpenValve4 := FALSE;
+
+				IF PressurePoints > 0 THEN
+					AvgPressure := PressureSum / TO_REAL(PressurePoints);
+					IF PressurePoints1 > 0 THEN
+						AvgPressureN1 := PressureSum1 / TO_REAL(PressurePoints1);
+					ELSE
+						AvgPressureN1 := 0.0;
+					END_IF
+					IF PressurePoints2 > 0 THEN
+						AvgPressureN2 := PressureSum2 / TO_REAL(PressurePoints2);
+					ELSE
+						AvgPressureN2 := 0.0;
+					END_IF
+					ShotCounter := ShotCounter + 1;
+					LogPressureTrigger := TRUE;
+				END_IF
+
+				Counter := 0;
+				State := 2;
+			END_IF
+		END_IF
+		
+	6:
+		Enable0 := FALSE;
+		Acknowledge0 := FALSE;
+		OpenValve1 := FALSE;
+		OpenValve2 := FALSE;
+		OpenValve3 := FALSE;
+		OpenValve4 := FALSE;
+END_CASE
+
+CASE State2 OF
+	2:
+		//start nozzle array 2 on the falling edge of light barrier 4
+		IF NOT Array2Active THEN
+			Array2TriggerPending := FALSE;
+		ELSIF Array2TriggerPending THEN
+			Array2TriggerPending := FALSE;
+			Counter2 := 0;
+			State2 := State2 + 1;
+		END_IF
+	3:
+		IF NOT Array2Active THEN
+			OpenValve5 := FALSE;
+			OpenValve6 := FALSE;
+			OpenValve7 := FALSE;
+			OpenValve8 := FALSE;
+			Counter2 := 0;
+			State2 := 2;
+		ELSE
+			Counter2 := Counter2 + 1;
+			OpenValve5 := GuiArrayEnabled2 AND GuiNozzleEnabled5 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
+			OpenValve6 := GuiArrayEnabled2 AND GuiNozzleEnabled6 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
+			OpenValve7 := GuiArrayEnabled2 AND GuiNozzleEnabled7 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
+			OpenValve8 := GuiArrayEnabled2 AND GuiNozzleEnabled8 AND (Counter2 > DelayDurationCycles2) AND (Counter2 <= NozzleEndCycles2);
+
+			IF Counter2 > NozzleEndCycles2 THEN
+				OpenValve5 := FALSE;
+				OpenValve6 := FALSE;
+				OpenValve7 := FALSE;
+				OpenValve8 := FALSE;
+				Counter2 := 0;
+				State2 := 2;
+			END_IF
+		END_IF
+END_CASE
+
+CASE State3 OF
+	0:
+		Enable1 := TRUE;
+		Acknowledge1 := FALSE;
+		State3 := State3 + 1;
+
+	1:
+		Enable1 := TRUE;
+		Acknowledge1 := TRUE;
+		State3 := State3 + 1;
+
+	2:
+		//start nozzle array 3 on the falling edge of light barrier 6
+		IF NOT Array3Active THEN
+			Array3TriggerPending := FALSE;
+		ELSIF Array3TriggerPending THEN
+			Array3TriggerPending := FALSE;
+			Counter3 := 0;
+			State3 := State3 + 1;
+		END_IF
+
+	3:
+		IF NOT Array3Active THEN
+			OpenValve9 := FALSE;
+			OpenValve10 := FALSE;
+			OpenValve11 := FALSE;
+			OpenValve12 := FALSE;
+			Counter3 := 0;
+			State3 := 2;
+		ELSE
+			Counter3 := Counter3 + 1;
+			OpenValve9 := GuiArrayEnabled3 AND GuiNozzleEnabled9 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
+			OpenValve10 := GuiArrayEnabled3 AND GuiNozzleEnabled10 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
+			OpenValve11 := GuiArrayEnabled3 AND GuiNozzleEnabled11 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
+			OpenValve12 := GuiArrayEnabled3 AND GuiNozzleEnabled12 AND (Counter3 > DelayDurationCycles3) AND (Counter3 <= NozzleEndCycles3);
+
+			IF Counter3 > NozzleEndCycles3 THEN
+				OpenValve9 := FALSE;
+				OpenValve10 := FALSE;
+				OpenValve11 := FALSE;
+				OpenValve12 := FALSE;
+				Counter3 := 0;
+				State3 := 2;
+			END_IF
+		END_IF
+
+	6:
+		Enable1 := FALSE;
+		Acknowledge1 := FALSE;
+		OpenValve9 := FALSE;
+		OpenValve10 := FALSE;
+		OpenValve11 := FALSE;
+		OpenValve12 := FALSE;
+END_CASE
+
+CASE State4 OF
+	2:
+		//start nozzle array 4 on the falling edge of light barrier 6
+		IF NOT Array4Active THEN
+			Array4TriggerPending := FALSE;
+		ELSIF Array4TriggerPending THEN
+			Array4TriggerPending := FALSE;
+			Counter4 := 0;
+			State4 := State4 + 1;
+		END_IF
+
+	3:
+		IF NOT Array4Active THEN
+			OpenValve13 := FALSE;
+			OpenValve14 := FALSE;
+			OpenValve15 := FALSE;
+			OpenValve16 := FALSE;
+			Counter4 := 0;
+			State4 := 2;
+		ELSE
+			Counter4 := Counter4 + 1;
+			OpenValve13 := GuiArrayEnabled4 AND GuiNozzleEnabled13 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
+			OpenValve14 := GuiArrayEnabled4 AND GuiNozzleEnabled14 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
+			OpenValve15 := GuiArrayEnabled4 AND GuiNozzleEnabled15 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
+			OpenValve16 := GuiArrayEnabled4 AND GuiNozzleEnabled16 AND (Counter4 > DelayDurationCycles4) AND (Counter4 <= NozzleEndCycles4);
+
+			IF Counter4 > NozzleEndCycles4 THEN
+				OpenValve13 := FALSE;
+				OpenValve14 := FALSE;
+				OpenValve15 := FALSE;
+				OpenValve16 := FALSE;
+				Counter4 := 0;
+				State4 := 2;
+			END_IF
+		END_IF
+END_CASE
+
+FBValveControlV0(
+	awBusDataFromVTEM:= Valve0_IN, 
+	awBusDataToVTEM:= Valve0_OUT, 
+	xEnable:= Enable0, 
+	bySetValveMode:= ValveMode0, 
+	bySetAppControl:= AppControl0, 
+	bySetAppOption:= AppOption0, 
+	iSetpointValue1:= PresValueV02, 
+	iSetpointValue2:= PresValueV04, 
+	xManualAcknowledge:= Acknowledge0, 
+	byActualValveMode=> ActValveMode0, 
+	byActualValveState=> ActValveState0, 
+	byActualAppState=> ActAppState0, 
+	iActualValue1=> ActPresValueV02, 
+	iActualValue2=> ActPresValueV04, 
+	iResponseToValveModeSet=> ResponseToValveModeSet0, 
+	iErrorCode=> ErrorCode0);
+
+FBValveControlV1(
+	awBusDataFromVTEM:= Valve1_IN,
+	awBusDataToVTEM:= Valve1_OUT,
+	xEnable:= Enable1,
+	bySetValveMode:= ValveMode1,
+	bySetAppControl:= AppControl1,
+	bySetAppOption:= AppOption1,
+	iSetpointValue1:= PresValueV12,
+	iSetpointValue2:= PresValueV14,
+	xManualAcknowledge:= Acknowledge1,
+	byActualValveMode=> ActValveMode1,
+	byActualValveState=> ActValveState1,
+	byActualAppState=> ActAppState1,
+	iActualValue1=> ActPresValueV12,
+	iActualValue2=> ActPresValueV14,
+	iResponseToValveModeSet=> ResponseToValveModeSet1,
+	iErrorCode=> ErrorCode1);
+
+LastLightBarrier1 := LightBarrierOn1;
+LastLightBarrier2 := LightBarrierOn2;
+LastLightBarrier3 := LightBarrierOn3;
+LastLightBarrier4 := LightBarrierOn4;
+LastLightBarrier5 := LightBarrierOn5;
+LastLightBarrier6 := LightBarrierOn6;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
