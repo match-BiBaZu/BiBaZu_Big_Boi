@@ -12,6 +12,7 @@ from PyQt6.QtCore import QEventLoop, QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 import PressureControlGUI as gui
+import ConveyorSetupGUI as setup_gui
 
 
 class SignalBridge(QObject):
@@ -55,6 +56,16 @@ class AdsThreadTests(unittest.TestCase):
         loop = QEventLoop()
         QTimer.singleShot(milliseconds, loop.quit)
         loop.exec()
+
+    def test_provisional_conveyor_calibration_is_the_gui_default(self):
+        controller = gui.AdsController()
+
+        self.assertTrue(controller.calibration_cache["valid"])
+        self.assertAlmostEqual(
+            controller.calibration_cache["mm_per_full_step"],
+            0.32960026,
+        )
+        controller.shutdown()
 
     def test_debounce_keeps_only_latest_value(self):
         controller = gui.AdsController()
@@ -119,6 +130,36 @@ class AdsThreadTests(unittest.TestCase):
 
         self.assertEqual(len(plc.read_calls), 1)
         self.assertEqual(snapshot["shot_counter"], 0)
+
+    def test_setup_status_uses_one_sum_read(self):
+        plc = FakePlc()
+        worker = gui.AdsWorker()
+        worker.client = FakeClient(plc)
+
+        snapshot = worker.read_setup_snapshot()
+
+        self.assertEqual(len(plc.read_calls), 1)
+        self.assertEqual(len(plc.read_calls[0]), 28)
+        self.assertEqual(snapshot["light_barriers"], [False] * 6)
+
+    def test_barrier_calibration_start_is_one_safe_batch(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        writes = []
+        controller.write_requested.connect(lambda values, context: writes.append((values, context)))
+
+        controller.start_barrier_calibration(1, 2, 3000, 30.0)
+
+        values, context = writes[0]
+        self.assertEqual(context, "barrier_calibration_start")
+        self.assertFalse(values["MAIN.GuiConveyorEnabled"])
+        self.assertTrue(values["MAIN.GuiConveyorCalibrationMode"])
+        self.assertEqual(values["MAIN.GuiBarrierCalibrationFirstSensor"], 1)
+        self.assertEqual(values["MAIN.GuiBarrierCalibrationSecondSensor"], 2)
+        self.assertEqual(values["MAIN.GuiCalibrationJogSteps"], 3000)
+        self.assertTrue(values["MAIN.GuiBarrierCalibrationStart"])
+        self.assertTrue(values["MAIN.GuiCalibrationMoveRight"])
+        controller.shutdown()
 
     def test_leaving_calibration_writes_safe_state_together(self):
         plc = FakePlc()
@@ -242,6 +283,59 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(result["valid"])
         self.assertEqual(result["mm_per_full_step"], 0.05)
+
+
+class ConveyorSetupWindowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_setup_window_displays_barriers_and_applies_known_pair(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        window.ads.connected = True
+        window._on_connection_changed(True, "")
+        status = {
+            "light_barriers": [True, False, True, False, True, False],
+            "internal_position": 1000,
+            "ready_to_execute": True,
+            "drive_busy": False,
+            "drive_error": False,
+            "active": False,
+            "first_captured": True,
+            "second_captured": True,
+            "valid": True,
+            "first_position": 1000,
+            "second_position": 2920,
+            "difference_increments": 1920,
+            "distance_mm": 10.0,
+            "status_code": 3,
+            "first_sensor": 1,
+            "second_sensor": 2,
+            "mm_per_full_step": 1.0 / 3.0,
+            "conveyor_calibration_valid": True,
+            "full_steps_per_sec": 30.0,
+            "velocity_raw": 150,
+            "sensor_spacings": (100.0, 110.0, 120.0),
+        }
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        window._on_setup_status(status)
+        window.first_sensor.setCurrentIndex(2)
+        window.second_sensor.setCurrentIndex(3)
+        window._apply_measurement()
+
+        self.assertEqual(window.barrier_labels[0].text(), "ON")
+        self.assertEqual(window.barrier_labels[1].text(), "OFF")
+        self.assertEqual(window.measured_distance.text(), "10.000 mm")
+        self.assertEqual(
+            writes[0][0], {"MAIN.GuiSensorSpacing12Mm": 10.0}
+        )
+        window.ads.connected = False
+        window.close()
 
 
 if __name__ == "__main__":

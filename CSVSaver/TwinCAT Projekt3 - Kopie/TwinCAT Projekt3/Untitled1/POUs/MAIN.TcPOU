@@ -97,8 +97,8 @@ VAR
 	GuiCalibrationCaptureLeftMark	: BOOL := FALSE;
 	GuiCalibrationCaptureRightMark	: BOOL := FALSE;
 	GuiCalibrationStop			: BOOL := FALSE;
-	GuiConveyorMmPerFullStep	: REAL := 0.0;
-	GuiConveyorCalibrationValid	: BOOL := FALSE;
+	GuiConveyorMmPerFullStep	: REAL := 0.32960026;
+	GuiConveyorCalibrationValid	: BOOL := TRUE;
 	GuiOffsetMm1			: REAL := 0.0;
 	GuiOffsetMm2			: REAL := 0.0;
 	GuiOffsetMm3			: REAL := 0.0;
@@ -139,6 +139,22 @@ VAR
 	CalibrationStatusCode		: UINT := 0; //0 ready, 1 starting, 2 moving, 3 complete, 4 invalid, 5 drive error
 	CalibrationPositionDelta	: LINT := 0;
 	LastConveyorCalibrationMode	: BOOL := FALSE;
+	GuiBarrierCalibrationFirstSensor	: UINT := 1;
+	GuiBarrierCalibrationSecondSensor	: UINT := 2;
+	GuiBarrierCalibrationStart	: BOOL := FALSE;
+	BarrierCalibrationActive	: BOOL := FALSE;
+	BarrierCalibrationFirstCaptured	: BOOL := FALSE;
+	BarrierCalibrationSecondCaptured	: BOOL := FALSE;
+	BarrierCalibrationValid	: BOOL := FALSE;
+	BarrierCalibrationFirstPosition	: UDINT := 0;
+	BarrierCalibrationSecondPosition	: UDINT := 0;
+	BarrierCalibrationDifferenceIncrements	: UDINT := 0;
+	BarrierCalibrationDistanceMm	: REAL := 0.0;
+	BarrierCalibrationPositionDelta	: LINT := 0;
+	BarrierCalibrationFirstEdge	: BOOL := FALSE;
+	BarrierCalibrationSecondEdge	: BOOL := FALSE;
+	BarrierCalibrationAbortRequested	: BOOL := FALSE;
+	BarrierCalibrationStatusCode	: UINT := 0; //0 ready, 1 waiting first, 2 waiting second, 3 complete, 4 invalid/cancelled, 5 drive error
 
 	//IO Variables
 	//EL 1018
@@ -382,6 +398,36 @@ IF GuiConveyorCalibrationMode AND NOT LastConveyorCalibrationMode THEN
 END_IF
 LastConveyorCalibrationMode := GuiConveyorCalibrationMode;
 
+// Prepare a light-barrier spacing measurement before the GUI starts a long relative move.
+IF GuiBarrierCalibrationStart THEN
+	IF GuiConveyorCalibrationMode
+		AND GuiConveyorCalibrationValid
+		AND (GuiConveyorMmPerFullStep > 0.0)
+		AND (ConveyorMotionState = 0)
+		AND NOT StepperPosBusy
+		AND StepperPosReadyToExecute
+		AND (GuiBarrierCalibrationFirstSensor >= 1)
+		AND (GuiBarrierCalibrationFirstSensor <= 6)
+		AND (GuiBarrierCalibrationSecondSensor >= 1)
+		AND (GuiBarrierCalibrationSecondSensor <= 6)
+		AND (GuiBarrierCalibrationFirstSensor <> GuiBarrierCalibrationSecondSensor) THEN
+		BarrierCalibrationActive := TRUE;
+		BarrierCalibrationFirstCaptured := FALSE;
+		BarrierCalibrationSecondCaptured := FALSE;
+		BarrierCalibrationValid := FALSE;
+		BarrierCalibrationFirstPosition := 0;
+		BarrierCalibrationSecondPosition := 0;
+		BarrierCalibrationDifferenceIncrements := 0;
+		BarrierCalibrationDistanceMm := 0.0;
+		BarrierCalibrationStatusCode := 1;
+	ELSE
+		BarrierCalibrationActive := FALSE;
+		BarrierCalibrationStatusCode := 4;
+		GuiCalibrationMoveRight := FALSE;
+	END_IF
+	GuiBarrierCalibrationStart := FALSE;
+END_IF
+
 IF GuiConveyorCalibrationValid AND (GuiConveyorMmPerFullStep > 0.0) THEN
 	CalibrationStepsPerMm := 1.0 / GuiConveyorMmPerFullStep;
 ELSE
@@ -609,6 +655,9 @@ StepperControlReset := GuiConveyorReset;
 GuiConveyorReset := FALSE;
 StepperControlReduceTorque := StepperControlEnable AND (ConveyorMotionState = 0) AND NOT StepperPosBusy;
 StepperControlDigitalOutput1 := FALSE;
+BarrierCalibrationAbortRequested := GuiCalibrationStop
+	OR NOT GuiConveyorCalibrationMode
+	OR StepperPosError;
 GuiCalibrationStop := FALSE;
 
 LightBarrier1FallingEdge := (NOT LightBarrierOn1) AND LastLightBarrier1;
@@ -617,6 +666,74 @@ LightBarrier3FallingEdge := (NOT LightBarrierOn3) AND LastLightBarrier3;
 LightBarrier4FallingEdge := (NOT LightBarrierOn4) AND LastLightBarrier4;
 LightBarrier5FallingEdge := (NOT LightBarrierOn5) AND LastLightBarrier5;
 LightBarrier6FallingEdge := (NOT LightBarrierOn6) AND LastLightBarrier6;
+
+CASE GuiBarrierCalibrationFirstSensor OF
+	1: BarrierCalibrationFirstEdge := LightBarrier1FallingEdge;
+	2: BarrierCalibrationFirstEdge := LightBarrier2FallingEdge;
+	3: BarrierCalibrationFirstEdge := LightBarrier3FallingEdge;
+	4: BarrierCalibrationFirstEdge := LightBarrier4FallingEdge;
+	5: BarrierCalibrationFirstEdge := LightBarrier5FallingEdge;
+	6: BarrierCalibrationFirstEdge := LightBarrier6FallingEdge;
+ELSE
+	BarrierCalibrationFirstEdge := FALSE;
+END_CASE
+
+CASE GuiBarrierCalibrationSecondSensor OF
+	1: BarrierCalibrationSecondEdge := LightBarrier1FallingEdge;
+	2: BarrierCalibrationSecondEdge := LightBarrier2FallingEdge;
+	3: BarrierCalibrationSecondEdge := LightBarrier3FallingEdge;
+	4: BarrierCalibrationSecondEdge := LightBarrier4FallingEdge;
+	5: BarrierCalibrationSecondEdge := LightBarrier5FallingEdge;
+	6: BarrierCalibrationSecondEdge := LightBarrier6FallingEdge;
+ELSE
+	BarrierCalibrationSecondEdge := FALSE;
+END_CASE
+
+// Latch the internal motor position in the PLC cycle in which each selected barrier switches off.
+IF BarrierCalibrationActive THEN
+	IF NOT BarrierCalibrationFirstCaptured AND BarrierCalibrationFirstEdge THEN
+		BarrierCalibrationFirstPosition := StepperInternalPosition;
+		BarrierCalibrationFirstCaptured := TRUE;
+		BarrierCalibrationStatusCode := 2;
+	ELSIF BarrierCalibrationFirstCaptured
+		AND NOT BarrierCalibrationSecondCaptured
+		AND BarrierCalibrationSecondEdge THEN
+		BarrierCalibrationSecondPosition := StepperInternalPosition;
+		BarrierCalibrationSecondCaptured := TRUE;
+		BarrierCalibrationPositionDelta := DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationSecondPosition))
+			- DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationFirstPosition));
+		IF BarrierCalibrationPositionDelta < 0 THEN
+			BarrierCalibrationPositionDelta := -BarrierCalibrationPositionDelta;
+		END_IF
+		IF BarrierCalibrationPositionDelta > 0 THEN
+			BarrierCalibrationDifferenceIncrements := LINT_TO_UDINT(BarrierCalibrationPositionDelta);
+			BarrierCalibrationDistanceMm :=
+				TO_REAL(BarrierCalibrationDifferenceIncrements) / 64.0 * GuiConveyorMmPerFullStep;
+			BarrierCalibrationValid := TRUE;
+			BarrierCalibrationStatusCode := 3;
+		ELSE
+			BarrierCalibrationDifferenceIncrements := 0;
+			BarrierCalibrationDistanceMm := 0.0;
+			BarrierCalibrationValid := FALSE;
+			BarrierCalibrationStatusCode := 4;
+		END_IF
+		BarrierCalibrationActive := FALSE;
+		GuiCalibrationStop := TRUE;
+	END_IF
+END_IF
+
+// Cancel a measurement if the drive stops before the second selected barrier is reached.
+IF BarrierCalibrationActive
+	AND (BarrierCalibrationAbortRequested
+		OR ((ConveyorMotionState = 0) AND (ConveyorMotionMode = 0))) THEN
+	BarrierCalibrationActive := FALSE;
+	BarrierCalibrationValid := FALSE;
+	IF StepperPosError THEN
+		BarrierCalibrationStatusCode := 5;
+	ELSE
+		BarrierCalibrationStatusCode := 4;
+	END_IF
+END_IF
 
 IF LightBarrier2FallingEdge AND Array1Active AND (State <= 2) THEN
 	Array1TriggerPending := TRUE;

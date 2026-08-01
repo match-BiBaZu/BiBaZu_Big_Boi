@@ -71,7 +71,9 @@ CONVEYOR_MAX_SPEED_MAX_MM_PER_SEC = 5000.0
 ESTIMATE_POLL_INTERVAL_MS = 750
 ESTIMATE_DISPLAY_EPSILON = 0.05
 CALIBRATION_POLL_INTERVAL_MS = 100
+SETUP_POLL_INTERVAL_MS = 50
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
+CONVEYOR_MM_PER_FULL_STEP_DEFAULT = 0.32960026
 CALIBRATION_JOG_STEPS_DEFAULT = 100
 CALIBRATION_JOG_SPEED_DEFAULT = 10.0
 CONVEYOR_JOG_DISTANCE_DEFAULT_MM = 1.0
@@ -426,6 +428,7 @@ class AdsWorker(QObject):
     initial_snapshot_ready = pyqtSignal(object)
     live_snapshot_ready = pyqtSignal(object)
     calibration_status_ready = pyqtSignal(object)
+    setup_status_ready = pyqtSignal(object)
     write_finished = pyqtSignal(str, object)
     operation_failed = pyqtSignal(str, str)
     shutdown_finished = pyqtSignal()
@@ -442,6 +445,7 @@ class AdsWorker(QObject):
         self.poll_timer: QTimer | None = None
         self.reconnect_timer: QTimer | None = None
         self.calibration_polling = False
+        self.setup_polling = False
         self.shutting_down = False
 
     @pyqtSlot()
@@ -495,8 +499,18 @@ class AdsWorker(QObject):
         self.connection_changed.emit(True, "")
         self.initial_snapshot_ready.emit(snapshot)
         if self.poll_timer is not None:
-            self.poll_timer.setInterval(LOG_POLL_INTERVAL_MS)
+            self._update_poll_interval()
             self.poll_timer.start()
+
+    def _update_poll_interval(self) -> None:
+        if self.poll_timer is None:
+            return
+        if self.calibration_polling:
+            self.poll_timer.setInterval(CALIBRATION_POLL_INTERVAL_MS)
+        elif self.setup_polling:
+            self.poll_timer.setInterval(SETUP_POLL_INTERVAL_MS)
+        else:
+            self.poll_timer.setInterval(LOG_POLL_INTERVAL_MS)
 
     def disconnect_ads(self, message: str = "") -> None:
         if self.poll_timer is not None:
@@ -645,6 +659,68 @@ class AdsWorker(QObject):
             "marker_distance_mm": float(values["MAIN.GuiCalibrationMarkerDistanceMm"]),
         }
 
+    def read_setup_snapshot(self) -> dict:
+        names = [
+            *[f"MAIN.LightBarrierOn{index}" for index in range(1, 7)],
+            "MAIN.StepperInternalPosition",
+            "MAIN.StepperPosReadyToExecute",
+            "MAIN.StepperPosBusy",
+            "MAIN.StepperPosError",
+            "MAIN.BarrierCalibrationActive",
+            "MAIN.BarrierCalibrationFirstCaptured",
+            "MAIN.BarrierCalibrationSecondCaptured",
+            "MAIN.BarrierCalibrationValid",
+            "MAIN.BarrierCalibrationFirstPosition",
+            "MAIN.BarrierCalibrationSecondPosition",
+            "MAIN.BarrierCalibrationDifferenceIncrements",
+            "MAIN.BarrierCalibrationDistanceMm",
+            "MAIN.BarrierCalibrationStatusCode",
+            "MAIN.GuiBarrierCalibrationFirstSensor",
+            "MAIN.GuiBarrierCalibrationSecondSensor",
+            "MAIN.GuiConveyorMmPerFullStep",
+            "MAIN.GuiConveyorCalibrationValid",
+            "MAIN.ConveyorFullStepsPerSec",
+            "MAIN.ConveyorVelocityRaw",
+            "MAIN.GuiSensorSpacing12Mm",
+            "MAIN.GuiSensorSpacing34Mm",
+            "MAIN.GuiSensorSpacing56Mm",
+        ]
+        values = self.read_values(names)
+        return {
+            "light_barriers": [
+                bool(values[f"MAIN.LightBarrierOn{index}"])
+                for index in range(1, 7)
+            ],
+            "internal_position": int(values["MAIN.StepperInternalPosition"]),
+            "ready_to_execute": bool(values["MAIN.StepperPosReadyToExecute"]),
+            "drive_busy": bool(values["MAIN.StepperPosBusy"]),
+            "drive_error": bool(values["MAIN.StepperPosError"]),
+            "active": bool(values["MAIN.BarrierCalibrationActive"]),
+            "first_captured": bool(values["MAIN.BarrierCalibrationFirstCaptured"]),
+            "second_captured": bool(values["MAIN.BarrierCalibrationSecondCaptured"]),
+            "valid": bool(values["MAIN.BarrierCalibrationValid"]),
+            "first_position": int(values["MAIN.BarrierCalibrationFirstPosition"]),
+            "second_position": int(values["MAIN.BarrierCalibrationSecondPosition"]),
+            "difference_increments": int(
+                values["MAIN.BarrierCalibrationDifferenceIncrements"]
+            ),
+            "distance_mm": float(values["MAIN.BarrierCalibrationDistanceMm"]),
+            "status_code": int(values["MAIN.BarrierCalibrationStatusCode"]),
+            "first_sensor": int(values["MAIN.GuiBarrierCalibrationFirstSensor"]),
+            "second_sensor": int(values["MAIN.GuiBarrierCalibrationSecondSensor"]),
+            "mm_per_full_step": float(values["MAIN.GuiConveyorMmPerFullStep"]),
+            "conveyor_calibration_valid": bool(
+                values["MAIN.GuiConveyorCalibrationValid"]
+            ),
+            "full_steps_per_sec": float(values["MAIN.ConveyorFullStepsPerSec"]),
+            "velocity_raw": int(values["MAIN.ConveyorVelocityRaw"]),
+            "sensor_spacings": (
+                float(values["MAIN.GuiSensorSpacing12Mm"]),
+                float(values["MAIN.GuiSensorSpacing34Mm"]),
+                float(values["MAIN.GuiSensorSpacing56Mm"]),
+            ),
+        }
+
     @pyqtSlot()
     def poll(self) -> None:
         if not self.client.is_connected or self.shutting_down:
@@ -652,6 +728,8 @@ class AdsWorker(QObject):
         try:
             if self.calibration_polling:
                 self.calibration_status_ready.emit(self.read_calibration_snapshot())
+            elif self.setup_polling:
+                self.setup_status_ready.emit(self.read_setup_snapshot())
             else:
                 self.live_snapshot_ready.emit(self.read_live_snapshot())
         except Exception as exc:
@@ -682,17 +760,25 @@ class AdsWorker(QObject):
                     }
                 )
                 self.calibration_polling = True
-                if self.poll_timer is not None:
-                    self.poll_timer.setInterval(CALIBRATION_POLL_INTERVAL_MS)
+                self._update_poll_interval()
                 self.calibration_status_ready.emit(self.read_calibration_snapshot())
             else:
                 self.write_values_impl(self.SAFE_STOP_VALUES)
                 self.calibration_polling = False
-                if self.poll_timer is not None:
-                    self.poll_timer.setInterval(LOG_POLL_INTERVAL_MS)
+                self._update_poll_interval()
             self.write_finished.emit("calibration_mode", {})
         except Exception as exc:
             self.handle_failure("calibration", exc)
+
+    @pyqtSlot(bool)
+    def set_setup_polling(self, enabled: bool) -> None:
+        self.setup_polling = enabled
+        self._update_poll_interval()
+        if enabled and self.client.is_connected and not self.calibration_polling:
+            try:
+                self.setup_status_ready.emit(self.read_setup_snapshot())
+            except Exception as exc:
+                self.handle_failure("setup_poll", exc)
 
     @pyqtSlot()
     def reconnect(self) -> None:
@@ -720,11 +806,13 @@ class AdsController(QObject):
     initial_snapshot_ready = pyqtSignal(object)
     live_snapshot_ready = pyqtSignal(object)
     calibration_status_ready = pyqtSignal(object)
+    setup_status_ready = pyqtSignal(object)
     write_finished = pyqtSignal(str)
     operation_failed = pyqtSignal(str, str)
 
     write_requested = pyqtSignal(object, str)
     calibration_mode_requested = pyqtSignal(bool)
+    setup_polling_requested = pyqtSignal(bool)
     reconnect_requested = pyqtSignal()
     shutdown_requested = pyqtSignal()
 
@@ -737,8 +825,8 @@ class AdsController(QObject):
             "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
             "jog_steps": CALIBRATION_JOG_STEPS_DEFAULT,
             "jog_speed_full_steps_per_sec": CALIBRATION_JOG_SPEED_DEFAULT,
-            "mm_per_full_step": 0.0,
-            "valid": False,
+            "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
+            "valid": True,
         }
 
         self.write_timer = QTimer(self)
@@ -752,12 +840,14 @@ class AdsController(QObject):
         self.thread.started.connect(self.worker.start)
         self.write_requested.connect(self.worker.write_values)
         self.calibration_mode_requested.connect(self.worker.set_calibration_mode)
+        self.setup_polling_requested.connect(self.worker.set_setup_polling)
         self.reconnect_requested.connect(self.worker.reconnect)
         self.shutdown_requested.connect(self.worker.shutdown)
         self.worker.connection_changed.connect(self.on_connection_changed)
         self.worker.initial_snapshot_ready.connect(self.on_initial_snapshot)
         self.worker.live_snapshot_ready.connect(self.live_snapshot_ready)
         self.worker.calibration_status_ready.connect(self.on_calibration_status)
+        self.worker.setup_status_ready.connect(self.setup_status_ready)
         self.worker.write_finished.connect(self.on_write_finished)
         self.worker.operation_failed.connect(self.operation_failed)
         self.worker.shutdown_finished.connect(
@@ -878,6 +968,29 @@ class AdsController(QObject):
 
     def stop_calibration_move(self) -> None:
         self.write_now({"MAIN.GuiCalibrationStop": True}, "calibration_stop")
+
+    def set_setup_polling(self, enabled: bool) -> None:
+        self.setup_polling_requested.emit(enabled)
+
+    def start_barrier_calibration(
+        self, first_sensor: int, second_sensor: int, max_steps: int, speed: float
+    ) -> None:
+        self.write_now(
+            {
+                "MAIN.GuiConveyorEnabled": False,
+                "MAIN.GuiConveyorCalibrationMode": True,
+                "MAIN.GuiBarrierCalibrationFirstSensor": int(first_sensor),
+                "MAIN.GuiBarrierCalibrationSecondSensor": int(second_sensor),
+                "MAIN.GuiCalibrationJogSteps": int(max_steps),
+                "MAIN.GuiCalibrationJogSpeedFullStepsPerSec": float(speed),
+                "MAIN.GuiBarrierCalibrationStart": True,
+                "MAIN.GuiCalibrationMoveRight": True,
+            },
+            "barrier_calibration_start",
+        )
+
+    def stop_setup_motion(self) -> None:
+        self.write_now(dict(AdsWorker.SAFE_STOP_VALUES), "setup_stop")
 
     def reconnect(self) -> None:
         self.write_timer.stop()
@@ -1437,8 +1550,8 @@ class PressureControlWindow(QMainWindow):
         self.last_shot_counter: int | None = None
         self.conveyor_calibration = {
             "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
-            "mm_per_full_step": 0.0,
-            "valid": False,
+            "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
+            "valid": True,
         }
 
         self.setWindowTitle("Nozzle Array Pressure Control")
