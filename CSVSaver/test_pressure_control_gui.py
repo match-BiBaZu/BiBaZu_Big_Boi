@@ -62,6 +62,11 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 38.33)
         self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 64.69)
 
+    def test_pressure_inputs_use_ten_mbar_steps(self):
+        row = gui.ArrayRow(1)
+
+        self.assertEqual(row.pressure.singleStep(), 10)
+
     def test_provisional_conveyor_calibration_is_the_gui_default(self):
         controller = gui.AdsController()
 
@@ -69,6 +74,11 @@ class AdsThreadTests(unittest.TestCase):
         self.assertAlmostEqual(
             controller.calibration_cache["mm_per_full_step"],
             0.32960026,
+        )
+        self.assertEqual(controller.force_response_delays_ms, [25.8, 0.0, 0.0, 0.0])
+        self.assertEqual(
+            controller.force_single_nozzle_response_delays_ms,
+            [34.0, 0.0, 0.0, 0.0],
         )
         controller.shutdown()
 
@@ -176,7 +186,7 @@ class AdsThreadTests(unittest.TestCase):
         status = worker.read_force_delay_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 18)
+        self.assertEqual(len(plc.read_calls[0]), 34)
         self.assertEqual(status["result_counter"], 0)
         self.assertEqual(status["current_signal"], 0.0)
 
@@ -198,6 +208,38 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(values["MAIN.GuiForceDelayWindowMs"], 2500)
         self.assertEqual(values["MAIN.GuiForceDelayMinRise"], 0.125)
         controller.shutdown()
+
+    def test_force_response_delay_write_targets_selected_array(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        writes = []
+        controller.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        controller.set_force_response_delays(3, 36.2, 31.4)
+
+        self.assertEqual(
+            writes[0],
+            (
+                {
+                    "MAIN.GuiForceSingleNozzleResponseDelayMs3": 36.2,
+                    "MAIN.GuiForceResponseDelayMs3": 31.4,
+                },
+                "force_response_delays_array_3",
+            ),
+        )
+        controller.shutdown()
+
+    def test_force_response_delay_interpolates_nozzle_count(self):
+        self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 1), 34.0)
+        self.assertAlmostEqual(
+            gui.calculate_force_response_delay(34.0, 25.8, 2), 31.2666667
+        )
+        self.assertAlmostEqual(
+            gui.calculate_force_response_delay(34.0, 25.8, 3), 28.5333333
+        )
+        self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 4), 25.8)
 
     def test_force_delay_statistics_report_consistency(self):
         result = gui.calculate_force_delay_statistics([230.0, 237.0, 244.0])
@@ -466,6 +508,12 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 window = gui.PressureControlWindow()
                 window.load_profile()
                 result = dict(window.conveyor_calibration)
+                result["force_response_delays_ms"] = list(
+                    window.ads.force_response_delays_ms
+                )
+                result["force_single_nozzle_response_delays_ms"] = list(
+                    window.ads.force_single_nozzle_response_delays_ms
+                )
                 window.close()
                 return result
 
@@ -488,6 +536,58 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(result["valid"])
         self.assertEqual(result["mm_per_full_step"], 0.05)
+        self.assertEqual(result["force_response_delays_ms"], [25.8, 0.0, 0.0, 0.0])
+        self.assertEqual(
+            result["force_single_nozzle_response_delays_ms"],
+            [34.0, 0.0, 0.0, 0.0],
+        )
+
+    def test_version_3_profile_preserves_force_response_delays(self):
+        result = self.load_profile(
+            {
+                "version": 3,
+                "arrays": [],
+                "conveyor_calibration": {
+                    "marker_distance_mm": 315.0,
+                    "mm_per_full_step": 0.05,
+                    "valid": True,
+                },
+                "force_response_delays_ms": [25.8, 26.1, 27.2, 28.3],
+            }
+        )
+
+        self.assertEqual(
+            result["force_response_delays_ms"], [25.8, 26.1, 27.2, 28.3]
+        )
+        self.assertEqual(
+            result["force_single_nozzle_response_delays_ms"],
+            [34.0, 0.0, 0.0, 0.0],
+        )
+
+    def test_version_4_profile_preserves_both_response_delay_endpoints(self):
+        result = self.load_profile(
+            {
+                "version": 4,
+                "arrays": [],
+                "conveyor_calibration": {
+                    "marker_distance_mm": 315.0,
+                    "mm_per_full_step": 0.05,
+                    "valid": True,
+                },
+                "force_response_delays_ms": [25.8, 26.1, 27.2, 28.3],
+                "force_single_nozzle_response_delays_ms": [
+                    34.0,
+                    35.0,
+                    36.0,
+                    37.0,
+                ],
+            }
+        )
+
+        self.assertEqual(
+            result["force_single_nozzle_response_delays_ms"],
+            [34.0, 35.0, 36.0, 37.0],
+        )
 
 
 class ConveyorSetupWindowTests(unittest.TestCase):

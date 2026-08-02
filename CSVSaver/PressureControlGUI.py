@@ -39,7 +39,7 @@ PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
-PROFILE_VERSION = 2
+PROFILE_VERSION = 4
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -88,6 +88,8 @@ FORCE_DELAY_WINDOW_DEFAULT_MS = 2000
 FORCE_DELAY_WINDOW_MIN_MS = 100
 FORCE_DELAY_WINDOW_MAX_MS = 30000
 FORCE_DELAY_MIN_RISE_DEFAULT = 0.05
+FORCE_RESPONSE_DELAY_DEFAULTS_MS = (25.8, 0.0, 0.0, 0.0)
+FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS = (34.0, 0.0, 0.0, 0.0)
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
 CONVEYOR_MM_PER_FULL_STEP_DEFAULT = 0.32960026
 CALIBRATION_JOG_STEPS_DEFAULT = 100
@@ -129,6 +131,18 @@ def calculate_force_delay_statistics(delays_ms: list[float]) -> dict[str, float]
             standard_deviation / mean * 100.0 if mean != 0.0 else 0.0
         ),
     }
+
+
+def calculate_force_response_delay(
+    single_nozzle_ms: float, four_nozzle_ms: float, active_nozzles: int
+) -> float:
+    if active_nozzles <= 1:
+        return single_nozzle_ms
+    if active_nozzles >= 4:
+        return four_nozzle_ms
+    return single_nozzle_ms + (four_nozzle_ms - single_nozzle_ms) * (
+        active_nozzles - 1
+    ) / 3.0
 
 
 @dataclass(frozen=True)
@@ -554,6 +568,14 @@ class AdsWorker(QObject):
             "MAIN.GuiCalibrationJogSpeedFullStepsPerSec",
             "MAIN.GuiConveyorMmPerFullStep",
             "MAIN.GuiConveyorCalibrationValid",
+            *[
+                f"MAIN.GuiForceResponseDelayMs{index}"
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            *[
+                f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}"
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
         ]
         for index in range(1, ARRAY_COUNT + 1):
             symbols = SYMBOLS[index]
@@ -606,6 +628,16 @@ class AdsWorker(QObject):
                 "mm_per_full_step": float(values["MAIN.GuiConveyorMmPerFullStep"]),
                 "valid": bool(values["MAIN.GuiConveyorCalibrationValid"]),
             },
+            "force_response_delays_ms": [
+                float(values[f"MAIN.GuiForceResponseDelayMs{index}"])
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            "force_single_nozzle_response_delays_ms": [
+                float(
+                    values[f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}"]
+                )
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
             "arrays": arrays,
         }
 
@@ -693,6 +725,22 @@ class AdsWorker(QObject):
             "MAIN.ForceDelayPeak",
             "MAIN.ForceDelayPeakRise",
             "MAIN.ForceDelayCurrentSignal",
+            *[
+                f"MAIN.GuiForceResponseDelayMs{index}"
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            *[
+                f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}"
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            *[
+                f"MAIN.EffectiveForceResponseDelayMs{index}"
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            *[
+                f"MAIN.ActiveNozzleCount{index}"
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
         ]
         values = self.read_values(names)
         return {
@@ -716,6 +764,24 @@ class AdsWorker(QObject):
             "peak": float(values["MAIN.ForceDelayPeak"]),
             "peak_rise": float(values["MAIN.ForceDelayPeakRise"]),
             "current_signal": float(values["MAIN.ForceDelayCurrentSignal"]),
+            "response_delays_ms": [
+                float(values[f"MAIN.GuiForceResponseDelayMs{index}"])
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            "single_nozzle_response_delays_ms": [
+                float(
+                    values[f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}"]
+                )
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            "effective_response_delays_ms": [
+                float(values[f"MAIN.EffectiveForceResponseDelayMs{index}"])
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
+            "active_nozzle_counts": [
+                int(values[f"MAIN.ActiveNozzleCount{index}"])
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
         }
 
     def read_calibration_snapshot(self) -> dict:
@@ -987,6 +1053,10 @@ class AdsController(QObject):
             "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
             "valid": True,
         }
+        self.force_response_delays_ms = list(FORCE_RESPONSE_DELAY_DEFAULTS_MS)
+        self.force_single_nozzle_response_delays_ms = list(
+            FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS
+        )
 
         self.write_timer = QTimer(self)
         self.write_timer.setSingleShot(True)
@@ -1011,7 +1081,7 @@ class AdsController(QObject):
         self.worker.calibration_status_ready.connect(self.on_calibration_status)
         self.worker.setup_status_ready.connect(self.setup_status_ready)
         self.worker.force_delay_status_ready.connect(
-            self.force_delay_status_ready
+            self.on_force_delay_status
         )
         self.worker.write_finished.connect(self.on_write_finished)
         self.worker.operation_failed.connect(self.operation_failed)
@@ -1061,6 +1131,19 @@ class AdsController(QObject):
                 "default_conveyor_calibration",
             )
         self.calibration_cache.update(calibration)
+        self.force_response_delays_ms = [
+            float(value)
+            for value in snapshot.get(
+                "force_response_delays_ms", FORCE_RESPONSE_DELAY_DEFAULTS_MS
+            )
+        ]
+        self.force_single_nozzle_response_delays_ms = [
+            float(value)
+            for value in snapshot.get(
+                "force_single_nozzle_response_delays_ms",
+                FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS,
+            )
+        ]
         self.initial_snapshot_ready.emit(snapshot)
 
     @pyqtSlot(object)
@@ -1074,6 +1157,23 @@ class AdsController(QObject):
         )
         self.calibration_status_ready.emit(status)
 
+    @pyqtSlot(object)
+    def on_force_delay_status(self, status: dict) -> None:
+        self.force_response_delays_ms = [
+            float(value)
+            for value in status.get(
+                "response_delays_ms", self.force_response_delays_ms
+            )
+        ]
+        self.force_single_nozzle_response_delays_ms = [
+            float(value)
+            for value in status.get(
+                "single_nozzle_response_delays_ms",
+                self.force_single_nozzle_response_delays_ms,
+            )
+        ]
+        self.force_delay_status_ready.emit(status)
+
     @pyqtSlot(str, object)
     def on_write_finished(self, context: str, values: dict) -> None:
         calibration_symbols = {
@@ -1086,6 +1186,15 @@ class AdsController(QObject):
         for symbol, cache_key in calibration_symbols.items():
             if symbol in values:
                 self.calibration_cache[cache_key] = values[symbol]
+        for index in range(1, ARRAY_COUNT + 1):
+            symbol = f"MAIN.GuiForceResponseDelayMs{index}"
+            if symbol in values:
+                self.force_response_delays_ms[index - 1] = float(values[symbol])
+            single_symbol = f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}"
+            if single_symbol in values:
+                self.force_single_nozzle_response_delays_ms[index - 1] = float(
+                    values[single_symbol]
+                )
         self.write_finished.emit(context)
 
     def queue_write(self, symbol: str, value: object, context: str) -> None:
@@ -1188,6 +1297,23 @@ class AdsController(QObject):
             "force_delay_reset",
         )
 
+    def set_force_response_delays(
+        self, array_index: int, single_nozzle_ms: float, four_nozzle_ms: float
+    ) -> None:
+        if array_index not in range(1, ARRAY_COUNT + 1):
+            raise ValueError(f"Unknown array index: {array_index}")
+        self.write_now(
+            {
+                f"MAIN.GuiForceSingleNozzleResponseDelayMs{array_index}": float(
+                    single_nozzle_ms
+                ),
+                f"MAIN.GuiForceResponseDelayMs{array_index}": float(
+                    four_nozzle_ms
+                ),
+            },
+            f"force_response_delays_array_{array_index}",
+        )
+
     def start_barrier_calibration(
         self,
         first_sensor: int,
@@ -1279,7 +1405,7 @@ class ArrayRow:
         self.pressure = QSpinBox()
         self.pressure.setRange(PRESSURE_MIN_MBAR, PRESSURE_MAX_MBAR)
         self.pressure.setSuffix(" mbar")
-        self.pressure.setSingleStep(50)
+        self.pressure.setSingleStep(10)
         self.pressure.setValue(3000)
         self.pressure.setToolTip("Pressure setpoint for this array")
 
@@ -1818,6 +1944,24 @@ class ForceDelayDialog(QDialog):
         self.minimum_rise_input.setSingleStep(0.01)
         self.minimum_rise_input.setValue(FORCE_DELAY_MIN_RISE_DEFAULT)
         self.minimum_rise_input.setSuffix(" signal")
+        self.response_delay_input = QDoubleSpinBox()
+        self.response_delay_input.setRange(0.0, 1000.0)
+        self.response_delay_input.setDecimals(1)
+        self.response_delay_input.setSingleStep(0.1)
+        self.response_delay_input.setSuffix(" ms")
+        self.response_delay_input.setValue(
+            self.ads.force_response_delays_ms[0]
+        )
+        self.single_response_delay_input = QDoubleSpinBox()
+        self.single_response_delay_input.setRange(0.0, 1000.0)
+        self.single_response_delay_input.setDecimals(1)
+        self.single_response_delay_input.setSingleStep(0.1)
+        self.single_response_delay_input.setSuffix(" ms")
+        self.single_response_delay_input.setValue(
+            self.ads.force_single_nozzle_response_delays_ms[0]
+        )
+        self.effective_response_label = QLabel("25.8 ms (4 active nozzles)")
+        self.apply_response_button = QPushButton("Apply Compensation")
         settings.addWidget(QLabel("Array"), 0, 0)
         settings.addWidget(self.array_input, 0, 1)
         settings.addWidget(QLabel("Light barrier"), 0, 2)
@@ -1828,6 +1972,13 @@ class ForceDelayDialog(QDialog):
         settings.addWidget(self.window_input, 1, 3)
         settings.addWidget(QLabel("Minimum peak rise"), 2, 0)
         settings.addWidget(self.minimum_rise_input, 2, 1)
+        settings.addWidget(QLabel("Four-nozzle response"), 2, 2)
+        settings.addWidget(self.response_delay_input, 2, 3)
+        settings.addWidget(QLabel("Single-nozzle response"), 3, 2)
+        settings.addWidget(self.single_response_delay_input, 3, 3)
+        settings.addWidget(QLabel("Effective response"), 4, 2)
+        settings.addWidget(self.effective_response_label, 4, 3)
+        settings.addWidget(self.apply_response_button, 5, 3)
         layout.addWidget(settings_box)
 
         command_layout = QHBoxLayout()
@@ -1906,6 +2057,8 @@ class ForceDelayDialog(QDialog):
         self.stop_button.clicked.connect(self._stop)
         self.reset_button.clicked.connect(self._reset_session)
         self.close_button.clicked.connect(self.close)
+        self.array_input.currentIndexChanged.connect(self._array_changed)
+        self.apply_response_button.clicked.connect(self._apply_response_delay)
         self.ads.force_delay_status_ready.connect(self._apply_status)
         self.ads.connection_changed.connect(self._connection_changed)
         self.ads.operation_failed.connect(self._on_ads_error)
@@ -1916,6 +2069,35 @@ class ForceDelayDialog(QDialog):
         self.force_sensor_input.setEnabled(enabled)
         self.window_input.setEnabled(enabled)
         self.minimum_rise_input.setEnabled(enabled)
+        self.response_delay_input.setEnabled(enabled)
+        self.single_response_delay_input.setEnabled(enabled)
+        self.apply_response_button.setEnabled(enabled and self.ads.is_connected)
+
+    def _array_changed(self) -> None:
+        array_index = int(self.array_input.currentData())
+        with QSignalBlocker(self.response_delay_input):
+            self.response_delay_input.setValue(
+                self.ads.force_response_delays_ms[array_index - 1]
+            )
+        with QSignalBlocker(self.single_response_delay_input):
+            self.single_response_delay_input.setValue(
+                self.ads.force_single_nozzle_response_delays_ms[array_index - 1]
+            )
+
+    def _apply_response_delay(self) -> None:
+        array_index = int(self.array_input.currentData())
+        four_nozzle_ms = self.response_delay_input.value()
+        single_nozzle_ms = self.single_response_delay_input.value()
+        self.ads.force_response_delays_ms[array_index - 1] = four_nozzle_ms
+        self.ads.force_single_nozzle_response_delays_ms[
+            array_index - 1
+        ] = single_nozzle_ms
+        self.ads.set_force_response_delays(
+            array_index, single_nozzle_ms, four_nozzle_ms
+        )
+        self.state_label.setText(
+            f"Array {array_index} compensation queued"
+        )
 
     def _start(self) -> None:
         if not self.ads.is_connected:
@@ -1956,6 +2138,23 @@ class ForceDelayDialog(QDialog):
     @pyqtSlot(object)
     def _apply_status(self, status: dict) -> None:
         self.current_signal_label.setText(f'{status["current_signal"]:.3f}')
+        selected_array = int(self.array_input.currentData())
+        active_counts = status.get("active_nozzle_counts", [4] * ARRAY_COUNT)
+        effective_delays = status.get("effective_response_delays_ms")
+        active_count = int(active_counts[selected_array - 1])
+        if effective_delays is None:
+            effective_delay = calculate_force_response_delay(
+                self.ads.force_single_nozzle_response_delays_ms[
+                    selected_array - 1
+                ],
+                self.ads.force_response_delays_ms[selected_array - 1],
+                active_count,
+            )
+        else:
+            effective_delay = float(effective_delays[selected_array - 1])
+        self.effective_response_label.setText(
+            f"{effective_delay:.2f} ms ({active_count} active nozzles)"
+        )
         self.state_label.setText(
             self.STATUS_TEXT.get(int(status["status_code"]), "Unknown state")
         )
@@ -1977,6 +2176,18 @@ class ForceDelayDialog(QDialog):
             "sensor": int(status["sensor"]),
             "window_ms": int(status["window_ms"]),
             "minimum_rise": float(status["minimum_rise"]),
+            "response_delay_ms": float(
+                self.ads.force_response_delays_ms[
+                    int(self.array_input.currentData()) - 1
+                ]
+            ),
+            "single_nozzle_response_delay_ms": float(
+                self.ads.force_single_nozzle_response_delays_ms[
+                    int(self.array_input.currentData()) - 1
+                ]
+            ),
+            "effective_response_delay_ms": effective_delay,
+            "active_nozzle_count": active_count,
             "light_barrier_time_ms": int(status["light_barrier_time_ms"]),
             "peak_time_ms": int(status["peak_time_ms"]),
             "delay_ms": int(status["peak_delay_ms"]),
@@ -2047,6 +2258,10 @@ class ForceDelayDialog(QDialog):
             "force_sensor",
             "window_ms",
             "minimum_rise",
+            "response_compensation_ms",
+            "single_nozzle_response_ms",
+            "effective_response_ms",
+            "active_nozzle_count",
             "light_barrier_plc_time_ms",
             "peak_plc_time_ms",
             "peak_delay_ms",
@@ -2075,6 +2290,10 @@ class ForceDelayDialog(QDialog):
                         measurement["sensor"],
                         measurement["window_ms"],
                         measurement["minimum_rise"],
+                        measurement["response_delay_ms"],
+                        measurement["single_nozzle_response_delay_ms"],
+                        measurement["effective_response_delay_ms"],
+                        measurement["active_nozzle_count"],
                         measurement["light_barrier_time_ms"],
                         measurement["peak_time_ms"],
                         measurement["delay_ms"],
@@ -2091,6 +2310,9 @@ class ForceDelayDialog(QDialog):
     @pyqtSlot(bool, str)
     def _connection_changed(self, connected: bool, message: str) -> None:
         self.start_button.setEnabled(connected and not self.session_running)
+        self.apply_response_button.setEnabled(
+            connected and not self.session_running
+        )
         if not connected:
             self.session_running = False
             self.stop_button.setEnabled(False)
@@ -2488,6 +2710,24 @@ class PressureControlWindow(QMainWindow):
                 self.conveyor_calibration["valid"]
             ),
         }
+        values.update(
+            {
+                f"MAIN.GuiForceResponseDelayMs{index}": float(delay_ms)
+                for index, delay_ms in enumerate(
+                    self.ads.force_response_delays_ms, start=1
+                )
+            }
+        )
+        values.update(
+            {
+                f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}": float(
+                    delay_ms
+                )
+                for index, delay_ms in enumerate(
+                    self.ads.force_single_nozzle_response_delays_ms, start=1
+                )
+            }
+        )
         for row in self.rows:
             row_values = row.values()
             symbols = SYMBOLS[row.index]
@@ -2725,6 +2965,12 @@ class PressureControlWindow(QMainWindow):
             "conveyor_speed_mm_per_sec": self.conveyor_speed.value(),
             "conveyor_max_speed_mm_per_sec": self.conveyor_max_speed.value(),
             "conveyor_calibration": self.conveyor_calibration.copy(),
+            "force_response_delays_ms": list(
+                self.ads.force_response_delays_ms
+            ),
+            "force_single_nozzle_response_delays_ms": list(
+                self.ads.force_single_nozzle_response_delays_ms
+            ),
             "arrays": [row.values() for row in self.rows],
         }
 
@@ -2748,7 +2994,7 @@ class PressureControlWindow(QMainWindow):
         try:
             profile = json.loads(Path(path).read_text(encoding="utf-8"))
             profile_version = int(profile.get("version", 1))
-            if profile_version not in {1, PROFILE_VERSION}:
+            if profile_version not in {1, 2, 3, PROFILE_VERSION}:
                 raise ValueError("Unknown profile version")
 
             conveyor_enabled = bool(profile.get("conveyor_enabled", False))
@@ -2778,6 +3024,37 @@ class PressureControlWindow(QMainWindow):
                     "mm_per_full_step": 0.0,
                     "valid": False,
                 }
+            if profile_version >= 3:
+                response_delays = profile.get(
+                    "force_response_delays_ms", FORCE_RESPONSE_DELAY_DEFAULTS_MS
+                )
+                if len(response_delays) != ARRAY_COUNT:
+                    raise ValueError("Force response delay list must contain four values")
+                self.ads.force_response_delays_ms = [
+                    max(0.0, min(1000.0, float(value)))
+                    for value in response_delays
+                ]
+            else:
+                self.ads.force_response_delays_ms = list(
+                    FORCE_RESPONSE_DELAY_DEFAULTS_MS
+                )
+            if profile_version >= 4:
+                single_response_delays = profile.get(
+                    "force_single_nozzle_response_delays_ms",
+                    FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS,
+                )
+                if len(single_response_delays) != ARRAY_COUNT:
+                    raise ValueError(
+                        "Single-nozzle response delay list must contain four values"
+                    )
+                self.ads.force_single_nozzle_response_delays_ms = [
+                    max(0.0, min(1000.0, float(value)))
+                    for value in single_response_delays
+                ]
+            else:
+                self.ads.force_single_nozzle_response_delays_ms = list(
+                    FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS
+                )
             light_barrier_debounce = int(
                 profile.get(
                     "light_barrier_debounce_ms",

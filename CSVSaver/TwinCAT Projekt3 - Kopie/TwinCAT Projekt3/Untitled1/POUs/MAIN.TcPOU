@@ -112,6 +112,14 @@ VAR
 	GuiForceDelayWindowMs		: UINT := 2000;
 	GuiForceDelayMinRise		: REAL := 0.05;
 	GuiForceDelayReset		: BOOL := FALSE;
+	GuiForceResponseDelayMs1	: REAL := 25.8;
+	GuiForceResponseDelayMs2	: REAL := 0.0;
+	GuiForceResponseDelayMs3	: REAL := 0.0;
+	GuiForceResponseDelayMs4	: REAL := 0.0;
+	GuiForceSingleNozzleResponseDelayMs1	: REAL := 34.0;
+	GuiForceSingleNozzleResponseDelayMs2	: REAL := 0.0;
+	GuiForceSingleNozzleResponseDelayMs3	: REAL := 0.0;
+	GuiForceSingleNozzleResponseDelayMs4	: REAL := 0.0;
 	EstimatedVelocityMmPerSec	: REAL := 0.0;
 	EstimatedVelocityMmPerSec1	: REAL := 0.0;
 	EstimatedVelocityMmPerSec2	: REAL := 0.0;
@@ -249,6 +257,14 @@ VAR
 	ForceDelayBaselineIndex		: UINT := 0;
 	ForceDelayBaselineCount		: UINT := 0;
 	ForceDelayTrigger		: BOOL := FALSE;
+	ActiveNozzleCount1		: INT := 0;
+	ActiveNozzleCount2		: INT := 0;
+	ActiveNozzleCount3		: INT := 0;
+	ActiveNozzleCount4		: INT := 0;
+	EffectiveForceResponseDelayMs1	: REAL := 0.0;
+	EffectiveForceResponseDelayMs2	: REAL := 0.0;
+	EffectiveForceResponseDelayMs3	: REAL := 0.0;
+	EffectiveForceResponseDelayMs4	: REAL := 0.0;
 	
 	//EL 3068
 	RawNozzlePressure AT %I*: INT  := 0; //The raw analogue input reading from the EL3068 terminal (max 32767)
@@ -1220,11 +1236,115 @@ ELSE
 	DelayDurationCycles4 := UINT_TO_INT(GuiDelayMs4);
 END_IF
 
+IF GuiForceResponseDelayMs1 < 0.0 THEN
+	GuiForceResponseDelayMs1 := 0.0;
+ELSIF GuiForceResponseDelayMs1 > 1000.0 THEN
+	GuiForceResponseDelayMs1 := 1000.0;
+END_IF
+IF GuiForceResponseDelayMs2 < 0.0 THEN
+	GuiForceResponseDelayMs2 := 0.0;
+ELSIF GuiForceResponseDelayMs2 > 1000.0 THEN
+	GuiForceResponseDelayMs2 := 1000.0;
+END_IF
+IF GuiForceResponseDelayMs3 < 0.0 THEN
+	GuiForceResponseDelayMs3 := 0.0;
+ELSIF GuiForceResponseDelayMs3 > 1000.0 THEN
+	GuiForceResponseDelayMs3 := 1000.0;
+END_IF
+IF GuiForceResponseDelayMs4 < 0.0 THEN
+	GuiForceResponseDelayMs4 := 0.0;
+ELSIF GuiForceResponseDelayMs4 > 1000.0 THEN
+	GuiForceResponseDelayMs4 := 1000.0;
+END_IF
+
+IF GuiForceSingleNozzleResponseDelayMs1 < 0.0 THEN
+	GuiForceSingleNozzleResponseDelayMs1 := 0.0;
+ELSIF GuiForceSingleNozzleResponseDelayMs1 > 1000.0 THEN
+	GuiForceSingleNozzleResponseDelayMs1 := 1000.0;
+END_IF
+IF GuiForceSingleNozzleResponseDelayMs2 < 0.0 THEN
+	GuiForceSingleNozzleResponseDelayMs2 := 0.0;
+ELSIF GuiForceSingleNozzleResponseDelayMs2 > 1000.0 THEN
+	GuiForceSingleNozzleResponseDelayMs2 := 1000.0;
+END_IF
+IF GuiForceSingleNozzleResponseDelayMs3 < 0.0 THEN
+	GuiForceSingleNozzleResponseDelayMs3 := 0.0;
+ELSIF GuiForceSingleNozzleResponseDelayMs3 > 1000.0 THEN
+	GuiForceSingleNozzleResponseDelayMs3 := 1000.0;
+END_IF
+IF GuiForceSingleNozzleResponseDelayMs4 < 0.0 THEN
+	GuiForceSingleNozzleResponseDelayMs4 := 0.0;
+ELSIF GuiForceSingleNozzleResponseDelayMs4 > 1000.0 THEN
+	GuiForceSingleNozzleResponseDelayMs4 := 1000.0;
+END_IF
+
+// Interpolate the measured response delay from one to four enabled nozzles.
+ActiveNozzleCount1 := 0;
+IF GuiNozzleEnabled1 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
+IF GuiNozzleEnabled2 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
+IF GuiNozzleEnabled3 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
+IF GuiNozzleEnabled4 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
+ActiveNozzleCount2 := 0;
+IF GuiNozzleEnabled5 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+IF GuiNozzleEnabled6 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+IF GuiNozzleEnabled7 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+IF GuiNozzleEnabled8 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+ActiveNozzleCount3 := 0;
+IF GuiNozzleEnabled9 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled10 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled11 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled12 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+ActiveNozzleCount4 := 0;
+IF GuiNozzleEnabled13 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled14 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled15 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled16 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+
+IF ActiveNozzleCount1 <= 1 THEN
+	EffectiveForceResponseDelayMs1 := GuiForceSingleNozzleResponseDelayMs1;
+ELSIF ActiveNozzleCount1 >= 4 THEN
+	EffectiveForceResponseDelayMs1 := GuiForceResponseDelayMs1;
+ELSE
+	EffectiveForceResponseDelayMs1 := GuiForceSingleNozzleResponseDelayMs1
+		+ (GuiForceResponseDelayMs1 - GuiForceSingleNozzleResponseDelayMs1)
+		* TO_REAL(ActiveNozzleCount1 - 1) / 3.0;
+END_IF
+IF ActiveNozzleCount2 <= 1 THEN
+	EffectiveForceResponseDelayMs2 := GuiForceSingleNozzleResponseDelayMs2;
+ELSIF ActiveNozzleCount2 >= 4 THEN
+	EffectiveForceResponseDelayMs2 := GuiForceResponseDelayMs2;
+ELSE
+	EffectiveForceResponseDelayMs2 := GuiForceSingleNozzleResponseDelayMs2
+		+ (GuiForceResponseDelayMs2 - GuiForceSingleNozzleResponseDelayMs2)
+		* TO_REAL(ActiveNozzleCount2 - 1) / 3.0;
+END_IF
+IF ActiveNozzleCount3 <= 1 THEN
+	EffectiveForceResponseDelayMs3 := GuiForceSingleNozzleResponseDelayMs3;
+ELSIF ActiveNozzleCount3 >= 4 THEN
+	EffectiveForceResponseDelayMs3 := GuiForceResponseDelayMs3;
+ELSE
+	EffectiveForceResponseDelayMs3 := GuiForceSingleNozzleResponseDelayMs3
+		+ (GuiForceResponseDelayMs3 - GuiForceSingleNozzleResponseDelayMs3)
+		* TO_REAL(ActiveNozzleCount3 - 1) / 3.0;
+END_IF
+IF ActiveNozzleCount4 <= 1 THEN
+	EffectiveForceResponseDelayMs4 := GuiForceSingleNozzleResponseDelayMs4;
+ELSIF ActiveNozzleCount4 >= 4 THEN
+	EffectiveForceResponseDelayMs4 := GuiForceResponseDelayMs4;
+ELSE
+	EffectiveForceResponseDelayMs4 := GuiForceSingleNozzleResponseDelayMs4
+		+ (GuiForceResponseDelayMs4 - GuiForceSingleNozzleResponseDelayMs4)
+		* TO_REAL(ActiveNozzleCount4 - 1) / 3.0;
+END_IF
+
 IF VelocityMeasurementValid AND (EstimatedVelocityMmPerSec1 > 0.0) THEN
 	IF GuiOffsetMm1 < 0.0 THEN
 		EstimatedOffsetDelayMs1 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs1 := GuiOffsetMm1 * 1000.0 / EstimatedVelocityMmPerSec1;
+		EstimatedOffsetDelayMs1 := (GuiOffsetMm1 * 1000.0 / EstimatedVelocityMmPerSec1) - EffectiveForceResponseDelayMs1;
+		IF EstimatedOffsetDelayMs1 < 0.0 THEN
+			EstimatedOffsetDelayMs1 := 0.0;
+		END_IF
 	END_IF
 ELSE
 	EstimatedOffsetDelayMs1 := 0.0;
@@ -1234,7 +1354,10 @@ IF VelocityMeasurement2Valid AND (EstimatedVelocityMmPerSec2 > 0.0) THEN
 	IF GuiOffsetMm2 < 0.0 THEN
 		EstimatedOffsetDelayMs2 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs2 := GuiOffsetMm2 * 1000.0 / EstimatedVelocityMmPerSec2;
+		EstimatedOffsetDelayMs2 := (GuiOffsetMm2 * 1000.0 / EstimatedVelocityMmPerSec2) - EffectiveForceResponseDelayMs2;
+		IF EstimatedOffsetDelayMs2 < 0.0 THEN
+			EstimatedOffsetDelayMs2 := 0.0;
+		END_IF
 	END_IF
 ELSE
 	EstimatedOffsetDelayMs2 := 0.0;
@@ -1244,7 +1367,10 @@ IF VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec3 > 0.0) THEN
 	IF GuiOffsetMm3 < 0.0 THEN
 		EstimatedOffsetDelayMs3 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs3 := GuiOffsetMm3 * 1000.0 / EstimatedVelocityMmPerSec3;
+		EstimatedOffsetDelayMs3 := (GuiOffsetMm3 * 1000.0 / EstimatedVelocityMmPerSec3) - EffectiveForceResponseDelayMs3;
+		IF EstimatedOffsetDelayMs3 < 0.0 THEN
+			EstimatedOffsetDelayMs3 := 0.0;
+		END_IF
 	END_IF
 ELSE
 	EstimatedOffsetDelayMs3 := 0.0;
@@ -1254,7 +1380,10 @@ IF VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec4 > 0.0) THEN
 	IF GuiOffsetMm4 < 0.0 THEN
 		EstimatedOffsetDelayMs4 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs4 := GuiOffsetMm4 * 1000.0 / EstimatedVelocityMmPerSec4;
+		EstimatedOffsetDelayMs4 := (GuiOffsetMm4 * 1000.0 / EstimatedVelocityMmPerSec4) - EffectiveForceResponseDelayMs4;
+		IF EstimatedOffsetDelayMs4 < 0.0 THEN
+			EstimatedOffsetDelayMs4 := 0.0;
+		END_IF
 	END_IF
 ELSE
 	EstimatedOffsetDelayMs4 := 0.0;
