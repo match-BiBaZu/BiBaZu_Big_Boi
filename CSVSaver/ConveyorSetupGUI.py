@@ -55,8 +55,9 @@ BARRIER_STATUS_TEXT = {
 }
 
 UR_HOST = "10.10.10.10"
-UR_PRIMARY_PORT = 30001
+UR_PRIMARY_PORT = 30002
 UR_POSE_TIMEOUT_SECONDS = 0.5
+UR_RECONNECT_INTERVAL_SECONDS = 1.0
 UR_SPEED_LOG_FILE = Path(__file__).resolve().parent / "ur_speed_plausibility.csv"
 UR_SPEED_LOG_HEADER = [
     "local_timestamp",
@@ -122,6 +123,7 @@ class UrPoseWorker(QObject):
         self.connection = None
         self.connected = False
         self.stopping = False
+        self.next_connect_attempt = 0.0
 
     @pyqtSlot()
     def start(self) -> None:
@@ -148,6 +150,8 @@ class UrPoseWorker(QObject):
     def poll(self) -> None:
         if self.stopping:
             return
+        if self.connection is None and time.monotonic() < self.next_connect_attempt:
+            return
         try:
             if self.connection is None:
                 self.connection = socket.create_connection(
@@ -156,10 +160,12 @@ class UrPoseWorker(QObject):
             pose = read_tcp_pose_from_connection(
                 self.connection, UR_POSE_TIMEOUT_SECONDS
             )
+            self.next_connect_attempt = 0.0
             self._set_connected(True)
             self.pose_ready.emit((time.monotonic(), pose))
         except (OSError, ConnectionError, TimeoutError, ValueError) as exc:
             self._close_connection()
+            self.next_connect_attempt = time.monotonic() + UR_RECONNECT_INTERVAL_SECONDS
             self._set_connected(False, str(exc))
 
     @pyqtSlot()
