@@ -879,6 +879,15 @@ class ConveyorSetupWindow(QMainWindow):
         pair = tuple(sorted(self._selected_ur_sensors()))
         spacing_index = ((1, 2), (3, 4), (5, 6)).index(pair)
         distance_mm = float(status["sensor_spacings"][spacing_index])
+        expected_elapsed_ms = (
+            distance_mm * 1000.0 / self.ur_target_speed.value()
+        )
+        if not 0.5 * expected_elapsed_ms <= elapsed_ms <= 2.0 * expected_elapsed_ms:
+            self.ur_monitor_pending_edges[edge_state] = (event_time, sensor)
+            self.ur_monitor_state_label.setText(
+                f"Ignored implausible edge pair ({elapsed_ms} ms)"
+            )
+            return
         speed = distance_mm * 1000.0 / elapsed_ms
         self.ur_monitor_samples.append(
             {
