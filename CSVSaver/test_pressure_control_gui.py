@@ -164,6 +164,120 @@ class AdsThreadTests(unittest.TestCase):
 
         self.assertEqual(len(plc.read_calls), 1)
         self.assertEqual(snapshot["shot_counter"], 0)
+        self.assertFalse(
+            any("MeasuredValveTriggerDelay" in name for name in plc.read_calls[0])
+        )
+
+    def test_force_delay_status_uses_one_sum_read(self):
+        plc = FakePlc()
+        worker = gui.AdsWorker()
+        worker.client = FakeClient(plc)
+
+        status = worker.read_force_delay_snapshot()
+
+        self.assertEqual(len(plc.read_calls), 1)
+        self.assertEqual(len(plc.read_calls[0]), 18)
+        self.assertEqual(status["result_counter"], 0)
+        self.assertEqual(status["current_signal"], 0.0)
+
+    def test_force_delay_start_is_one_configuration_batch(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        writes = []
+        controller.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        controller.start_force_delay_measurement(4, 2, 2500, 0.125)
+
+        values, context = writes[0]
+        self.assertEqual(context, "force_delay_start")
+        self.assertTrue(values["MAIN.GuiForceDelayMeasurementEnabled"])
+        self.assertEqual(values["MAIN.GuiForceDelayLightBarrier"], 4)
+        self.assertEqual(values["MAIN.GuiForceDelaySensor"], 2)
+        self.assertEqual(values["MAIN.GuiForceDelayWindowMs"], 2500)
+        self.assertEqual(values["MAIN.GuiForceDelayMinRise"], 0.125)
+        controller.shutdown()
+
+    def test_force_delay_statistics_report_consistency(self):
+        result = gui.calculate_force_delay_statistics([230.0, 237.0, 244.0])
+
+        self.assertEqual(result["mean"], 237.0)
+        self.assertAlmostEqual(
+            result["standard_deviation"], (98.0 / 3.0) ** 0.5
+        )
+        self.assertEqual(result["minimum"], 230.0)
+        self.assertEqual(result["maximum"], 244.0)
+
+    def test_force_delay_dialog_logs_valid_and_rejected_results(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        writes = []
+        controller.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+        base_status = {
+            "enabled": False,
+            "light_barrier": 2,
+            "sensor": 1,
+            "window_ms": 2000,
+            "minimum_rise": 0.05,
+            "busy": False,
+            "status_code": 1,
+            "result_counter": 5,
+            "valid_count": 0,
+            "invalid_count": 0,
+            "last_valid": False,
+            "light_barrier_time_ms": 1000,
+            "peak_time_ms": 1237,
+            "peak_delay_ms": 237,
+            "baseline": 0.1,
+            "peak": 0.8,
+            "peak_rise": 0.7,
+            "current_signal": 0.12,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "force_delay.csv"
+            with patch.object(gui, "FORCE_DELAY_LOG_FILE", log_path):
+                dialog = gui.ForceDelayDialog(controller)
+                dialog._apply_status(base_status)
+                dialog._start()
+                dialog._apply_status(
+                    {
+                        **base_status,
+                        "enabled": True,
+                        "status_code": 3,
+                        "result_counter": 6,
+                        "last_valid": True,
+                    }
+                )
+                dialog._apply_status(
+                    {
+                        **base_status,
+                        "enabled": True,
+                        "status_code": 4,
+                        "result_counter": 7,
+                        "peak_delay_ms": 400,
+                        "peak": 0.12,
+                        "peak_rise": 0.02,
+                    }
+                )
+
+                self.assertEqual(len(dialog.measurements), 2)
+                self.assertEqual(dialog.mean_label.text(), "237.0 ms")
+                self.assertEqual(dialog.count_label.text(), "1 valid / 1 invalid")
+                self.assertEqual(len(log_path.read_text().splitlines()), 3)
+                dialog.close()
+
+        self.assertTrue(
+            any(
+                values.get("MAIN.GuiForceDelayMeasurementEnabled") is False
+                and context == "force_delay_stop"
+                for values, context in writes
+            )
+        )
+        controller.shutdown()
 
     def test_setup_status_uses_one_sum_read(self):
         plc = FakePlc()

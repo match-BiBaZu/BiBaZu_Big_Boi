@@ -106,6 +106,12 @@ VAR
 	GuiOffsetMm2			: REAL := 0.0;
 	GuiOffsetMm3			: REAL := 0.0;
 	GuiOffsetMm4			: REAL := 0.0;
+	GuiForceDelayMeasurementEnabled	: BOOL := FALSE;
+	GuiForceDelayLightBarrier	: UINT := 2;
+	GuiForceDelaySensor		: UINT := 1;
+	GuiForceDelayWindowMs		: UINT := 2000;
+	GuiForceDelayMinRise		: REAL := 0.05;
+	GuiForceDelayReset		: BOOL := FALSE;
 	EstimatedVelocityMmPerSec	: REAL := 0.0;
 	EstimatedVelocityMmPerSec1	: REAL := 0.0;
 	EstimatedVelocityMmPerSec2	: REAL := 0.0;
@@ -222,22 +228,27 @@ VAR
 	Array2TriggerPending		: BOOL := FALSE;
 	Array3TriggerPending		: BOOL := FALSE;
 	Array4TriggerPending		: BOOL := FALSE;
-	PlcTaskCycleTimeMs			: REAL := 1.0; //must match the PLC task cycle time
-	ValveBarrierDelayCounter1	: INT := 0;
-	ValveBarrierDelayCounter2	: INT := 0;
-	ValveBarrierDelayCounter3	: INT := 0;
-	ValveBarrierTiming1Active	: BOOL := FALSE;
-	ValveBarrierTiming2Active	: BOOL := FALSE;
-	ValveBarrierTiming3Active	: BOOL := FALSE;
-	MeasuredValveTriggerDelayMs1	: REAL := 0.0; //light barrier 2 to first array 1 valve command
-	MeasuredValveTriggerDelayMs2	: REAL := 0.0; //light barrier 4 to first array 2 valve command
-	MeasuredValveTriggerDelayMs3	: REAL := 0.0; //light barrier 6 to first array 3 valve command
-	Array1ValveCommand			: BOOL := FALSE;
-	Array2ValveCommand			: BOOL := FALSE;
-	Array3ValveCommand			: BOOL := FALSE;
-	LastArray1ValveCommand		: BOOL := FALSE;
-	LastArray2ValveCommand		: BOOL := FALSE;
-	LastArray3ValveCommand		: BOOL := FALSE;
+	ForceDelayBusy			: BOOL := FALSE;
+	ForceDelayStatusCode		: UINT := 0; //0 disabled, 1 armed, 2 measuring, 3 valid, 4 no peak
+	ForceDelayResultCounter		: UDINT := 0;
+	ForceDelayValidCount		: UDINT := 0;
+	ForceDelayInvalidCount		: UDINT := 0;
+	ForceDelayLastValid		: BOOL := FALSE;
+	ForceDelayLightBarrierTimeMs	: UDINT := 0;
+	ForceDelayPeakTimeMs		: UDINT := 0;
+	ForceDelayPeakDelayMs		: UDINT := 0;
+	ForceDelayElapsedMs		: UINT := 0;
+	ForceDelayBaseline		: REAL := 0.0;
+	ForceDelayPeak			: REAL := 0.0;
+	ForceDelayPeakRise		: REAL := 0.0;
+	ForceDelayCurrentSignal		: REAL := 0.0;
+	ForceDelayBaselineBuffer1	: ARRAY [0..49] OF REAL;
+	ForceDelayBaselineBuffer2	: ARRAY [0..49] OF REAL;
+	ForceDelayBaselineSum1		: REAL := 0.0;
+	ForceDelayBaselineSum2		: REAL := 0.0;
+	ForceDelayBaselineIndex		: UINT := 0;
+	ForceDelayBaselineCount		: UINT := 0;
+	ForceDelayTrigger		: BOOL := FALSE;
 	
 	//EL 3068
 	RawNozzlePressure AT %I*: INT  := 0; //The raw analogue input reading from the EL3068 terminal (max 32767)
@@ -931,24 +942,124 @@ END_IF
 
 IF LightBarrier2FallingEdge AND Array1Active AND (State <= 2) THEN
 	Array1TriggerPending := TRUE;
-	ValveBarrierDelayCounter1 := 0;
-	ValveBarrierTiming1Active := TRUE;
 END_IF
 
 IF LightBarrier4FallingEdge AND Array2Active AND (State2 = 2) THEN
 	Array2TriggerPending := TRUE;
-	ValveBarrierDelayCounter2 := 0;
-	ValveBarrierTiming2Active := TRUE;
 END_IF
 
 IF LightBarrier6FallingEdge AND Array3Active AND (State3 <= 2) THEN
 	Array3TriggerPending := TRUE;
-	ValveBarrierDelayCounter3 := 0;
-	ValveBarrierTiming3Active := TRUE;
 END_IF
 
 IF LightBarrier6FallingEdge AND Array4Active AND (State4 = 2) THEN
 	Array4TriggerPending := TRUE;
+END_IF
+
+// Measure the selected force-sensor peak relative to a debounced light-barrier edge.
+IF GuiForceDelayLightBarrier = 2 THEN
+	ForceDelayTrigger := LightBarrier2FallingEdge;
+ELSIF GuiForceDelayLightBarrier = 4 THEN
+	ForceDelayTrigger := LightBarrier4FallingEdge;
+ELSE
+	ForceDelayTrigger := LightBarrier6FallingEdge;
+END_IF
+
+IF GuiForceDelaySensor = 2 THEN
+	ForceDelayCurrentSignal := NozzlePressure2;
+ELSE
+	ForceDelayCurrentSignal := NozzlePressure;
+END_IF
+
+IF GuiForceDelayReset THEN
+	ForceDelayBusy := FALSE;
+	ForceDelayResultCounter := 0;
+	ForceDelayValidCount := 0;
+	ForceDelayInvalidCount := 0;
+	ForceDelayLastValid := FALSE;
+	ForceDelayLightBarrierTimeMs := 0;
+	ForceDelayPeakTimeMs := 0;
+	ForceDelayPeakDelayMs := 0;
+	ForceDelayElapsedMs := 0;
+	ForceDelayBaseline := 0.0;
+	ForceDelayPeak := 0.0;
+	ForceDelayPeakRise := 0.0;
+	GuiForceDelayReset := FALSE;
+END_IF
+
+IF NOT GuiForceDelayMeasurementEnabled THEN
+	ForceDelayBusy := FALSE;
+	ForceDelayStatusCode := 0;
+ELSE
+	IF GuiForceDelayWindowMs < 100 THEN
+		GuiForceDelayWindowMs := 100;
+	ELSIF GuiForceDelayWindowMs > 30000 THEN
+		GuiForceDelayWindowMs := 30000;
+	END_IF
+	IF GuiForceDelayMinRise < 0.0 THEN
+		GuiForceDelayMinRise := 0.0;
+	END_IF
+
+	IF ForceDelayBusy THEN
+		IF ForceDelayElapsedMs < 30000 THEN
+			ForceDelayElapsedMs := ForceDelayElapsedMs + 1;
+		END_IF
+		IF ForceDelayCurrentSignal > ForceDelayPeak THEN
+			ForceDelayPeak := ForceDelayCurrentSignal;
+			ForceDelayPeakDelayMs := UINT_TO_UDINT(ForceDelayElapsedMs);
+		END_IF
+		IF ForceDelayElapsedMs >= GuiForceDelayWindowMs THEN
+			ForceDelayPeakRise := ForceDelayPeak - ForceDelayBaseline;
+			ForceDelayPeakTimeMs := ForceDelayLightBarrierTimeMs + ForceDelayPeakDelayMs;
+			ForceDelayLastValid := ForceDelayPeakRise >= GuiForceDelayMinRise;
+			ForceDelayResultCounter := ForceDelayResultCounter + 1;
+			IF ForceDelayLastValid THEN
+				ForceDelayValidCount := ForceDelayValidCount + 1;
+				ForceDelayStatusCode := 3;
+			ELSE
+				ForceDelayInvalidCount := ForceDelayInvalidCount + 1;
+				ForceDelayStatusCode := 4;
+			END_IF
+			ForceDelayBusy := FALSE;
+		END_IF
+	ELSIF ForceDelayTrigger THEN
+		IF ForceDelayBaselineCount > 0 THEN
+			IF GuiForceDelaySensor = 2 THEN
+				ForceDelayBaseline := ForceDelayBaselineSum2 / UINT_TO_REAL(ForceDelayBaselineCount);
+			ELSE
+				ForceDelayBaseline := ForceDelayBaselineSum1 / UINT_TO_REAL(ForceDelayBaselineCount);
+			END_IF
+		ELSE
+			ForceDelayBaseline := ForceDelayCurrentSignal;
+		END_IF
+		ForceDelayLightBarrierTimeMs := LightBarrierEventClockMs;
+		ForceDelayPeak := ForceDelayCurrentSignal;
+		ForceDelayPeakRise := 0.0;
+		ForceDelayPeakDelayMs := 0;
+		ForceDelayElapsedMs := 0;
+		ForceDelayBusy := TRUE;
+		ForceDelayStatusCode := 2;
+	ELSIF (ForceDelayStatusCode = 0) OR (ForceDelayStatusCode = 2) THEN
+		ForceDelayStatusCode := 1;
+	END_IF
+END_IF
+
+// Keep a 50 ms pre-trigger baseline for both analogue channels.
+IF NOT ForceDelayBusy THEN
+	ForceDelayBaselineSum1 := ForceDelayBaselineSum1 - ForceDelayBaselineBuffer1[ForceDelayBaselineIndex];
+	ForceDelayBaselineSum2 := ForceDelayBaselineSum2 - ForceDelayBaselineBuffer2[ForceDelayBaselineIndex];
+	ForceDelayBaselineBuffer1[ForceDelayBaselineIndex] := NozzlePressure;
+	ForceDelayBaselineBuffer2[ForceDelayBaselineIndex] := NozzlePressure2;
+	ForceDelayBaselineSum1 := ForceDelayBaselineSum1 + NozzlePressure;
+	ForceDelayBaselineSum2 := ForceDelayBaselineSum2 + NozzlePressure2;
+	IF ForceDelayBaselineCount < 50 THEN
+		ForceDelayBaselineCount := ForceDelayBaselineCount + 1;
+	END_IF
+	IF ForceDelayBaselineIndex >= 49 THEN
+		ForceDelayBaselineIndex := 0;
+	ELSE
+		ForceDelayBaselineIndex := ForceDelayBaselineIndex + 1;
+	END_IF
 END_IF
 
 // Falling edge on light barrier 1 starts the velocity timing window.
@@ -1407,63 +1518,12 @@ CASE State4 OF
 		END_IF
 END_CASE
 
-// Measure from each corresponding light-barrier edge to the first commanded valve-on edge.
-Array1ValveCommand := OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4;
-Array2ValveCommand := OpenValve5 OR OpenValve6 OR OpenValve7 OR OpenValve8;
-Array3ValveCommand := OpenValve9 OR OpenValve10 OR OpenValve11 OR OpenValve12;
-
-IF ValveBarrierTiming1Active THEN
-	IF NOT Array1Active THEN
-		ValveBarrierTiming1Active := FALSE;
-	ELSIF Array1ValveCommand AND NOT LastArray1ValveCommand THEN
-		MeasuredValveTriggerDelayMs1 := INT_TO_REAL(ValveBarrierDelayCounter1) * PlcTaskCycleTimeMs;
-		ValveBarrierTiming1Active := FALSE;
-	ELSIF ValveBarrierDelayCounter1 < 32767 THEN
-		ValveBarrierDelayCounter1 := ValveBarrierDelayCounter1 + 1;
-	ELSE
-		ValveBarrierTiming1Active := FALSE;
-	END_IF
-END_IF
-
-IF ValveBarrierTiming2Active THEN
-	IF NOT Array2Active THEN
-		ValveBarrierTiming2Active := FALSE;
-	ELSIF Array2ValveCommand AND NOT LastArray2ValveCommand THEN
-		MeasuredValveTriggerDelayMs2 := INT_TO_REAL(ValveBarrierDelayCounter2) * PlcTaskCycleTimeMs;
-		ValveBarrierTiming2Active := FALSE;
-	ELSIF ValveBarrierDelayCounter2 < 32767 THEN
-		ValveBarrierDelayCounter2 := ValveBarrierDelayCounter2 + 1;
-	ELSE
-		ValveBarrierTiming2Active := FALSE;
-	END_IF
-END_IF
-
-IF ValveBarrierTiming3Active THEN
-	IF NOT Array3Active THEN
-		ValveBarrierTiming3Active := FALSE;
-	ELSIF Array3ValveCommand AND NOT LastArray3ValveCommand THEN
-		MeasuredValveTriggerDelayMs3 := INT_TO_REAL(ValveBarrierDelayCounter3) * PlcTaskCycleTimeMs;
-		ValveBarrierTiming3Active := FALSE;
-	ELSIF ValveBarrierDelayCounter3 < 32767 THEN
-		ValveBarrierDelayCounter3 := ValveBarrierDelayCounter3 + 1;
-	ELSE
-		ValveBarrierTiming3Active := FALSE;
-	END_IF
-END_IF
-
-LastArray1ValveCommand := Array1ValveCommand;
-LastArray2ValveCommand := Array2ValveCommand;
-LastArray3ValveCommand := Array3ValveCommand;
-
 // Setup movement must never trigger a nozzle, even if a state was active on entry.
 IF GuiConveyorCalibrationMode OR GuiVelocityCheckMode THEN
 	Array1TriggerPending := FALSE;
 	Array2TriggerPending := FALSE;
 	Array3TriggerPending := FALSE;
 	Array4TriggerPending := FALSE;
-	ValveBarrierTiming1Active := FALSE;
-	ValveBarrierTiming2Active := FALSE;
-	ValveBarrierTiming3Active := FALSE;
 	Counter := 0;
 	Counter2 := 0;
 	Counter3 := 0;

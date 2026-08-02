@@ -1,5 +1,6 @@
 import csv
 import json
+import statistics
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,12 +11,14 @@ from PyQt6.QtCore import QObject, Qt, QSignalBlocker, QThread, QTimer, pyqtSigna
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -24,6 +27,8 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QStatusBar,
     QStyle,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +42,7 @@ PROFILE_DIR = Path("pressure_profiles")
 PROFILE_VERSION = 2
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
+FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
 CSV_HEADER = [
     "timestamp",
     "AvgPressureN1",
@@ -77,6 +83,11 @@ ESTIMATE_POLL_INTERVAL_MS = 750
 ESTIMATE_DISPLAY_EPSILON = 0.05
 CALIBRATION_POLL_INTERVAL_MS = 100
 SETUP_POLL_INTERVAL_MS = 50
+FORCE_DELAY_POLL_INTERVAL_MS = 100
+FORCE_DELAY_WINDOW_DEFAULT_MS = 2000
+FORCE_DELAY_WINDOW_MIN_MS = 100
+FORCE_DELAY_WINDOW_MAX_MS = 30000
+FORCE_DELAY_MIN_RISE_DEFAULT = 0.05
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
 CONVEYOR_MM_PER_FULL_STEP_DEFAULT = 0.32960026
 CALIBRATION_JOG_STEPS_DEFAULT = 100
@@ -98,6 +109,28 @@ def calculate_conveyor_jog(
     return full_steps, actual_distance_mm, full_steps_per_sec
 
 
+def calculate_force_delay_statistics(delays_ms: list[float]) -> dict[str, float]:
+    if not delays_ms:
+        return {
+            "mean": 0.0,
+            "standard_deviation": 0.0,
+            "minimum": 0.0,
+            "maximum": 0.0,
+            "coefficient_of_variation": 0.0,
+        }
+    mean = statistics.fmean(delays_ms)
+    standard_deviation = statistics.pstdev(delays_ms)
+    return {
+        "mean": mean,
+        "standard_deviation": standard_deviation,
+        "minimum": min(delays_ms),
+        "maximum": max(delays_ms),
+        "coefficient_of_variation": (
+            standard_deviation / mean * 100.0 if mean != 0.0 else 0.0
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class ArraySymbols:
     array_enabled: str
@@ -108,7 +141,6 @@ class ArraySymbols:
     offset: str
     estimated_velocity: str
     estimated_delay: str
-    measured_valve_delay: str | None
 
 
 SYMBOLS = {
@@ -124,9 +156,6 @@ SYMBOLS = {
         offset=f"MAIN.GuiOffsetMm{index}",
         estimated_velocity=f"MAIN.EstimatedVelocityMmPerSec{index}",
         estimated_delay=f"MAIN.EstimatedOffsetDelayMs{index}",
-        measured_valve_delay=(
-            f"MAIN.MeasuredValveTriggerDelayMs{index}" if index <= 3 else None
-        ),
     )
     for index in range(1, ARRAY_COUNT + 1)
 }
@@ -384,24 +413,6 @@ class AdsClient:
             raise RuntimeError("ADS is offline")
         self.plc.write_by_name("MAIN.GuiResetVelocityEstimates", True, pyads.PLCTYPE_BOOL)
 
-    def read_estimates(self) -> tuple[list[float], list[float], list[float | None]]:
-        if self.plc is None:
-            raise RuntimeError("ADS is offline")
-        velocities = [
-            self.plc.read_by_name(SYMBOLS[index].estimated_velocity, pyads.PLCTYPE_REAL)
-            for index in range(1, ARRAY_COUNT + 1)
-        ]
-        delays = [
-            self.plc.read_by_name(SYMBOLS[index].estimated_delay, pyads.PLCTYPE_REAL)
-            for index in range(1, ARRAY_COUNT + 1)
-        ]
-        measured_valve_delays = [
-            self.plc.read_by_name(symbol, pyads.PLCTYPE_REAL) if symbol is not None else None
-            for index in range(1, ARRAY_COUNT + 1)
-            for symbol in [SYMBOLS[index].measured_valve_delay]
-        ]
-        return velocities, delays, measured_valve_delays
-
     def read_shot_counter(self) -> int:
         if self.plc is None:
             raise RuntimeError("ADS is offline")
@@ -426,6 +437,7 @@ class AdsWorker(QObject):
     live_snapshot_ready = pyqtSignal(object)
     calibration_status_ready = pyqtSignal(object)
     setup_status_ready = pyqtSignal(object)
+    force_delay_status_ready = pyqtSignal(object)
     write_finished = pyqtSignal(str, object)
     operation_failed = pyqtSignal(str, str)
     shutdown_finished = pyqtSignal()
@@ -435,6 +447,7 @@ class AdsWorker(QObject):
         "MAIN.GuiConveyorCalibrationMode": False,
         "MAIN.GuiVelocityCheckMode": False,
         "MAIN.GuiConveyorEnabled": False,
+        "MAIN.GuiForceDelayMeasurementEnabled": False,
     }
 
     def __init__(self) -> None:
@@ -444,6 +457,7 @@ class AdsWorker(QObject):
         self.reconnect_timer: QTimer | None = None
         self.calibration_polling = False
         self.setup_polling = False
+        self.force_delay_polling = False
         self.shutting_down = False
 
     @pyqtSlot()
@@ -507,6 +521,8 @@ class AdsWorker(QObject):
             self.poll_timer.setInterval(CALIBRATION_POLL_INTERVAL_MS)
         elif self.setup_polling:
             self.poll_timer.setInterval(SETUP_POLL_INTERVAL_MS)
+        elif self.force_delay_polling:
+            self.poll_timer.setInterval(FORCE_DELAY_POLL_INTERVAL_MS)
         else:
             self.poll_timer.setInterval(LOG_POLL_INTERVAL_MS)
 
@@ -597,8 +613,6 @@ class AdsWorker(QObject):
         names = ["MAIN.ShotCounter", "MAIN.AvgPressureN1", "MAIN.AvgPressureN2"]
         for index in range(1, ARRAY_COUNT + 1):
             names.extend([SYMBOLS[index].estimated_velocity, SYMBOLS[index].estimated_delay])
-            if SYMBOLS[index].measured_valve_delay is not None:
-                names.append(SYMBOLS[index].measured_valve_delay)
         for index in range(1, 7):
             names.extend(
                 [
@@ -632,12 +646,6 @@ class AdsWorker(QObject):
                 float(values[SYMBOLS[index].estimated_delay])
                 for index in range(1, ARRAY_COUNT + 1)
             ],
-            "measured_valve_delays": [
-                float(values[SYMBOLS[index].measured_valve_delay])
-                if SYMBOLS[index].measured_valve_delay is not None
-                else None
-                for index in range(1, ARRAY_COUNT + 1)
-            ],
             "light_barrier_events": [
                 {
                     "barrier": index,
@@ -663,6 +671,51 @@ class AdsWorker(QObject):
                 bool(values["MAIN.VelocityMeasurement2Valid"]),
                 bool(values["MAIN.VelocityMeasurement3Valid"]),
             ),
+        }
+
+    def read_force_delay_snapshot(self) -> dict:
+        names = [
+            "MAIN.GuiForceDelayMeasurementEnabled",
+            "MAIN.GuiForceDelayLightBarrier",
+            "MAIN.GuiForceDelaySensor",
+            "MAIN.GuiForceDelayWindowMs",
+            "MAIN.GuiForceDelayMinRise",
+            "MAIN.ForceDelayBusy",
+            "MAIN.ForceDelayStatusCode",
+            "MAIN.ForceDelayResultCounter",
+            "MAIN.ForceDelayValidCount",
+            "MAIN.ForceDelayInvalidCount",
+            "MAIN.ForceDelayLastValid",
+            "MAIN.ForceDelayLightBarrierTimeMs",
+            "MAIN.ForceDelayPeakTimeMs",
+            "MAIN.ForceDelayPeakDelayMs",
+            "MAIN.ForceDelayBaseline",
+            "MAIN.ForceDelayPeak",
+            "MAIN.ForceDelayPeakRise",
+            "MAIN.ForceDelayCurrentSignal",
+        ]
+        values = self.read_values(names)
+        return {
+            "enabled": bool(values["MAIN.GuiForceDelayMeasurementEnabled"]),
+            "light_barrier": int(values["MAIN.GuiForceDelayLightBarrier"]),
+            "sensor": int(values["MAIN.GuiForceDelaySensor"]),
+            "window_ms": int(values["MAIN.GuiForceDelayWindowMs"]),
+            "minimum_rise": float(values["MAIN.GuiForceDelayMinRise"]),
+            "busy": bool(values["MAIN.ForceDelayBusy"]),
+            "status_code": int(values["MAIN.ForceDelayStatusCode"]),
+            "result_counter": int(values["MAIN.ForceDelayResultCounter"]),
+            "valid_count": int(values["MAIN.ForceDelayValidCount"]),
+            "invalid_count": int(values["MAIN.ForceDelayInvalidCount"]),
+            "last_valid": bool(values["MAIN.ForceDelayLastValid"]),
+            "light_barrier_time_ms": int(
+                values["MAIN.ForceDelayLightBarrierTimeMs"]
+            ),
+            "peak_time_ms": int(values["MAIN.ForceDelayPeakTimeMs"]),
+            "peak_delay_ms": int(values["MAIN.ForceDelayPeakDelayMs"]),
+            "baseline": float(values["MAIN.ForceDelayBaseline"]),
+            "peak": float(values["MAIN.ForceDelayPeak"]),
+            "peak_rise": float(values["MAIN.ForceDelayPeakRise"]),
+            "current_signal": float(values["MAIN.ForceDelayCurrentSignal"]),
         }
 
     def read_calibration_snapshot(self) -> dict:
@@ -815,6 +868,8 @@ class AdsWorker(QObject):
                 self.calibration_status_ready.emit(self.read_calibration_snapshot())
             elif self.setup_polling:
                 self.setup_status_ready.emit(self.read_setup_snapshot())
+            elif self.force_delay_polling:
+                self.force_delay_status_ready.emit(self.read_force_delay_snapshot())
             else:
                 self.live_snapshot_ready.emit(self.read_live_snapshot())
         except Exception as exc:
@@ -865,6 +920,23 @@ class AdsWorker(QObject):
             except Exception as exc:
                 self.handle_failure("setup_poll", exc)
 
+    @pyqtSlot(bool)
+    def set_force_delay_polling(self, enabled: bool) -> None:
+        self.force_delay_polling = enabled
+        self._update_poll_interval()
+        if (
+            enabled
+            and self.client.is_connected
+            and not self.calibration_polling
+            and not self.setup_polling
+        ):
+            try:
+                self.force_delay_status_ready.emit(
+                    self.read_force_delay_snapshot()
+                )
+            except Exception as exc:
+                self.handle_failure("force_delay_poll", exc)
+
     @pyqtSlot()
     def reconnect(self) -> None:
         self.disconnect_ads("")
@@ -892,12 +964,14 @@ class AdsController(QObject):
     live_snapshot_ready = pyqtSignal(object)
     calibration_status_ready = pyqtSignal(object)
     setup_status_ready = pyqtSignal(object)
+    force_delay_status_ready = pyqtSignal(object)
     write_finished = pyqtSignal(str)
     operation_failed = pyqtSignal(str, str)
 
     write_requested = pyqtSignal(object, str)
     calibration_mode_requested = pyqtSignal(bool)
     setup_polling_requested = pyqtSignal(bool)
+    force_delay_polling_requested = pyqtSignal(bool)
     reconnect_requested = pyqtSignal()
     shutdown_requested = pyqtSignal()
 
@@ -926,6 +1000,9 @@ class AdsController(QObject):
         self.write_requested.connect(self.worker.write_values)
         self.calibration_mode_requested.connect(self.worker.set_calibration_mode)
         self.setup_polling_requested.connect(self.worker.set_setup_polling)
+        self.force_delay_polling_requested.connect(
+            self.worker.set_force_delay_polling
+        )
         self.reconnect_requested.connect(self.worker.reconnect)
         self.shutdown_requested.connect(self.worker.shutdown)
         self.worker.connection_changed.connect(self.on_connection_changed)
@@ -933,6 +1010,9 @@ class AdsController(QObject):
         self.worker.live_snapshot_ready.connect(self.live_snapshot_ready)
         self.worker.calibration_status_ready.connect(self.on_calibration_status)
         self.worker.setup_status_ready.connect(self.setup_status_ready)
+        self.worker.force_delay_status_ready.connect(
+            self.force_delay_status_ready
+        )
         self.worker.write_finished.connect(self.on_write_finished)
         self.worker.operation_failed.connect(self.operation_failed)
         self.worker.shutdown_finished.connect(
@@ -1079,6 +1159,35 @@ class AdsController(QObject):
     def set_setup_polling(self, enabled: bool) -> None:
         self.setup_polling_requested.emit(enabled)
 
+    def set_force_delay_polling(self, enabled: bool) -> None:
+        self.force_delay_polling_requested.emit(enabled)
+
+    def start_force_delay_measurement(
+        self, light_barrier: int, sensor: int, window_ms: int, minimum_rise: float
+    ) -> None:
+        self.write_now(
+            {
+                "MAIN.GuiForceDelayMeasurementEnabled": True,
+                "MAIN.GuiForceDelayLightBarrier": int(light_barrier),
+                "MAIN.GuiForceDelaySensor": int(sensor),
+                "MAIN.GuiForceDelayWindowMs": int(window_ms),
+                "MAIN.GuiForceDelayMinRise": float(minimum_rise),
+            },
+            "force_delay_start",
+        )
+
+    def stop_force_delay_measurement(self) -> None:
+        self.write_now(
+            {"MAIN.GuiForceDelayMeasurementEnabled": False},
+            "force_delay_stop",
+        )
+
+    def reset_force_delay_measurement(self) -> None:
+        self.write_now(
+            {"MAIN.GuiForceDelayReset": True},
+            "force_delay_reset",
+        )
+
     def start_barrier_calibration(
         self,
         first_sensor: int,
@@ -1205,18 +1314,6 @@ class ArrayRow:
         self.estimated_velocity.setMinimumWidth(100)
         self.estimated_velocity.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.last_displayed_velocity: float | None = 0.0
-
-        self.measured_valve_delay = QLabel("0.0 ms" if index <= 3 else "N/A")
-        self.measured_valve_delay.setMinimumWidth(90)
-        self.measured_valve_delay.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        self.measured_valve_delay.setToolTip(
-            f"Measured delay from light barrier {index * 2} to the first array valve command"
-            if index <= 3
-            else "Array 4 has no corresponding delay measurement"
-        )
-        self.last_displayed_valve_delay: float | None = 0.0
 
         self.status = QLabel("not written")
         self.status.setMinimumWidth(180)
@@ -1669,6 +1766,365 @@ class ConveyorJogDialog(QDialog):
         super().closeEvent(event)
 
 
+class ForceDelayDialog(QDialog):
+    STATUS_TEXT = {
+        0: "Disabled",
+        1: "Armed - waiting for light barrier",
+        2: "Measuring force peak",
+        3: "Last measurement valid",
+        4: "Last measurement rejected",
+    }
+
+    def __init__(self, ads: AdsController, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.ads = ads
+        self.session_running = False
+        self.polling_requested = False
+        self.last_result_counter: int | None = None
+        self.measurements: list[dict] = []
+        self.setWindowTitle("Force Peak Delay Measurement")
+        self.setModal(True)
+        self.setMinimumSize(820, 560)
+        self._build_ui()
+        self._connect_signals()
+        self.polling_requested = True
+        self.ads.set_force_delay_polling(True)
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        settings_box = QGroupBox("Measurement Settings")
+        settings = QGridLayout(settings_box)
+        self.array_input = QComboBox()
+        for index in range(1, ARRAY_COUNT + 1):
+            self.array_input.addItem(f"Array {index}", index)
+        self.light_barrier_input = QComboBox()
+        for index in (2, 4, 6):
+            self.light_barrier_input.addItem(f"Light barrier {index}", index)
+        self.force_sensor_input = QComboBox()
+        self.force_sensor_input.addItem("Force sensor 1", 1)
+        self.force_sensor_input.addItem("Force sensor 2", 2)
+        self.window_input = QSpinBox()
+        self.window_input.setRange(
+            FORCE_DELAY_WINDOW_MIN_MS, FORCE_DELAY_WINDOW_MAX_MS
+        )
+        self.window_input.setSuffix(" ms")
+        self.window_input.setValue(FORCE_DELAY_WINDOW_DEFAULT_MS)
+        self.minimum_rise_input = QDoubleSpinBox()
+        self.minimum_rise_input.setRange(0.0, 10.0)
+        self.minimum_rise_input.setDecimals(3)
+        self.minimum_rise_input.setSingleStep(0.01)
+        self.minimum_rise_input.setValue(FORCE_DELAY_MIN_RISE_DEFAULT)
+        self.minimum_rise_input.setSuffix(" signal")
+        settings.addWidget(QLabel("Array"), 0, 0)
+        settings.addWidget(self.array_input, 0, 1)
+        settings.addWidget(QLabel("Light barrier"), 0, 2)
+        settings.addWidget(self.light_barrier_input, 0, 3)
+        settings.addWidget(QLabel("Force sensor"), 1, 0)
+        settings.addWidget(self.force_sensor_input, 1, 1)
+        settings.addWidget(QLabel("Peak window"), 1, 2)
+        settings.addWidget(self.window_input, 1, 3)
+        settings.addWidget(QLabel("Minimum peak rise"), 2, 0)
+        settings.addWidget(self.minimum_rise_input, 2, 1)
+        layout.addWidget(settings_box)
+
+        command_layout = QHBoxLayout()
+        self.start_button = QPushButton("Start Measurement")
+        self.start_button.setEnabled(self.ads.is_connected)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
+        self.stop_button.setEnabled(False)
+        self.reset_button = QPushButton("Reset Session")
+        command_layout.addWidget(self.start_button)
+        command_layout.addWidget(self.stop_button)
+        command_layout.addWidget(self.reset_button)
+        command_layout.addStretch(1)
+        layout.addLayout(command_layout)
+
+        live_box = QGroupBox("Live Measurement")
+        live = QGridLayout(live_box)
+        self.state_label = QLabel("Connecting")
+        self.current_signal_label = QLabel("0.000")
+        self.last_delay_label = QLabel("-")
+        self.last_peak_label = QLabel("-")
+        self.count_label = QLabel("0 valid / 0 invalid")
+        live.addWidget(QLabel("State"), 0, 0)
+        live.addWidget(self.state_label, 0, 1)
+        live.addWidget(QLabel("Current signal"), 0, 2)
+        live.addWidget(self.current_signal_label, 0, 3)
+        live.addWidget(QLabel("Last peak delay"), 1, 0)
+        live.addWidget(self.last_delay_label, 1, 1)
+        live.addWidget(QLabel("Last peak"), 1, 2)
+        live.addWidget(self.last_peak_label, 1, 3)
+        live.addWidget(QLabel("Session results"), 2, 0)
+        live.addWidget(self.count_label, 2, 1)
+        layout.addWidget(live_box)
+
+        statistics_box = QGroupBox("Valid Delay Statistics")
+        statistics_layout = QGridLayout(statistics_box)
+        self.mean_label = QLabel("-")
+        self.std_label = QLabel("-")
+        self.range_label = QLabel("-")
+        self.cv_label = QLabel("-")
+        statistics_layout.addWidget(QLabel("Mean"), 0, 0)
+        statistics_layout.addWidget(self.mean_label, 0, 1)
+        statistics_layout.addWidget(QLabel("Standard deviation"), 0, 2)
+        statistics_layout.addWidget(self.std_label, 0, 3)
+        statistics_layout.addWidget(QLabel("Range"), 1, 0)
+        statistics_layout.addWidget(self.range_label, 1, 1)
+        statistics_layout.addWidget(QLabel("Coefficient of variation"), 1, 2)
+        statistics_layout.addWidget(self.cv_label, 1, 3)
+        layout.addWidget(statistics_box)
+
+        self.results_table = QTableWidget(0, 7)
+        self.results_table.setHorizontalHeaderLabels(
+            ["#", "Time", "Result", "Delay", "Baseline", "Peak", "Rise"]
+        )
+        self.results_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        self.results_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        layout.addWidget(self.results_table, 1)
+
+        close_layout = QHBoxLayout()
+        close_layout.addStretch(1)
+        self.close_button = QPushButton("Close")
+        close_layout.addWidget(self.close_button)
+        layout.addLayout(close_layout)
+
+    def _connect_signals(self) -> None:
+        self.start_button.clicked.connect(self._start)
+        self.stop_button.clicked.connect(self._stop)
+        self.reset_button.clicked.connect(self._reset_session)
+        self.close_button.clicked.connect(self.close)
+        self.ads.force_delay_status_ready.connect(self._apply_status)
+        self.ads.connection_changed.connect(self._connection_changed)
+        self.ads.operation_failed.connect(self._on_ads_error)
+
+    def _set_settings_enabled(self, enabled: bool) -> None:
+        self.array_input.setEnabled(enabled)
+        self.light_barrier_input.setEnabled(enabled)
+        self.force_sensor_input.setEnabled(enabled)
+        self.window_input.setEnabled(enabled)
+        self.minimum_rise_input.setEnabled(enabled)
+
+    def _start(self) -> None:
+        if not self.ads.is_connected:
+            self.state_label.setText("ADS offline")
+            return
+        self._clear_session()
+        self.session_running = True
+        self._set_settings_enabled(False)
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.state_label.setText("Starting")
+        self.ads.start_force_delay_measurement(
+            int(self.light_barrier_input.currentData()),
+            int(self.force_sensor_input.currentData()),
+            self.window_input.value(),
+            self.minimum_rise_input.value(),
+        )
+
+    def _stop(self) -> None:
+        if self.session_running:
+            self.ads.stop_force_delay_measurement()
+        self.session_running = False
+        self._set_settings_enabled(True)
+        self.start_button.setEnabled(self.ads.is_connected)
+        self.stop_button.setEnabled(False)
+        self.state_label.setText("Stopped")
+
+    def _reset_session(self) -> None:
+        self._clear_session()
+
+    def _clear_session(self) -> None:
+        self.measurements.clear()
+        self.results_table.setRowCount(0)
+        self.last_delay_label.setText("-")
+        self.last_peak_label.setText("-")
+        self._update_statistics()
+
+    @pyqtSlot(object)
+    def _apply_status(self, status: dict) -> None:
+        self.current_signal_label.setText(f'{status["current_signal"]:.3f}')
+        self.state_label.setText(
+            self.STATUS_TEXT.get(int(status["status_code"]), "Unknown state")
+        )
+        if not self.session_running:
+            self.last_result_counter = int(status["result_counter"])
+            return
+
+        result_counter = int(status["result_counter"])
+        if self.last_result_counter is None:
+            self.last_result_counter = result_counter
+            return
+        if result_counter == self.last_result_counter:
+            return
+        self.last_result_counter = result_counter
+        measurement = {
+            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+            "array": int(self.array_input.currentData()),
+            "light_barrier": int(status["light_barrier"]),
+            "sensor": int(status["sensor"]),
+            "window_ms": int(status["window_ms"]),
+            "minimum_rise": float(status["minimum_rise"]),
+            "light_barrier_time_ms": int(status["light_barrier_time_ms"]),
+            "peak_time_ms": int(status["peak_time_ms"]),
+            "delay_ms": int(status["peak_delay_ms"]),
+            "baseline": float(status["baseline"]),
+            "peak": float(status["peak"]),
+            "rise": float(status["peak_rise"]),
+            "valid": bool(status["last_valid"]),
+        }
+        measurement["reason"] = (
+            "" if measurement["valid"] else "peak rise below minimum"
+        )
+        self.measurements.append(measurement)
+        self._append_result_row(measurement)
+        self._append_csv(measurement)
+        self.last_delay_label.setText(f'{measurement["delay_ms"]} ms')
+        self.last_peak_label.setText(
+            f'{measurement["peak"]:.3f} (rise {measurement["rise"]:.3f})'
+        )
+        self._update_statistics()
+
+    def _append_result_row(self, measurement: dict) -> None:
+        row = self.results_table.rowCount()
+        self.results_table.insertRow(row)
+        values = [
+            str(len(self.measurements)),
+            measurement["timestamp"].split("T")[-1],
+            "Valid" if measurement["valid"] else "Rejected",
+            f'{measurement["delay_ms"]} ms',
+            f'{measurement["baseline"]:.3f}',
+            f'{measurement["peak"]:.3f}',
+            f'{measurement["rise"]:.3f}',
+        ]
+        for column, value in enumerate(values):
+            self.results_table.setItem(row, column, QTableWidgetItem(value))
+        self.results_table.scrollToBottom()
+
+    def _update_statistics(self) -> None:
+        valid_delays = [
+            float(item["delay_ms"])
+            for item in self.measurements
+            if item["valid"]
+        ]
+        invalid_count = len(self.measurements) - len(valid_delays)
+        self.count_label.setText(
+            f"{len(valid_delays)} valid / {invalid_count} invalid"
+        )
+        if not valid_delays:
+            self.mean_label.setText("-")
+            self.std_label.setText("-")
+            self.range_label.setText("-")
+            self.cv_label.setText("-")
+            return
+        result = calculate_force_delay_statistics(valid_delays)
+        self.mean_label.setText(f'{result["mean"]:.1f} ms')
+        self.std_label.setText(f'{result["standard_deviation"]:.1f} ms')
+        self.range_label.setText(
+            f'{result["minimum"]:.0f} .. {result["maximum"]:.0f} ms'
+        )
+        self.cv_label.setText(
+            f'{result["coefficient_of_variation"]:.2f} %'
+        )
+
+    def _append_csv(self, measurement: dict) -> None:
+        header = [
+            "local_timestamp",
+            "array",
+            "light_barrier",
+            "force_sensor",
+            "window_ms",
+            "minimum_rise",
+            "light_barrier_plc_time_ms",
+            "peak_plc_time_ms",
+            "peak_delay_ms",
+            "baseline",
+            "peak",
+            "peak_rise",
+            "valid",
+            "reason",
+        ]
+        try:
+            write_header = (
+                not FORCE_DELAY_LOG_FILE.exists()
+                or FORCE_DELAY_LOG_FILE.stat().st_size == 0
+            )
+            with FORCE_DELAY_LOG_FILE.open(
+                "a", newline="", encoding="utf-8"
+            ) as file:
+                writer = csv.writer(file)
+                if write_header:
+                    writer.writerow(header)
+                writer.writerow(
+                    [
+                        measurement["timestamp"],
+                        measurement["array"],
+                        measurement["light_barrier"],
+                        measurement["sensor"],
+                        measurement["window_ms"],
+                        measurement["minimum_rise"],
+                        measurement["light_barrier_time_ms"],
+                        measurement["peak_time_ms"],
+                        measurement["delay_ms"],
+                        measurement["baseline"],
+                        measurement["peak"],
+                        measurement["rise"],
+                        int(measurement["valid"]),
+                        measurement["reason"],
+                    ]
+                )
+        except OSError as exc:
+            self.state_label.setText(f"CSV log failed: {exc}")
+
+    @pyqtSlot(bool, str)
+    def _connection_changed(self, connected: bool, message: str) -> None:
+        self.start_button.setEnabled(connected and not self.session_running)
+        if not connected:
+            self.session_running = False
+            self.stop_button.setEnabled(False)
+            self._set_settings_enabled(True)
+            self.state_label.setText(message or "ADS offline")
+
+    @pyqtSlot(str, str)
+    def _on_ads_error(self, context: str, message: str) -> None:
+        if context.startswith("force_delay"):
+            self.state_label.setText(message)
+
+    def _leave_measurement(self) -> None:
+        if not self.polling_requested:
+            return
+        self.polling_requested = False
+        if self.ads.is_connected:
+            self.ads.stop_force_delay_measurement()
+        self.ads.set_force_delay_polling(False)
+        try:
+            self.ads.force_delay_status_ready.disconnect(self._apply_status)
+            self.ads.connection_changed.disconnect(self._connection_changed)
+            self.ads.operation_failed.disconnect(self._on_ads_error)
+        except (TypeError, RuntimeError):
+            pass
+
+    def done(self, result: int) -> None:
+        self._leave_measurement()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:
+        self._leave_measurement()
+        super().closeEvent(event)
+
+
 class PressureControlWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -1789,7 +2245,6 @@ class PressureControlWindow(QMainWindow):
             "Offset",
             "Est. Velocity",
             "Est. Offset Delay",
-            "LB-to-Valve Delay",
             "Status",
         ]
         for column, text in enumerate(headers):
@@ -1807,10 +2262,9 @@ class PressureControlWindow(QMainWindow):
             grid.addWidget(row.offset, row_number, 6)
             grid.addWidget(row.estimated_velocity, row_number, 7)
             grid.addWidget(row.estimated_delay, row_number, 8)
-            grid.addWidget(row.measured_valve_delay, row_number, 9)
-            grid.addWidget(row.status, row_number, 10)
+            grid.addWidget(row.status, row_number, 9)
 
-        grid.setColumnStretch(10, 1)
+        grid.setColumnStretch(9, 1)
         main_layout.addWidget(control_box)
 
         button_layout = QHBoxLayout()
@@ -1819,6 +2273,10 @@ class PressureControlWindow(QMainWindow):
         self.calibrate_conveyor_button.setToolTip("Open the conveyor step calibration")
         self.jog_conveyor_button = QPushButton("Jog Conveyor")
         self.jog_conveyor_button.setToolTip("Move the conveyor by a calibrated distance")
+        self.measure_force_delay_button = QPushButton("Measure Force Delay")
+        self.measure_force_delay_button.setToolTip(
+            "Measure the time from a light barrier edge to a force-sensor peak"
+        )
         self.logging_status = QLabel("Logging: offline")
         self.logging_status.setMinimumWidth(170)
         self.load_button = QPushButton("Load Profile")
@@ -1828,6 +2286,7 @@ class PressureControlWindow(QMainWindow):
         button_layout.addWidget(self.reconnect_button)
         button_layout.addWidget(self.calibrate_conveyor_button)
         button_layout.addWidget(self.jog_conveyor_button)
+        button_layout.addWidget(self.measure_force_delay_button)
         button_layout.addWidget(self.logging_status)
         button_layout.addStretch(1)
         button_layout.addWidget(self.load_button)
@@ -1847,6 +2306,7 @@ class PressureControlWindow(QMainWindow):
         self.reconnect_button.clicked.connect(self.reconnect)
         self.calibrate_conveyor_button.clicked.connect(self.open_conveyor_calibration)
         self.jog_conveyor_button.clicked.connect(self.open_conveyor_jogging)
+        self.measure_force_delay_button.clicked.connect(self.open_force_delay_measurement)
         self.load_button.clicked.connect(self.load_profile)
         self.save_button.clicked.connect(self.save_profile)
         self.write_all_button.clicked.connect(self.write_all_values)
@@ -1968,10 +2428,8 @@ class PressureControlWindow(QMainWindow):
         for row in self.rows:
             row.estimated_velocity.setText("0.0 mm/s")
             row.estimated_delay.setText("0.0 ms")
-            row.measured_valve_delay.setText("0.0 ms" if row.index <= 3 else "N/A")
             row.last_displayed_velocity = 0.0
             row.last_displayed_delay = 0.0
-            row.last_displayed_valve_delay = 0.0
 
         self.last_shot_counter = None
         self.logging_status.setText("Logging: waiting")
@@ -2118,15 +2576,20 @@ class PressureControlWindow(QMainWindow):
         dialog.exec()
         self.statusBar().showMessage("Conveyor jogging closed")
 
+    def open_force_delay_measurement(self) -> None:
+        if not self.ads.is_connected:
+            self.statusBar().showMessage("Force delay measurement: ADS offline")
+            return
+        dialog = ForceDelayDialog(self.ads, self)
+        dialog.exec()
+        self.statusBar().showMessage("Force delay measurement closed")
+
     @pyqtSlot(object)
     def apply_live_snapshot(self, snapshot: dict) -> None:
         velocities = snapshot["velocities"]
         delays = snapshot["delays"]
-        measured_valve_delays = snapshot["measured_valve_delays"]
         self._log_light_barrier_events(snapshot)
-        for row, velocity, delay, measured_valve_delay in zip(
-            self.rows, velocities, delays, measured_valve_delays
-        ):
+        for row, velocity, delay in zip(self.rows, velocities, delays):
             if (
                 row.last_displayed_velocity is None
                 or abs(velocity - row.last_displayed_velocity) > ESTIMATE_DISPLAY_EPSILON
@@ -2139,14 +2602,6 @@ class PressureControlWindow(QMainWindow):
             ):
                 row.estimated_delay.setText(f"{delay:.1f} ms")
                 row.last_displayed_delay = delay
-            if measured_valve_delay is not None and (
-                row.last_displayed_valve_delay is None
-                or abs(measured_valve_delay - row.last_displayed_valve_delay)
-                > ESTIMATE_DISPLAY_EPSILON
-            ):
-                row.measured_valve_delay.setText(f"{measured_valve_delay:.1f} ms")
-                row.last_displayed_valve_delay = measured_valve_delay
-
         shot_counter = int(snapshot["shot_counter"])
         if self.last_shot_counter is None:
             self.last_shot_counter = shot_counter
