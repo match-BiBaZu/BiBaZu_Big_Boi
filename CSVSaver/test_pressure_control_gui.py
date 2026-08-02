@@ -58,9 +58,9 @@ class AdsThreadTests(unittest.TestCase):
         loop.exec()
 
     def test_first_light_barrier_spacing_default_is_calibrated_value(self):
-        self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 22.0)
-        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 37.3)
-        self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 55.0)
+        self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 22.34)
+        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 39.254)
+        self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 58.356)
 
     def test_provisional_conveyor_calibration_is_the_gui_default(self):
         controller = gui.AdsController()
@@ -173,9 +173,11 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 44)
+        self.assertEqual(len(plc.read_calls[0]), 56)
         self.assertEqual(snapshot["light_barriers"], [False] * 6)
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 6)
+        self.assertEqual(snapshot["light_barrier_event_counts"], [0] * 6)
+        self.assertEqual(snapshot["light_barrier_event_times_ms"], [0] * 6)
         self.assertEqual(snapshot["debounce_ms"], 0)
 
     def test_barrier_calibration_start_is_one_safe_batch(self):
@@ -378,6 +380,99 @@ class ConveyorSetupWindowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_ur_pose_distance_uses_xyz_translation(self):
+        distance, delta = setup_gui.calculate_ur_pose_distance(
+            (0.1, 0.2, 0.3, 0.0, 0.0, 0.0),
+            (0.122, 0.2, 0.3, 1.0, 2.0, 3.0),
+        )
+
+        self.assertAlmostEqual(distance, 22.0)
+        self.assertAlmostEqual(delta[0], 22.0)
+        self.assertAlmostEqual(delta[1], 0.0)
+        self.assertAlmostEqual(delta[2], 0.0)
+
+    def test_speed_statistics_report_mean_spread_and_target_error(self):
+        result = setup_gui.calculate_speed_statistics([14.0, 15.0, 16.0], 15.0)
+
+        self.assertAlmostEqual(result["mean"], 15.0)
+        self.assertAlmostEqual(result["standard_deviation"], (2.0 / 3.0) ** 0.5)
+        self.assertEqual(result["minimum"], 14.0)
+        self.assertEqual(result["maximum"], 16.0)
+        self.assertAlmostEqual(result["mean_error_percent"], 0.0)
+
+    def test_ur_speed_monitor_uses_plc_event_timestamps_in_both_directions(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        window.ads.connected = True
+        window.connected = True
+        window.have_setup_status = True
+        window.ur_connected = True
+        window.latest_ur_pose = (1.0, (0.1, 0.2, 0.3, 0.0, 0.0, 0.0))
+        status = {
+            "light_barriers": [False] * 6,
+            "light_barrier_event_counts": [0] * 6,
+            "light_barrier_event_times_ms": [0] * 6,
+            "sensor_spacings": (58.356, 27.13, 39.254),
+        }
+        window.latest_status = status
+        window.ur_target_speed.setValue(15.0)
+        window._append_ur_speed_log = lambda sample: None
+
+        window._start_ur_speed_monitor()
+        status["light_barriers"][0] = True
+        status["light_barrier_event_counts"][0] = 1
+        status["light_barrier_event_times_ms"][0] = 1000
+        window._process_ur_speed_monitor(status)
+        status["light_barriers"][1] = True
+        status["light_barrier_event_counts"][1] = 1
+        status["light_barrier_event_times_ms"][1] = 4890
+        window._process_ur_speed_monitor(status)
+
+        status["light_barriers"][1] = False
+        status["light_barrier_event_counts"][1] = 2
+        status["light_barrier_event_times_ms"][1] = 6000
+        window._process_ur_speed_monitor(status)
+        status["light_barriers"][0] = False
+        status["light_barrier_event_counts"][0] = 2
+        status["light_barrier_event_times_ms"][0] = 9890
+        window._process_ur_speed_monitor(status)
+
+        self.assertEqual(len(window.ur_monitor_samples), 2)
+        self.assertAlmostEqual(window.ur_monitor_samples[0]["speed"], 15.0, places=2)
+        self.assertEqual(window.ur_monitor_samples[0]["direction"], "LB 1 -> LB 2")
+        self.assertEqual(window.ur_monitor_samples[1]["direction"], "LB 2 -> LB 1")
+        self.assertIn("error +0.01%", window.ur_monitor_mean_label.text())
+        window.ads.connected = False
+        window.close()
+
+    def test_ur_capture_uses_debounced_barriers_and_applies_spacing(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        window.ads.connected = True
+        window.connected = True
+        window.have_setup_status = True
+        window.ur_connected = True
+        window.latest_status = {"light_barriers": [False] * 6}
+        window.latest_ur_pose = (1.0, (0.1, 0.2, 0.3, 0.0, 0.0, 0.0))
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        window._start_ur_capture()
+        window._process_ur_capture([True, False, False, False, False, False])
+        window.latest_ur_pose = (2.0, (0.122, 0.2, 0.3, 0.0, 0.0, 0.0))
+        window._process_ur_capture([True, True, False, False, False, False])
+        window._apply_ur_measurement()
+
+        self.assertFalse(window.ur_capture_active)
+        self.assertAlmostEqual(window.ur_distance_mm, 22.0)
+        self.assertEqual(window.ur_distance_label.text(), "22.000 mm")
+        self.assertAlmostEqual(writes[0][0]["MAIN.GuiSensorSpacing12Mm"], 22.0)
+        self.assertEqual(writes[0][1], "ur_sensor_spacing_12")
+        window.ads.connected = False
+        window.close()
 
     def test_setup_window_displays_barriers_and_applies_known_pair(self):
         with patch.object(gui.AdsController, "start"):

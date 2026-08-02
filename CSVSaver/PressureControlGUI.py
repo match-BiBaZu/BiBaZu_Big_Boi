@@ -61,9 +61,9 @@ PULSE_MIN_MS = 1
 PULSE_MAX_MS = 500
 SENSOR_SPACING_MIN_MM = 1.0
 SENSOR_SPACING_MAX_MM = 5000.0
-SENSOR_SPACING_12_DEFAULT_MM = 22.0
-SENSOR_SPACING_34_DEFAULT_MM = 37.3
-SENSOR_SPACING_56_DEFAULT_MM = 55.0
+SENSOR_SPACING_12_DEFAULT_MM = 22.34
+SENSOR_SPACING_34_DEFAULT_MM = 39.254
+SENSOR_SPACING_56_DEFAULT_MM = 58.356
 OFFSET_MIN_MM = 0.0
 OFFSET_MAX_MM = 5000.0
 LIGHT_BARRIER_DEBOUNCE_MIN_MS = 1
@@ -704,6 +704,11 @@ class AdsWorker(QObject):
         names = [
             *[f"MAIN.LightBarrierOn{index}" for index in range(1, 7)],
             *[f"MAIN.LightBarrierStable{index}" for index in range(1, 7)],
+            *[f"MAIN.LightBarrierEventCount{index}" for index in range(1, 7)],
+            *[
+                f"MAIN.LightBarrierLastEventTimeMs{index}"
+                for index in range(1, 7)
+            ],
             "MAIN.StepperInternalPosition",
             "MAIN.StepperPosReadyToExecute",
             "MAIN.StepperPosBusy",
@@ -745,6 +750,14 @@ class AdsWorker(QObject):
             ],
             "raw_light_barriers": [
                 bool(values[f"MAIN.LightBarrierOn{index}"])
+                for index in range(1, 7)
+            ],
+            "light_barrier_event_counts": [
+                int(values[f"MAIN.LightBarrierEventCount{index}"])
+                for index in range(1, 7)
+            ],
+            "light_barrier_event_times_ms": [
+                int(values[f"MAIN.LightBarrierLastEventTimeMs{index}"])
                 for index in range(1, 7)
             ],
             "internal_position": int(values["MAIN.StepperInternalPosition"]),

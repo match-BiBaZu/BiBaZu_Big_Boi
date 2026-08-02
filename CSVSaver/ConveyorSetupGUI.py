@@ -1,6 +1,12 @@
+import csv
+import math
+import socket
 import sys
+import time
+from datetime import datetime
+from pathlib import Path
 
-from PyQt6.QtCore import QSignalBlocker, pyqtSlot
+from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -16,9 +22,11 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QStyle,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+from read_ur_tcp_pose import read_tcp_pose_from_connection
 
 from PressureControlGUI import (
     ADS_TIMEOUT_MS,
@@ -45,6 +53,122 @@ BARRIER_STATUS_TEXT = {
     4: "Measurement cancelled or invalid",
     5: "EL7047 error",
 }
+
+UR_HOST = "10.10.10.10"
+UR_PRIMARY_PORT = 30001
+UR_POSE_TIMEOUT_SECONDS = 0.5
+UR_SPEED_LOG_FILE = Path(__file__).resolve().parent / "ur_speed_plausibility.csv"
+UR_SPEED_LOG_HEADER = [
+    "local_timestamp",
+    "target_speed_mm_per_sec",
+    "first_barrier",
+    "second_barrier",
+    "sensor_spacing_mm",
+    "edge",
+    "direction",
+    "start_plc_time_ms",
+    "end_plc_time_ms",
+    "elapsed_ms",
+    "measured_speed_mm_per_sec",
+    "error_percent",
+]
+
+
+def calculate_ur_pose_distance(
+    first_pose: tuple[float, ...], second_pose: tuple[float, ...]
+) -> tuple[float, tuple[float, float, float]]:
+    if len(first_pose) < 3 or len(second_pose) < 3:
+        raise ValueError("Both UR poses must contain X, Y and Z")
+    delta_mm = tuple(
+        (float(second_pose[index]) - float(first_pose[index])) * 1000.0
+        for index in range(3)
+    )
+    distance_mm = math.sqrt(sum(component * component for component in delta_mm))
+    return distance_mm, delta_mm
+
+
+def calculate_speed_statistics(
+    speeds_mm_per_sec: list[float], target_mm_per_sec: float
+) -> dict[str, float]:
+    if not speeds_mm_per_sec:
+        return {}
+    mean = sum(speeds_mm_per_sec) / len(speeds_mm_per_sec)
+    variance = sum((speed - mean) ** 2 for speed in speeds_mm_per_sec) / len(
+        speeds_mm_per_sec
+    )
+    return {
+        "mean": mean,
+        "standard_deviation": math.sqrt(variance),
+        "minimum": min(speeds_mm_per_sec),
+        "maximum": max(speeds_mm_per_sec),
+        "mean_error_percent": (
+            (mean - target_mm_per_sec) / target_mm_per_sec * 100.0
+            if target_mm_per_sec > 0.0
+            else 0.0
+        ),
+    }
+
+
+class UrPoseWorker(QObject):
+    pose_ready = pyqtSignal(object)
+    connection_changed = pyqtSignal(bool, str)
+    finished = pyqtSignal()
+
+    def __init__(self, host: str = UR_HOST, port: int = UR_PRIMARY_PORT) -> None:
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.timer = None
+        self.connection = None
+        self.connected = False
+        self.stopping = False
+
+    @pyqtSlot()
+    def start(self) -> None:
+        self.timer = QTimer(self)
+        self.timer.setInterval(20)
+        self.timer.timeout.connect(self.poll)
+        self.timer.start()
+        self.poll()
+
+    def _set_connected(self, connected: bool, message: str = "") -> None:
+        if connected != self.connected or message:
+            self.connected = connected
+            self.connection_changed.emit(connected, message)
+
+    def _close_connection(self) -> None:
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+        self.connection = None
+
+    @pyqtSlot()
+    def poll(self) -> None:
+        if self.stopping:
+            return
+        try:
+            if self.connection is None:
+                self.connection = socket.create_connection(
+                    (self.host, self.port), timeout=UR_POSE_TIMEOUT_SECONDS
+                )
+            pose = read_tcp_pose_from_connection(
+                self.connection, UR_POSE_TIMEOUT_SECONDS
+            )
+            self._set_connected(True)
+            self.pose_ready.emit((time.monotonic(), pose))
+        except (OSError, ConnectionError, TimeoutError, ValueError) as exc:
+            self._close_connection()
+            self._set_connected(False, str(exc))
+
+    @pyqtSlot()
+    def stop(self) -> None:
+        self.stopping = True
+        if self.timer is not None:
+            self.timer.stop()
+        self._close_connection()
+        self.finished.emit()
 
 
 def calculate_velocity_plausibility(
@@ -221,6 +345,8 @@ class VelocityPlausibilityDialog(QDialog):
 
 
 class ConveyorSetupWindow(QMainWindow):
+    ur_stop_requested = pyqtSignal()
+
     def __init__(self) -> None:
         super().__init__()
         self.ads = AdsController(self)
@@ -230,9 +356,21 @@ class ConveyorSetupWindow(QMainWindow):
         self.mm_per_full_step = 0.0
         self.pending_measurement = None
         self.debounce_initialized = False
+        self.ur_connected = False
+        self.latest_ur_pose = None
+        self.ur_capture_active = False
+        self.ur_first_initial_state = False
+        self.ur_second_initial_state = False
+        self.ur_first_pose = None
+        self.ur_second_pose = None
+        self.ur_distance_mm = None
+        self.ur_monitor_active = False
+        self.ur_monitor_event_counts = None
+        self.ur_monitor_pending_edges = {False: None, True: None}
+        self.ur_monitor_samples = []
 
         self.setWindowTitle("Conveyor and Light Barrier Setup")
-        self.resize(850, 610)
+        self.resize(900, 790)
         self._build_ui()
         self._connect_signals()
         self._set_controls_enabled(False)
@@ -361,7 +499,106 @@ class ConveyorSetupWindow(QMainWindow):
         measurement_layout.addLayout(button_layout, 2, 0, 1, 2)
         measurement_layout.setColumnStretch(0, 1)
         measurement_layout.setColumnStretch(1, 1)
-        layout.addWidget(measurement_group)
+        self.calibration_tabs = QTabWidget()
+        self.calibration_tabs.addTab(measurement_group, "Conveyor")
+
+        ur_group = QWidget()
+        ur_layout = QGridLayout(ur_group)
+        ur_settings = QFormLayout()
+        self.ur_first_sensor = QComboBox()
+        self.ur_second_sensor = QComboBox()
+        for index in range(1, 7):
+            self.ur_first_sensor.addItem(f"Light barrier {index}", index)
+            self.ur_second_sensor.addItem(f"Light barrier {index}", index)
+        self.ur_second_sensor.setCurrentIndex(1)
+        self.ur_connection_label = QLabel(f"Connecting to {UR_HOST}")
+        self.ur_live_pose = QLabel("-")
+        self.ur_live_pose.setMinimumWidth(330)
+        ur_settings.addRow("UR controller", self.ur_connection_label)
+        ur_settings.addRow("Live TCP position", self.ur_live_pose)
+        ur_settings.addRow("First barrier", self.ur_first_sensor)
+        ur_settings.addRow("Second barrier", self.ur_second_sensor)
+        ur_layout.addLayout(ur_settings, 0, 0)
+
+        ur_results = QFormLayout()
+        self.ur_first_pose_label = QLabel("Not captured")
+        self.ur_second_pose_label = QLabel("Not captured")
+        self.ur_delta_label = QLabel("-")
+        self.ur_distance_label = QLabel("-")
+        self.ur_state_label = QLabel("Waiting for UR and PLC")
+        ur_results.addRow("First TCP position", self.ur_first_pose_label)
+        ur_results.addRow("Second TCP position", self.ur_second_pose_label)
+        ur_results.addRow("Position delta", self.ur_delta_label)
+        ur_results.addRow("Measured spacing", self.ur_distance_label)
+        ur_results.addRow("State", self.ur_state_label)
+        ur_layout.addLayout(ur_results, 0, 1)
+
+        ur_buttons = QHBoxLayout()
+        self.ur_start_button = QPushButton("Start UR Capture")
+        self.ur_start_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self.ur_cancel_button = QPushButton("Cancel")
+        self.ur_cancel_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
+        self.ur_apply_button = QPushButton("Apply Sensor Spacing")
+        ur_buttons.addWidget(self.ur_start_button)
+        ur_buttons.addWidget(self.ur_cancel_button)
+        ur_buttons.addStretch(1)
+        ur_buttons.addWidget(self.ur_apply_button)
+        ur_layout.addLayout(ur_buttons, 1, 0, 1, 2)
+
+        monitor_group = QGroupBox("UR Speed Plausibility")
+        monitor_layout = QGridLayout(monitor_group)
+        monitor_settings = QFormLayout()
+        self.ur_target_speed = QDoubleSpinBox()
+        self.ur_target_speed.setRange(0.1, 1000.0)
+        self.ur_target_speed.setDecimals(3)
+        self.ur_target_speed.setValue(15.0)
+        self.ur_target_speed.setSuffix(" mm/s")
+        self.ur_monitor_distance = QLabel("-")
+        monitor_settings.addRow("UR target speed", self.ur_target_speed)
+        monitor_settings.addRow("Sensor spacing", self.ur_monitor_distance)
+        monitor_layout.addLayout(monitor_settings, 0, 0)
+
+        monitor_results = QFormLayout()
+        self.ur_monitor_samples_label = QLabel("0")
+        self.ur_monitor_latest_label = QLabel("-")
+        self.ur_monitor_mean_label = QLabel("-")
+        self.ur_monitor_range_label = QLabel("-")
+        self.ur_monitor_directions_label = QLabel("-")
+        self.ur_monitor_edges_label = QLabel("-")
+        self.ur_monitor_state_label = QLabel("Ready")
+        monitor_results.addRow("Samples", self.ur_monitor_samples_label)
+        monitor_results.addRow("Latest", self.ur_monitor_latest_label)
+        monitor_results.addRow("Mean and deviation", self.ur_monitor_mean_label)
+        monitor_results.addRow("Range", self.ur_monitor_range_label)
+        monitor_results.addRow("Directions", self.ur_monitor_directions_label)
+        monitor_results.addRow("Edges", self.ur_monitor_edges_label)
+        monitor_results.addRow("State", self.ur_monitor_state_label)
+        monitor_layout.addLayout(monitor_results, 0, 1)
+
+        monitor_buttons = QHBoxLayout()
+        self.ur_monitor_start_button = QPushButton("Start New Test")
+        self.ur_monitor_start_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self.ur_monitor_stop_button = QPushButton("Stop")
+        self.ur_monitor_stop_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
+        monitor_buttons.addWidget(self.ur_monitor_start_button)
+        monitor_buttons.addWidget(self.ur_monitor_stop_button)
+        monitor_buttons.addStretch(1)
+        monitor_layout.addLayout(monitor_buttons, 1, 0, 1, 2)
+        monitor_layout.setColumnStretch(0, 1)
+        monitor_layout.setColumnStretch(1, 1)
+        ur_layout.addWidget(monitor_group, 2, 0, 1, 2)
+        ur_layout.setColumnStretch(0, 1)
+        ur_layout.setColumnStretch(1, 1)
+        self.calibration_tabs.addTab(ur_group, "UR TCP")
+        layout.addWidget(self.calibration_tabs)
 
         spacing_group = QGroupBox("Velocity Sensor Spacings")
         spacing_layout = QHBoxLayout(spacing_group)
@@ -391,6 +628,345 @@ class ConveyorSetupWindow(QMainWindow):
         self.apply_button.clicked.connect(self._apply_measurement)
         self.first_sensor.currentIndexChanged.connect(self._update_apply_state)
         self.second_sensor.currentIndexChanged.connect(self._update_apply_state)
+        self.calibration_tabs.currentChanged.connect(self._on_calibration_tab_changed)
+        self.ur_start_button.clicked.connect(self._start_ur_capture)
+        self.ur_cancel_button.clicked.connect(self._cancel_ur_capture)
+        self.ur_apply_button.clicked.connect(self._apply_ur_measurement)
+        self.ur_monitor_start_button.clicked.connect(self._start_ur_speed_monitor)
+        self.ur_monitor_stop_button.clicked.connect(
+            lambda: self._stop_ur_speed_monitor()
+        )
+        self.ur_first_sensor.currentIndexChanged.connect(self._update_ur_controls)
+        self.ur_second_sensor.currentIndexChanged.connect(self._update_ur_controls)
+
+    def _on_calibration_tab_changed(self, index: int) -> None:
+        if index == 1:
+            self._start_ur_worker()
+
+    def _start_ur_worker(self) -> None:
+        if hasattr(self, "ur_thread") and self.ur_thread.isRunning():
+            return
+        self.ur_thread = QThread(self)
+        self.ur_worker = UrPoseWorker()
+        self.ur_worker.moveToThread(self.ur_thread)
+        self.ur_thread.started.connect(self.ur_worker.start)
+        self.ur_stop_requested.connect(self.ur_worker.stop)
+        self.ur_worker.pose_ready.connect(self._on_ur_pose)
+        self.ur_worker.connection_changed.connect(self._on_ur_connection_changed)
+        self.ur_worker.finished.connect(self.ur_thread.quit)
+        self.ur_thread.start()
+
+    @staticmethod
+    def _format_ur_pose(pose: tuple[float, ...]) -> str:
+        return (
+            f"X {pose[0] * 1000.0:.3f}, Y {pose[1] * 1000.0:.3f}, "
+            f"Z {pose[2] * 1000.0:.3f} mm"
+        )
+
+    @pyqtSlot(bool, str)
+    def _on_ur_connection_changed(self, connected: bool, message: str) -> None:
+        self.ur_connected = connected
+        if connected:
+            self.ur_connection_label.setText(f"Online at {UR_HOST}")
+        else:
+            self.latest_ur_pose = None
+            self.ur_connection_label.setText(
+                f"Offline: {message}" if message else f"Offline at {UR_HOST}"
+            )
+            if self.ur_capture_active:
+                self.ur_capture_active = False
+                self.ur_state_label.setText("Capture stopped: UR connection lost")
+            if self.ur_monitor_active:
+                self._stop_ur_speed_monitor("Stopped: UR connection lost")
+        self._update_ur_controls()
+
+    @pyqtSlot(object)
+    def _on_ur_pose(self, sample: tuple[float, tuple[float, ...]]) -> None:
+        self.latest_ur_pose = sample
+        self.ur_live_pose.setText(self._format_ur_pose(sample[1]))
+        self._update_ur_controls()
+
+    def _selected_ur_sensors(self) -> tuple[int, int]:
+        return (
+            int(self.ur_first_sensor.currentData()),
+            int(self.ur_second_sensor.currentData()),
+        )
+
+    def _update_ur_controls(self) -> None:
+        first_sensor, second_sensor = self._selected_ur_sensors()
+        pair = tuple(sorted((first_sensor, second_sensor)))
+        supported_pair = pair in SENSOR_SPACING_SYMBOLS
+        ready = (
+            self.connected
+            and self.have_setup_status
+            and self.ur_connected
+            and self.latest_ur_pose is not None
+            and supported_pair
+        )
+        self.ur_start_button.setEnabled(
+            ready and not self.ur_capture_active and not self.ur_monitor_active
+        )
+        self.ur_cancel_button.setEnabled(self.ur_capture_active)
+        self.ur_apply_button.setEnabled(
+            ready
+            and not self.ur_capture_active
+            and self.ur_distance_mm is not None
+            and self.ur_distance_mm > 0.0
+        )
+        self.ur_monitor_start_button.setEnabled(
+            ready and not self.ur_capture_active and not self.ur_monitor_active
+        )
+        self.ur_monitor_stop_button.setEnabled(self.ur_monitor_active)
+        settings_enabled = not self.ur_capture_active and not self.ur_monitor_active
+        self.ur_first_sensor.setEnabled(settings_enabled)
+        self.ur_second_sensor.setEnabled(settings_enabled)
+        self.ur_target_speed.setEnabled(not self.ur_monitor_active)
+
+        spacings = self.latest_status.get("sensor_spacings") if self.latest_status else None
+        if spacings is not None and supported_pair:
+            spacing_index = ((1, 2), (3, 4), (5, 6)).index(pair)
+            spacing = float(spacings[spacing_index])
+            self.ur_monitor_distance.setText(f"{spacing:.3f} mm")
+        else:
+            self.ur_monitor_distance.setText("-")
+
+    def _start_ur_capture(self) -> None:
+        if not self.latest_status or self.latest_ur_pose is None:
+            return
+        first_sensor, second_sensor = self._selected_ur_sensors()
+        if tuple(sorted((first_sensor, second_sensor))) not in SENSOR_SPACING_SYMBOLS:
+            return
+        states = self.latest_status["light_barriers"]
+        self.ur_first_initial_state = bool(states[first_sensor - 1])
+        self.ur_second_initial_state = bool(states[second_sensor - 1])
+        self.ur_first_pose = None
+        self.ur_second_pose = None
+        self.ur_distance_mm = None
+        self.ur_first_pose_label.setText("Not captured")
+        self.ur_second_pose_label.setText("Not captured")
+        self.ur_delta_label.setText("-")
+        self.ur_distance_label.setText("-")
+        self.ur_capture_active = True
+        self.ur_state_label.setText(f"Waiting for light barrier {first_sensor}")
+        self._update_ur_controls()
+
+    def _process_ur_capture(self, states: list[bool]) -> None:
+        if not self.ur_capture_active or self.latest_ur_pose is None:
+            return
+        first_sensor, second_sensor = self._selected_ur_sensors()
+        current_pose = tuple(self.latest_ur_pose[1])
+        if self.ur_first_pose is None:
+            if bool(states[first_sensor - 1]) == self.ur_first_initial_state:
+                return
+            self.ur_first_pose = current_pose
+            self.ur_first_pose_label.setText(self._format_ur_pose(current_pose))
+            self.ur_state_label.setText(f"Waiting for light barrier {second_sensor}")
+            return
+        if bool(states[second_sensor - 1]) == self.ur_second_initial_state:
+            return
+
+        self.ur_second_pose = current_pose
+        self.ur_second_pose_label.setText(self._format_ur_pose(current_pose))
+        self.ur_distance_mm, delta = calculate_ur_pose_distance(
+            self.ur_first_pose, self.ur_second_pose
+        )
+        self.ur_delta_label.setText(
+            f"dX {delta[0]:.3f}, dY {delta[1]:.3f}, dZ {delta[2]:.3f} mm"
+        )
+        self.ur_distance_label.setText(f"{self.ur_distance_mm:.3f} mm")
+        self.ur_capture_active = False
+        self.ur_state_label.setText("Measurement complete")
+        self._update_ur_controls()
+
+    def _cancel_ur_capture(self) -> None:
+        if self.ur_capture_active:
+            self.ur_capture_active = False
+            self.ur_state_label.setText("Measurement cancelled")
+        self._update_ur_controls()
+
+    def _apply_ur_measurement(self) -> None:
+        if self.ur_distance_mm is None or self.ur_distance_mm <= 0.0:
+            return
+        pair = tuple(sorted(self._selected_ur_sensors()))
+        symbol = SENSOR_SPACING_SYMBOLS.get(pair)
+        if symbol is None:
+            return
+        self.ads.write_now(
+            {symbol: float(self.ur_distance_mm)},
+            f"ur_sensor_spacing_{pair[0]}{pair[1]}",
+        )
+        self.ur_state_label.setText(
+            f"Applied {self.ur_distance_mm:.3f} mm to LB {pair[0]}-{pair[1]}"
+        )
+
+    def _start_ur_speed_monitor(self) -> None:
+        if not self.latest_status or not self.ur_connected:
+            return
+        first_sensor, second_sensor = self._selected_ur_sensors()
+        pair = tuple(sorted((first_sensor, second_sensor)))
+        if pair not in SENSOR_SPACING_SYMBOLS:
+            return
+        counts = self.latest_status.get("light_barrier_event_counts")
+        times = self.latest_status.get("light_barrier_event_times_ms")
+        if counts is None or times is None:
+            self.ur_monitor_state_label.setText("PLC event timestamps unavailable")
+            return
+        self.ur_monitor_event_counts = list(counts)
+        self.ur_monitor_pending_edges = {False: None, True: None}
+        self.ur_monitor_samples = []
+        self.ur_monitor_active = True
+        self.ur_monitor_state_label.setText("Monitoring stable sensor transitions")
+        self._update_ur_monitor_results()
+        self._update_ur_controls()
+
+    def _stop_ur_speed_monitor(self, message: str = "Stopped") -> None:
+        self.ur_monitor_active = False
+        self.ur_monitor_pending_edges = {False: None, True: None}
+        self.ur_monitor_state_label.setText(message)
+        self._update_ur_controls()
+
+    def _process_ur_speed_monitor(self, status: dict) -> None:
+        if not self.ur_monitor_active or self.ur_monitor_event_counts is None:
+            return
+        counts = status.get("light_barrier_event_counts")
+        event_times = status.get("light_barrier_event_times_ms")
+        states = status.get("light_barriers")
+        if counts is None or event_times is None or states is None:
+            self._stop_ur_speed_monitor("Stopped: PLC event data unavailable")
+            return
+
+        selected_sensors = self._selected_ur_sensors()
+        events = []
+        missed_event = False
+        for sensor in selected_sensors:
+            index = sensor - 1
+            previous_count = int(self.ur_monitor_event_counts[index])
+            current_count = int(counts[index])
+            event_delta = (current_count - previous_count) & 0xFFFFFFFF
+            self.ur_monitor_event_counts[index] = current_count
+            if event_delta == 1:
+                events.append(
+                    (int(event_times[index]), sensor, bool(states[index]))
+                )
+            elif event_delta > 1:
+                missed_event = True
+
+        if missed_event:
+            self.ur_monitor_pending_edges = {False: None, True: None}
+            self.ur_monitor_state_label.setText("Skipped events missed between polls")
+        for event_time, sensor, edge_state in sorted(events):
+            self._accept_ur_monitor_event(event_time, sensor, edge_state, status)
+
+    def _accept_ur_monitor_event(
+        self, event_time: int, sensor: int, edge_state: bool, status: dict
+    ) -> None:
+        pending = self.ur_monitor_pending_edges[edge_state]
+        if pending is None or pending[1] == sensor:
+            self.ur_monitor_pending_edges[edge_state] = (event_time, sensor)
+            return
+
+        elapsed_ms = (event_time - pending[0]) & 0xFFFFFFFF
+        if elapsed_ms == 0 or elapsed_ms > 60_000:
+            self.ur_monitor_pending_edges[edge_state] = (event_time, sensor)
+            return
+
+        pair = tuple(sorted(self._selected_ur_sensors()))
+        spacing_index = ((1, 2), (3, 4), (5, 6)).index(pair)
+        distance_mm = float(status["sensor_spacings"][spacing_index])
+        speed = distance_mm * 1000.0 / elapsed_ms
+        self.ur_monitor_samples.append(
+            {
+                "speed": speed,
+                "elapsed_ms": elapsed_ms,
+                "direction": f"LB {pending[1]} -> LB {sensor}",
+                "edge": "ON" if edge_state else "OFF",
+                "start_time_ms": pending[0],
+                "end_time_ms": event_time,
+                "distance_mm": distance_mm,
+            }
+        )
+        self._append_ur_speed_log(self.ur_monitor_samples[-1])
+        self.ur_monitor_pending_edges[edge_state] = None
+        self.ur_monitor_state_label.setText(
+            f"Captured {self.ur_monitor_samples[-1]['direction']} ({elapsed_ms} ms)"
+        )
+        self._update_ur_monitor_results()
+
+    def _update_ur_monitor_results(self) -> None:
+        self.ur_monitor_samples_label.setText(str(len(self.ur_monitor_samples)))
+        if not self.ur_monitor_samples:
+            self.ur_monitor_latest_label.setText("-")
+            self.ur_monitor_mean_label.setText("-")
+            self.ur_monitor_range_label.setText("-")
+            self.ur_monitor_directions_label.setText("-")
+            self.ur_monitor_edges_label.setText("-")
+            return
+
+        latest = self.ur_monitor_samples[-1]
+        speeds = [sample["speed"] for sample in self.ur_monitor_samples]
+        statistics = calculate_speed_statistics(speeds, self.ur_target_speed.value())
+        self.ur_monitor_latest_label.setText(
+            f"{latest['speed']:.3f} mm/s, {latest['direction']}, {latest['edge']}"
+        )
+        self.ur_monitor_mean_label.setText(
+            f"{statistics['mean']:.3f} +/- {statistics['standard_deviation']:.3f} mm/s, "
+            f"error {statistics['mean_error_percent']:+.2f}%"
+        )
+        self.ur_monitor_range_label.setText(
+            f"{statistics['minimum']:.3f} to {statistics['maximum']:.3f} mm/s"
+        )
+        direction_results = []
+        for direction in dict.fromkeys(
+            sample["direction"] for sample in self.ur_monitor_samples
+        ):
+            direction_speeds = [
+                sample["speed"]
+                for sample in self.ur_monitor_samples
+                if sample["direction"] == direction
+            ]
+            direction_results.append(
+                f"{direction}: {sum(direction_speeds) / len(direction_speeds):.3f}"
+            )
+        self.ur_monitor_directions_label.setText("; ".join(direction_results))
+        edge_results = []
+        for edge in ("ON", "OFF"):
+            edge_speeds = [
+                sample["speed"]
+                for sample in self.ur_monitor_samples
+                if sample["edge"] == edge
+            ]
+            if edge_speeds:
+                edge_results.append(
+                    f"{edge}: {sum(edge_speeds) / len(edge_speeds):.3f}"
+                )
+        self.ur_monitor_edges_label.setText("; ".join(edge_results) or "-")
+
+    def _append_ur_speed_log(self, sample: dict) -> None:
+        target_speed = self.ur_target_speed.value()
+        first_sensor, second_sensor = self._selected_ur_sensors()
+        row = [
+            datetime.now().isoformat(timespec="milliseconds"),
+            target_speed,
+            first_sensor,
+            second_sensor,
+            sample["distance_mm"],
+            sample["edge"],
+            sample["direction"],
+            sample["start_time_ms"],
+            sample["end_time_ms"],
+            sample["elapsed_ms"],
+            sample["speed"],
+            (sample["speed"] - target_speed) / target_speed * 100.0,
+        ]
+        try:
+            write_header = not UR_SPEED_LOG_FILE.exists()
+            with UR_SPEED_LOG_FILE.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                if write_header:
+                    writer.writerow(UR_SPEED_LOG_HEADER)
+                writer.writerow(row)
+        except OSError as exc:
+            self.statusBar().showMessage(f"UR speed log failed: {exc}")
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         self.calibrate_button.setEnabled(enabled)
@@ -399,6 +975,11 @@ class ConveyorSetupWindow(QMainWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(enabled)
         self.apply_button.setEnabled(False)
+        self.ur_start_button.setEnabled(False)
+        self.ur_cancel_button.setEnabled(False)
+        self.ur_apply_button.setEnabled(False)
+        self.ur_monitor_start_button.setEnabled(False)
+        self.ur_monitor_stop_button.setEnabled(False)
 
     def _set_barrier_indicator(self, index: int, state: bool | None) -> None:
         if state is None:
@@ -428,9 +1009,13 @@ class ConveyorSetupWindow(QMainWindow):
             self.statusBar().showMessage(f"ADS online: {AMS_NET_ID} / {PLC_IP}")
         else:
             self.pending_measurement = None
+            self.ur_capture_active = False
+            if self.ur_monitor_active:
+                self._stop_ur_speed_monitor("Stopped: ADS connection lost")
             self.statusBar().showMessage(f"ADS offline: {message or 'reconnecting'}")
             for index in range(6):
                 self._set_barrier_indicator(index, None)
+        self._update_ur_controls()
 
     @pyqtSlot(object)
     def _on_initial_snapshot(self, snapshot: dict) -> None:
@@ -450,6 +1035,8 @@ class ConveyorSetupWindow(QMainWindow):
             self.debounce_initialized = True
         for index, barrier_state in enumerate(status["light_barriers"]):
             self._set_barrier_indicator(index, barrier_state)
+        self._process_ur_capture(status["light_barriers"])
+        self._process_ur_speed_monitor(status)
 
         if status["conveyor_calibration_valid"]:
             self.mm_per_full_step = float(status["mm_per_full_step"])
@@ -517,6 +1104,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.maximum_travel.setEnabled(settings_enabled)
         self.debounce_time.setEnabled(settings_enabled)
         self._update_apply_state()
+        self._update_ur_controls()
 
         if (
             self.pending_measurement
@@ -655,6 +1243,11 @@ class ConveyorSetupWindow(QMainWindow):
         self.statusBar().showMessage(f"{context}: {message}")
 
     def closeEvent(self, event) -> None:
+        if hasattr(self, "ur_thread") and self.ur_thread.isRunning():
+            self.ur_stop_requested.emit()
+            if not self.ur_thread.wait(1500):
+                self.ur_thread.quit()
+                self.ur_thread.wait(500)
         self.ads.set_setup_polling(False)
         if self.ads.is_connected:
             self.ads.stop_setup_motion()

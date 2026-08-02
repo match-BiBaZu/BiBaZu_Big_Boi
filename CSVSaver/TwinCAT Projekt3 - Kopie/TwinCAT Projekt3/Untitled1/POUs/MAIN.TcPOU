@@ -82,9 +82,9 @@ VAR
 	GuiNozzleEnabled15		: BOOL := TRUE;
 	GuiNozzleEnabled16		: BOOL := TRUE;
 	GuiResetVelocityEstimates	: BOOL := FALSE;
-	GuiSensorSpacing12Mm	: REAL := 22.0;
-	GuiSensorSpacing34Mm	: REAL := 37.3;
-	GuiSensorSpacing56Mm	: REAL := 55.0;
+	GuiSensorSpacing12Mm	: REAL := 22.34;
+	GuiSensorSpacing34Mm	: REAL := 39.254;
+	GuiSensorSpacing56Mm	: REAL := 58.356;
 	GuiConveyorEnabled		: BOOL := FALSE;
 	GuiVelocityCheckMode	: BOOL := FALSE;
 	GuiConveyorReverse		: BOOL := FALSE;
