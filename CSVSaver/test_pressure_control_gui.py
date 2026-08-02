@@ -59,8 +59,8 @@ class AdsThreadTests(unittest.TestCase):
 
     def test_first_light_barrier_spacing_default_is_calibrated_value(self):
         self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 23.54)
-        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 39.254)
-        self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 58.356)
+        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 38.33)
+        self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 64.69)
 
     def test_provisional_conveyor_calibration_is_the_gui_default(self):
         controller = gui.AdsController()
@@ -446,25 +446,27 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.ads.connected = False
         window.close()
 
-    def test_ur_speed_monitor_rejects_stale_pair_and_recovers(self):
+    def test_ur_speed_monitor_rejects_short_pair_and_recovers(self):
         with patch.object(gui.AdsController, "start"):
             window = setup_gui.ConveyorSetupWindow()
         window.ur_target_speed.setValue(100.0)
+        window.ur_first_sensor.setCurrentIndex(4)
+        window.ur_second_sensor.setCurrentIndex(5)
         window._append_ur_speed_log = lambda sample: None
-        status = {"sensor_spacings": (22.34, 39.254, 58.356)}
-        window.ur_monitor_pending_edges[True] = (1000, 1)
+        status = {"sensor_spacings": (22.34, 39.254, 64.69)}
+        window.ur_monitor_pending_edges[True] = (1000, 5)
 
-        window._accept_ur_monitor_event(2680, 2, True, status)
+        window._accept_ur_monitor_event(1120, 6, True, status)
 
         self.assertEqual(window.ur_monitor_samples, [])
-        self.assertEqual(window.ur_monitor_pending_edges[True], (2680, 2))
+        self.assertEqual(window.ur_monitor_pending_edges[True], (1120, 6))
         self.assertIn("Ignored implausible", window.ur_monitor_state_label.text())
 
-        window._accept_ur_monitor_event(2903, 1, True, status)
+        window._accept_ur_monitor_event(1773, 5, True, status)
 
         self.assertEqual(len(window.ur_monitor_samples), 1)
-        self.assertEqual(window.ur_monitor_samples[0]["direction"], "LB 2 -> LB 1")
-        self.assertAlmostEqual(window.ur_monitor_samples[0]["speed"], 100.18, places=2)
+        self.assertEqual(window.ur_monitor_samples[0]["direction"], "LB 6 -> LB 5")
+        self.assertAlmostEqual(window.ur_monitor_samples[0]["speed"], 99.07, places=2)
         window.ads.connected = False
         window.close()
 

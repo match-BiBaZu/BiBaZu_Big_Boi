@@ -882,7 +882,7 @@ class ConveyorSetupWindow(QMainWindow):
         expected_elapsed_ms = (
             distance_mm * 1000.0 / self.ur_target_speed.value()
         )
-        if not 0.5 * expected_elapsed_ms <= elapsed_ms <= 2.0 * expected_elapsed_ms:
+        if not 0.7 * expected_elapsed_ms <= elapsed_ms <= 1.5 * expected_elapsed_ms:
             self.ur_monitor_pending_edges[edge_state] = (event_time, sensor)
             self.ur_monitor_state_label.setText(
                 f"Ignored implausible edge pair ({elapsed_ms} ms)"
