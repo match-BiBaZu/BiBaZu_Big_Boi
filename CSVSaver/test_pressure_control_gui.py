@@ -67,6 +67,44 @@ class AdsThreadTests(unittest.TestCase):
 
         self.assertEqual(row.pressure.singleStep(), 10)
 
+    def test_six_nozzles_are_grouped_by_flip_axis(self):
+        rows = [gui.ArrayRow(index) for index in range(1, 5)]
+
+        self.assertEqual(gui.NOZZLES_PER_ARRAY, 6)
+        self.assertEqual(rows[0].axis_group_labels, ["Z axis", "X axis"])
+        self.assertEqual(rows[1].axis_group_labels, ["Y axis", "X axis"])
+        self.assertEqual(rows[2].axis_group_labels, ["Z axis", "X axis"])
+        self.assertEqual(rows[3].axis_group_labels, ["Y axis", "X axis"])
+        for row in rows:
+            self.assertEqual(
+                [checkbox.text() for checkbox in row.nozzle_enabled],
+                ["N1", "N2", "N3", "N4", "N5", "N6"],
+            )
+            self.assertEqual(
+                [checkbox.isChecked() for checkbox in row.nozzle_enabled],
+                [True, True, True, True, False, False],
+            )
+
+    def test_nozzle_ads_symbols_are_contiguous_within_each_array(self):
+        self.assertEqual(
+            gui.SYMBOLS[1].nozzle_enabled,
+            tuple(f"MAIN.GuiNozzleEnabled{index}" for index in range(1, 7)),
+        )
+        self.assertEqual(
+            gui.SYMBOLS[4].nozzle_enabled,
+            tuple(f"MAIN.GuiNozzleEnabled{index}" for index in range(19, 25)),
+        )
+
+    def test_four_nozzle_values_leave_new_nozzles_disabled(self):
+        row = gui.ArrayRow(1)
+
+        row.set_values({"nozzles_enabled": [False, True, False, True]})
+
+        self.assertEqual(
+            [checkbox.isChecked() for checkbox in row.nozzle_enabled],
+            [False, True, False, True, False, False],
+        )
+
     def test_provisional_conveyor_calibration_is_the_gui_default(self):
         controller = gui.AdsController()
 

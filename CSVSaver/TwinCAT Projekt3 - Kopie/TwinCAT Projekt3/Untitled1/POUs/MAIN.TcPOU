@@ -69,18 +69,26 @@ VAR
 	GuiNozzleEnabled2		: BOOL := TRUE;
 	GuiNozzleEnabled3		: BOOL := TRUE;
 	GuiNozzleEnabled4		: BOOL := TRUE;
-	GuiNozzleEnabled5		: BOOL := TRUE;
-	GuiNozzleEnabled6		: BOOL := TRUE;
+	GuiNozzleEnabled5		: BOOL := FALSE;
+	GuiNozzleEnabled6		: BOOL := FALSE;
 	GuiNozzleEnabled7		: BOOL := TRUE;
 	GuiNozzleEnabled8		: BOOL := TRUE;
 	GuiNozzleEnabled9		: BOOL := TRUE;
 	GuiNozzleEnabled10		: BOOL := TRUE;
-	GuiNozzleEnabled11		: BOOL := TRUE;
-	GuiNozzleEnabled12		: BOOL := TRUE;
+	GuiNozzleEnabled11		: BOOL := FALSE;
+	GuiNozzleEnabled12		: BOOL := FALSE;
 	GuiNozzleEnabled13		: BOOL := TRUE;
 	GuiNozzleEnabled14		: BOOL := TRUE;
 	GuiNozzleEnabled15		: BOOL := TRUE;
 	GuiNozzleEnabled16		: BOOL := TRUE;
+	GuiNozzleEnabled17		: BOOL := FALSE;
+	GuiNozzleEnabled18		: BOOL := FALSE;
+	GuiNozzleEnabled19		: BOOL := TRUE;
+	GuiNozzleEnabled20		: BOOL := TRUE;
+	GuiNozzleEnabled21		: BOOL := TRUE;
+	GuiNozzleEnabled22		: BOOL := TRUE;
+	GuiNozzleEnabled23		: BOOL := FALSE;
+	GuiNozzleEnabled24		: BOOL := FALSE;
 	GuiResetVelocityEstimates	: BOOL := FALSE;
 	GuiSensorSpacing12Mm	: REAL := 23.54;
 	GuiSensorSpacing34Mm	: REAL := 38.33;
@@ -292,6 +300,14 @@ VAR
 	OpenValve14 AT %Q*		: BOOL := 0;
 	OpenValve15 AT %Q*		: BOOL := 0;
 	OpenValve16 AT %Q*		: BOOL := 0;
+	OpenValve17 AT %Q*		: BOOL := 0;
+	OpenValve18 AT %Q*		: BOOL := 0;
+	OpenValve19 AT %Q*		: BOOL := 0;
+	OpenValve20 AT %Q*		: BOOL := 0;
+	OpenValve21 AT %Q*		: BOOL := 0;
+	OpenValve22 AT %Q*		: BOOL := 0;
+	OpenValve23 AT %Q*		: BOOL := 0;
+	OpenValve24 AT %Q*		: BOOL := 0;
 
 	//EL7047 stepper terminal, predefined PDO assignment "Positioning interface"
 	StepperStmStatus AT %I*			: WORD := 0; //link to Term 14 STM Status/Status
@@ -409,10 +425,10 @@ VelocityTimer(IN := VelocityTimingActive, PT := T#30S);
 VelocityTimer2(IN := VelocityTiming2Active, PT := T#30S);
 VelocityTimer3(IN := VelocityTiming3Active, PT := T#30S);
 
-Array1Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled1 AND (GuiNozzleEnabled1 OR GuiNozzleEnabled2 OR GuiNozzleEnabled3 OR GuiNozzleEnabled4);
-Array2Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled2 AND (GuiNozzleEnabled5 OR GuiNozzleEnabled6 OR GuiNozzleEnabled7 OR GuiNozzleEnabled8);
-Array3Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled3 AND (GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
-Array4Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled4 AND (GuiNozzleEnabled13 OR GuiNozzleEnabled14 OR GuiNozzleEnabled15 OR GuiNozzleEnabled16);
+Array1Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled1 AND (GuiNozzleEnabled1 OR GuiNozzleEnabled2 OR GuiNozzleEnabled3 OR GuiNozzleEnabled4 OR GuiNozzleEnabled5 OR GuiNozzleEnabled6);
+Array2Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled2 AND (GuiNozzleEnabled7 OR GuiNozzleEnabled8 OR GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
+Array3Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled3 AND (GuiNozzleEnabled13 OR GuiNozzleEnabled14 OR GuiNozzleEnabled15 OR GuiNozzleEnabled16 OR GuiNozzleEnabled17 OR GuiNozzleEnabled18);
+Array4Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled4 AND (GuiNozzleEnabled19 OR GuiNozzleEnabled20 OR GuiNozzleEnabled21 OR GuiNozzleEnabled22 OR GuiNozzleEnabled23 OR GuiNozzleEnabled24);
 
 IF GuiConveyorSpeedMmPerSec < 0.0 THEN
 	GuiConveyorSpeedMmPerSec := 0.0;
@@ -1284,21 +1300,29 @@ IF GuiNozzleEnabled1 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
 IF GuiNozzleEnabled2 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
 IF GuiNozzleEnabled3 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
 IF GuiNozzleEnabled4 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
+IF GuiNozzleEnabled5 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
+IF GuiNozzleEnabled6 THEN ActiveNozzleCount1 := ActiveNozzleCount1 + 1; END_IF
 ActiveNozzleCount2 := 0;
-IF GuiNozzleEnabled5 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
-IF GuiNozzleEnabled6 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
 IF GuiNozzleEnabled7 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
 IF GuiNozzleEnabled8 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+IF GuiNozzleEnabled9 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+IF GuiNozzleEnabled10 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+IF GuiNozzleEnabled11 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
+IF GuiNozzleEnabled12 THEN ActiveNozzleCount2 := ActiveNozzleCount2 + 1; END_IF
 ActiveNozzleCount3 := 0;
-IF GuiNozzleEnabled9 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
-IF GuiNozzleEnabled10 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
-IF GuiNozzleEnabled11 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
-IF GuiNozzleEnabled12 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled13 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled14 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled15 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled16 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled17 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
+IF GuiNozzleEnabled18 THEN ActiveNozzleCount3 := ActiveNozzleCount3 + 1; END_IF
 ActiveNozzleCount4 := 0;
-IF GuiNozzleEnabled13 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
-IF GuiNozzleEnabled14 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
-IF GuiNozzleEnabled15 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
-IF GuiNozzleEnabled16 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled19 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled20 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled21 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled22 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled23 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
+IF GuiNozzleEnabled24 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
 
 IF ActiveNozzleCount1 <= 1 THEN
 	EffectiveForceResponseDelayMs1 := GuiForceSingleNozzleResponseDelayMs1;
@@ -1451,6 +1475,8 @@ CASE State OF
 			OpenValve2 := FALSE;
 			OpenValve3 := FALSE;
 			OpenValve4 := FALSE;
+			OpenValve17 := FALSE;
+			OpenValve18 := FALSE;
 			Counter := 0;
 			State := 2;
 		ELSE
@@ -1459,8 +1485,10 @@ CASE State OF
 			OpenValve2 := GuiArrayEnabled1 AND GuiNozzleEnabled2 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
 			OpenValve3 := GuiArrayEnabled1 AND GuiNozzleEnabled3 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
 			OpenValve4 := GuiArrayEnabled1 AND GuiNozzleEnabled4 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
+			OpenValve17 := GuiArrayEnabled1 AND GuiNozzleEnabled5 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
+			OpenValve18 := GuiArrayEnabled1 AND GuiNozzleEnabled6 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
 
-			IF OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4 THEN
+			IF OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4 OR OpenValve17 OR OpenValve18 THEN
 				PressureSum := PressureSum + NozzlePressure;
 				PressureSum1 := PressureSum1 + NozzlePressure;
 				PressurePoints := PressurePoints + 1;
@@ -1482,6 +1510,8 @@ CASE State OF
 				OpenValve2 := FALSE;
 				OpenValve3 := FALSE;
 				OpenValve4 := FALSE;
+				OpenValve17 := FALSE;
+				OpenValve18 := FALSE;
 
 				IF PressurePoints > 0 THEN
 					AvgPressure := PressureSum / TO_REAL(PressurePoints);
@@ -1511,6 +1541,8 @@ CASE State OF
 		OpenValve2 := FALSE;
 		OpenValve3 := FALSE;
 		OpenValve4 := FALSE;
+		OpenValve17 := FALSE;
+		OpenValve18 := FALSE;
 END_CASE
 
 CASE State2 OF
@@ -1531,20 +1563,26 @@ CASE State2 OF
 			OpenValve6 := FALSE;
 			OpenValve7 := FALSE;
 			OpenValve8 := FALSE;
+			OpenValve19 := FALSE;
+			OpenValve20 := FALSE;
 			Counter2 := 0;
 			State2 := 2;
 		ELSE
 			Counter2 := Counter2 + 1;
-			OpenValve5 := GuiArrayEnabled2 AND GuiNozzleEnabled5 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
-			OpenValve6 := GuiArrayEnabled2 AND GuiNozzleEnabled6 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
-			OpenValve7 := GuiArrayEnabled2 AND GuiNozzleEnabled7 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
-			OpenValve8 := GuiArrayEnabled2 AND GuiNozzleEnabled8 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve5 := GuiArrayEnabled2 AND GuiNozzleEnabled7 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve6 := GuiArrayEnabled2 AND GuiNozzleEnabled8 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve7 := GuiArrayEnabled2 AND GuiNozzleEnabled9 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve8 := GuiArrayEnabled2 AND GuiNozzleEnabled10 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve19 := GuiArrayEnabled2 AND GuiNozzleEnabled11 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			OpenValve20 := GuiArrayEnabled2 AND GuiNozzleEnabled12 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
 
 			IF Counter2 > LatchedNozzleEndCycles2 THEN
 				OpenValve5 := FALSE;
 				OpenValve6 := FALSE;
 				OpenValve7 := FALSE;
 				OpenValve8 := FALSE;
+				OpenValve19 := FALSE;
+				OpenValve20 := FALSE;
 				Counter2 := 0;
 				State2 := 2;
 			END_IF
@@ -1580,20 +1618,26 @@ CASE State3 OF
 			OpenValve10 := FALSE;
 			OpenValve11 := FALSE;
 			OpenValve12 := FALSE;
+			OpenValve21 := FALSE;
+			OpenValve22 := FALSE;
 			Counter3 := 0;
 			State3 := 2;
 		ELSE
 			Counter3 := Counter3 + 1;
-			OpenValve9 := GuiArrayEnabled3 AND GuiNozzleEnabled9 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
-			OpenValve10 := GuiArrayEnabled3 AND GuiNozzleEnabled10 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
-			OpenValve11 := GuiArrayEnabled3 AND GuiNozzleEnabled11 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
-			OpenValve12 := GuiArrayEnabled3 AND GuiNozzleEnabled12 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve9 := GuiArrayEnabled3 AND GuiNozzleEnabled13 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve10 := GuiArrayEnabled3 AND GuiNozzleEnabled14 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve11 := GuiArrayEnabled3 AND GuiNozzleEnabled15 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve12 := GuiArrayEnabled3 AND GuiNozzleEnabled16 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve21 := GuiArrayEnabled3 AND GuiNozzleEnabled17 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			OpenValve22 := GuiArrayEnabled3 AND GuiNozzleEnabled18 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
 
 			IF Counter3 > LatchedNozzleEndCycles3 THEN
 				OpenValve9 := FALSE;
 				OpenValve10 := FALSE;
 				OpenValve11 := FALSE;
 				OpenValve12 := FALSE;
+				OpenValve21 := FALSE;
+				OpenValve22 := FALSE;
 				Counter3 := 0;
 				State3 := 2;
 			END_IF
@@ -1606,6 +1650,8 @@ CASE State3 OF
 		OpenValve10 := FALSE;
 		OpenValve11 := FALSE;
 		OpenValve12 := FALSE;
+		OpenValve21 := FALSE;
+		OpenValve22 := FALSE;
 END_CASE
 
 CASE State4 OF
@@ -1627,20 +1673,26 @@ CASE State4 OF
 			OpenValve14 := FALSE;
 			OpenValve15 := FALSE;
 			OpenValve16 := FALSE;
+			OpenValve23 := FALSE;
+			OpenValve24 := FALSE;
 			Counter4 := 0;
 			State4 := 2;
 		ELSE
 			Counter4 := Counter4 + 1;
-			OpenValve13 := GuiArrayEnabled4 AND GuiNozzleEnabled13 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
-			OpenValve14 := GuiArrayEnabled4 AND GuiNozzleEnabled14 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
-			OpenValve15 := GuiArrayEnabled4 AND GuiNozzleEnabled15 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
-			OpenValve16 := GuiArrayEnabled4 AND GuiNozzleEnabled16 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve13 := GuiArrayEnabled4 AND GuiNozzleEnabled19 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve14 := GuiArrayEnabled4 AND GuiNozzleEnabled20 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve15 := GuiArrayEnabled4 AND GuiNozzleEnabled21 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve16 := GuiArrayEnabled4 AND GuiNozzleEnabled22 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve23 := GuiArrayEnabled4 AND GuiNozzleEnabled23 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			OpenValve24 := GuiArrayEnabled4 AND GuiNozzleEnabled24 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
 
 			IF Counter4 > LatchedNozzleEndCycles4 THEN
 				OpenValve13 := FALSE;
 				OpenValve14 := FALSE;
 				OpenValve15 := FALSE;
 				OpenValve16 := FALSE;
+				OpenValve23 := FALSE;
+				OpenValve24 := FALSE;
 				Counter4 := 0;
 				State4 := 2;
 			END_IF
@@ -1677,6 +1729,14 @@ IF GuiConveyorCalibrationMode OR GuiVelocityCheckMode THEN
 	OpenValve14 := FALSE;
 	OpenValve15 := FALSE;
 	OpenValve16 := FALSE;
+	OpenValve17 := FALSE;
+	OpenValve18 := FALSE;
+	OpenValve19 := FALSE;
+	OpenValve20 := FALSE;
+	OpenValve21 := FALSE;
+	OpenValve22 := FALSE;
+	OpenValve23 := FALSE;
+	OpenValve24 := FALSE;
 END_IF
 
 FBValveControlV0(

@@ -39,7 +39,7 @@ PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
-PROFILE_VERSION = 4
+PROFILE_VERSION = 5
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -58,7 +58,7 @@ ADS_RECONNECT_INTERVAL_MS = 2000
 ADS_WRITE_DEBOUNCE_MS = 100
 
 ARRAY_COUNT = 4
-NOZZLES_PER_ARRAY = 4
+NOZZLES_PER_ARRAY = 6
 PRESSURE_MIN_MBAR = 0
 PRESSURE_MAX_MBAR = 6000
 DELAY_MIN_MS = 0
@@ -1384,7 +1384,6 @@ def format_ads_error(exc: Exception) -> str:
 class ArrayRow:
     def __init__(self, index: int) -> None:
         self.index = index
-        first_nozzle = ((index - 1) * NOZZLES_PER_ARRAY) + 1
 
         self.enabled = QCheckBox()
         self.enabled.setChecked(index <= 2)
@@ -1394,13 +1393,33 @@ class ArrayRow:
         self.nozzle_controls = QWidget()
         nozzle_layout = QHBoxLayout(self.nozzle_controls)
         nozzle_layout.setContentsMargins(0, 0, 0, 0)
-        nozzle_layout.setSpacing(8)
-        for nozzle_number in range(first_nozzle, first_nozzle + NOZZLES_PER_ARRAY):
-            checkbox = QCheckBox(f"N{nozzle_number}")
-            checkbox.setChecked(True)
-            checkbox.setToolTip(f"Enable or disable nozzle {nozzle_number}")
-            self.nozzle_enabled.append(checkbox)
-            nozzle_layout.addWidget(checkbox)
+        nozzle_layout.setSpacing(18)
+        primary_axis = "Z axis" if index in {1, 3} else "Y axis"
+        self.axis_group_labels = [primary_axis, "X axis"]
+        for axis_name, nozzle_numbers in (
+            (primary_axis, range(1, 4)),
+            ("X axis", range(4, 7)),
+        ):
+            group = QWidget()
+            group_layout = QVBoxLayout(group)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(2)
+            axis_label = QLabel(axis_name)
+            axis_label.setStyleSheet("font-weight: 600;")
+            group_layout.addWidget(axis_label)
+            checkbox_layout = QHBoxLayout()
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            checkbox_layout.setSpacing(8)
+            for nozzle_number in nozzle_numbers:
+                checkbox = QCheckBox(f"N{nozzle_number}")
+                checkbox.setChecked(nozzle_number <= 4)
+                checkbox.setToolTip(
+                    f"Array {index}, nozzle {nozzle_number}: {axis_name} flip"
+                )
+                self.nozzle_enabled.append(checkbox)
+                checkbox_layout.addWidget(checkbox)
+            group_layout.addLayout(checkbox_layout)
+            nozzle_layout.addWidget(group)
 
         self.pressure = QSpinBox()
         self.pressure.setRange(PRESSURE_MIN_MBAR, PRESSURE_MAX_MBAR)
@@ -1484,6 +1503,11 @@ class ArrayRow:
                         False if has_specific_nozzle_values else values.get("enabled", checkbox.isChecked()),
                     )
                     for nozzle_index, checkbox in enumerate(self.nozzle_enabled, start=1)
+                ]
+            else:
+                nozzles_enabled = [
+                    *nozzles_enabled[:NOZZLES_PER_ARRAY],
+                    *[False] * max(0, NOZZLES_PER_ARRAY - len(nozzles_enabled)),
                 ]
             for checkbox, enabled in zip(self.nozzle_enabled, nozzles_enabled):
                 checkbox.setChecked(bool(enabled))
@@ -2994,7 +3018,7 @@ class PressureControlWindow(QMainWindow):
         try:
             profile = json.loads(Path(path).read_text(encoding="utf-8"))
             profile_version = int(profile.get("version", 1))
-            if profile_version not in {1, 2, 3, PROFILE_VERSION}:
+            if profile_version not in {1, 2, 3, 4, PROFILE_VERSION}:
                 raise ValueError("Unknown profile version")
 
             conveyor_enabled = bool(profile.get("conveyor_enabled", False))
