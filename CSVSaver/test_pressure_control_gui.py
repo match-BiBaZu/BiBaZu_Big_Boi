@@ -59,7 +59,7 @@ class AdsThreadTests(unittest.TestCase):
 
     def test_first_light_barrier_spacing_default_is_calibrated_value(self):
         self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 23.54)
-        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 38.33)
+        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 39.9)
         self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 64.69)
 
     def test_pressure_inputs_use_ten_mbar_steps(self):
@@ -104,6 +104,30 @@ class AdsThreadTests(unittest.TestCase):
             [checkbox.isChecked() for checkbox in row.nozzle_enabled],
             [False, True, False, True, False, False],
         )
+
+    def test_pressure_gui_shows_and_writes_light_barrier_inversions(self):
+        with patch.object(gui.AdsController, "start"):
+            window = gui.PressureControlWindow()
+        window.ads.connected = True
+        window.on_connection_changed(True, "")
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        self.assertEqual(
+            [checkbox.isChecked() for checkbox in window.light_barrier_invert_controls],
+            [False, False, True, True, False, False],
+        )
+        window.light_barrier_invert_controls[1].setChecked(True)
+
+        self.assertTrue(window.light_barrier_inverted[1])
+        self.assertEqual(
+            writes[0],
+            ({"MAIN.GuiLightBarrierInvert2": True}, "light_barrier_2_inversion"),
+        )
+        window.ads.connected = False
+        window.close()
 
     def test_provisional_conveyor_calibration_is_the_gui_default(self):
         controller = gui.AdsController()
