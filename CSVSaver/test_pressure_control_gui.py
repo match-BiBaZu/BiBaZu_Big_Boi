@@ -105,29 +105,41 @@ class AdsThreadTests(unittest.TestCase):
             [False, True, False, True, False, False],
         )
 
-    def test_pressure_gui_shows_and_writes_light_barrier_inversions(self):
-        with patch.object(gui.AdsController, "start"):
-            window = gui.PressureControlWindow()
-        window.ads.connected = True
-        window.on_connection_changed(True, "")
+    def test_light_barrier_settings_write_inversion_and_debounce_together(self):
+        controller = gui.AdsController()
+        controller.connected = True
         writes = []
-        window.ads.write_requested.connect(
+        controller.write_requested.connect(
             lambda values, context: writes.append((values, context))
         )
+        dialog = gui.LightBarrierSettingsDialog(
+            controller,
+            [False, False, True, True, False, False],
+            [True] * 6,
+        )
 
         self.assertEqual(
-            [checkbox.isChecked() for checkbox in window.light_barrier_invert_controls],
+            [checkbox.isChecked() for checkbox in dialog.invert_controls],
             [False, False, True, True, False, False],
         )
-        window.light_barrier_invert_controls[1].setChecked(True)
+        self.assertEqual(
+            [checkbox.isChecked() for checkbox in dialog.debounce_controls],
+            [True] * 6,
+        )
+        dialog.debounce_controls[1].setChecked(False)
 
-        self.assertTrue(window.light_barrier_inverted[1])
         self.assertEqual(
             writes[0],
-            ({"MAIN.GuiLightBarrierInvert2": True}, "light_barrier_2_inversion"),
+            (
+                {
+                    "MAIN.GuiLightBarrierInvert2": False,
+                    "MAIN.GuiLightBarrierDebounceEnabled2": False,
+                },
+                "light_barrier_2_settings",
+            ),
         )
-        window.ads.connected = False
-        window.close()
+        dialog.close()
+        controller.shutdown()
 
     def test_provisional_conveyor_calibration_is_the_gui_default(self):
         controller = gui.AdsController()
@@ -391,10 +403,11 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 62)
+        self.assertEqual(len(plc.read_calls[0]), 68)
         self.assertEqual(snapshot["light_barriers"], [False] * 6)
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 6)
         self.assertEqual(snapshot["light_barrier_inverted"], [False] * 6)
+        self.assertEqual(snapshot["light_barrier_debounce_enabled"], [False] * 6)
         self.assertEqual(snapshot["light_barrier_event_counts"], [0] * 6)
         self.assertEqual(snapshot["light_barrier_event_times_ms"], [0] * 6)
         self.assertEqual(snapshot["debounce_ms"], 0)
@@ -580,6 +593,9 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 result["light_barrier_inverted"] = list(
                     window.light_barrier_inverted
                 )
+                result["light_barrier_debounce_enabled"] = list(
+                    window.light_barrier_debounce_enabled
+                )
                 window.close()
                 return result
 
@@ -667,6 +683,29 @@ class ProfileCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             result["light_barrier_inverted"],
             [False, True, True, False, False, True],
+        )
+        self.assertEqual(result["light_barrier_debounce_enabled"], [True] * 6)
+
+    def test_version_7_profile_preserves_per_barrier_debounce_settings(self):
+        result = self.load_profile(
+            {
+                "version": 7,
+                "arrays": [],
+                "light_barrier_inverted": [False, True, True, False, False, True],
+                "light_barrier_debounce_enabled": [
+                    True,
+                    False,
+                    True,
+                    False,
+                    True,
+                    False,
+                ],
+            }
+        )
+
+        self.assertEqual(
+            result["light_barrier_debounce_enabled"],
+            [True, False, True, False, True, False],
         )
 
 

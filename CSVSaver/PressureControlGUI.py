@@ -39,7 +39,7 @@ PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
-PROFILE_VERSION = 6
+PROFILE_VERSION = 7
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -76,6 +76,7 @@ LIGHT_BARRIER_DEBOUNCE_MIN_MS = 1
 LIGHT_BARRIER_DEBOUNCE_MAX_MS = 200
 LIGHT_BARRIER_DEBOUNCE_DEFAULT_MS = 20
 LIGHT_BARRIER_INVERT_DEFAULTS = (False, False, True, True, False, False)
+LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS = (True,) * 6
 CONVEYOR_SPEED_MIN_MM_PER_SEC = 0.0
 CONVEYOR_SPEED_MAX_MM_PER_SEC = 5000.0
 CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC = 1.0
@@ -561,6 +562,10 @@ class AdsWorker(QObject):
             "MAIN.GuiSensorSpacing56Mm",
             "MAIN.GuiBarrierCalibrationDebounceMs",
             *[f"MAIN.GuiLightBarrierInvert{index}" for index in range(1, 7)],
+            *[
+                f"MAIN.GuiLightBarrierDebounceEnabled{index}"
+                for index in range(1, 7)
+            ],
             "MAIN.GuiConveyorEnabled",
             "MAIN.GuiConveyorReverse",
             "MAIN.GuiConveyorSpeedMmPerSec",
@@ -617,6 +622,10 @@ class AdsWorker(QObject):
             ),
             "light_barrier_inverted": [
                 bool(values[f"MAIN.GuiLightBarrierInvert{index}"])
+                for index in range(1, 7)
+            ],
+            "light_barrier_debounce_enabled": [
+                bool(values[f"MAIN.GuiLightBarrierDebounceEnabled{index}"])
                 for index in range(1, 7)
             ],
             "conveyor": {
@@ -830,6 +839,10 @@ class AdsWorker(QObject):
             *[f"MAIN.LightBarrierOn{index}" for index in range(1, 7)],
             *[f"MAIN.LightBarrierStable{index}" for index in range(1, 7)],
             *[f"MAIN.GuiLightBarrierInvert{index}" for index in range(1, 7)],
+            *[
+                f"MAIN.GuiLightBarrierDebounceEnabled{index}"
+                for index in range(1, 7)
+            ],
             *[f"MAIN.LightBarrierEventCount{index}" for index in range(1, 7)],
             *[
                 f"MAIN.LightBarrierLastEventTimeMs{index}"
@@ -880,6 +893,10 @@ class AdsWorker(QObject):
             ],
             "light_barrier_inverted": [
                 bool(values[f"MAIN.GuiLightBarrierInvert{index}"])
+                for index in range(1, 7)
+            ],
+            "light_barrier_debounce_enabled": [
+                bool(values[f"MAIN.GuiLightBarrierDebounceEnabled{index}"])
                 for index in range(1, 7)
             ],
             "light_barrier_event_counts": [
@@ -1530,6 +1547,89 @@ class ArrayRow:
             self.offset.setValue(float(values.get("offset_mm", self.offset.value())))
         finally:
             del blockers
+
+
+class LightBarrierSettingsDialog(QDialog):
+    setting_changed = pyqtSignal(int, bool, bool)
+
+    def __init__(
+        self,
+        ads: AdsController,
+        inverted: list[bool],
+        debounce_enabled: list[bool],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.ads = ads
+        self.setWindowTitle("Light Barrier Settings")
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        settings_box = QGroupBox("Signal Settings")
+        grid = QGridLayout(settings_box)
+        grid.addWidget(QLabel("Light barrier"), 0, 0)
+        grid.addWidget(QLabel("Invert"), 0, 1)
+        grid.addWidget(QLabel("Debounce"), 0, 2)
+
+        self.invert_controls: list[QCheckBox] = []
+        self.debounce_controls: list[QCheckBox] = []
+        for sensor in range(1, 7):
+            invert_control = QCheckBox()
+            invert_control.setChecked(bool(inverted[sensor - 1]))
+            invert_control.setToolTip(
+                f"Invert the electrical signal from light barrier {sensor}"
+            )
+            debounce_control = QCheckBox()
+            debounce_control.setChecked(bool(debounce_enabled[sensor - 1]))
+            debounce_control.setToolTip(
+                "Require the configured stable signal time before accepting a transition"
+            )
+            invert_control.toggled.connect(
+                lambda _checked, index=sensor: self._write_setting(index)
+            )
+            debounce_control.toggled.connect(
+                lambda _checked, index=sensor: self._write_setting(index)
+            )
+            self.invert_controls.append(invert_control)
+            self.debounce_controls.append(debounce_control)
+            grid.addWidget(QLabel(f"LB {sensor}"), sensor, 0)
+            grid.addWidget(invert_control, sensor, 1, Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(debounce_control, sensor, 2, Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(settings_box)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        button_layout.addWidget(close_button)
+        layout.addLayout(button_layout)
+
+        self.ads.connection_changed.connect(self._connection_changed)
+        self._connection_changed(self.ads.is_connected, "")
+
+    def _write_setting(self, sensor: int) -> None:
+        inverted = self.invert_controls[sensor - 1].isChecked()
+        debounce_enabled = self.debounce_controls[sensor - 1].isChecked()
+        self.setting_changed.emit(sensor, inverted, debounce_enabled)
+        self.ads.write_now(
+            {
+                f"MAIN.GuiLightBarrierInvert{sensor}": inverted,
+                f"MAIN.GuiLightBarrierDebounceEnabled{sensor}": debounce_enabled,
+            },
+            f"light_barrier_{sensor}_settings",
+        )
+
+    @pyqtSlot(bool, str)
+    def _connection_changed(self, connected: bool, _message: str) -> None:
+        for control in (*self.invert_controls, *self.debounce_controls):
+            control.setEnabled(connected)
+
+    def done(self, result: int) -> None:
+        try:
+            self.ads.connection_changed.disconnect(self._connection_changed)
+        except (TypeError, RuntimeError):
+            pass
+        super().done(result)
 
 
 class ConveyorCalibrationDialog(QDialog):
@@ -2389,6 +2489,9 @@ class PressureControlWindow(QMainWindow):
         self.last_shot_counter: int | None = None
         self.last_light_barrier_event_counts: list[int | None] = [None] * 6
         self.light_barrier_inverted = list(LIGHT_BARRIER_INVERT_DEFAULTS)
+        self.light_barrier_debounce_enabled = list(
+            LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS
+        )
         self.conveyor_calibration = {
             "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
             "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
@@ -2488,21 +2591,6 @@ class PressureControlWindow(QMainWindow):
         machine_layout.addStretch(1)
         main_layout.addLayout(machine_layout)
 
-        polarity_layout = QHBoxLayout()
-        polarity_layout.addWidget(QLabel("Inverted light barrier logic"))
-        self.light_barrier_invert_controls = []
-        for index, inverted in enumerate(LIGHT_BARRIER_INVERT_DEFAULTS, start=1):
-            checkbox = QCheckBox(f"LB{index}")
-            checkbox.setChecked(inverted)
-            checkbox.setEnabled(False)
-            checkbox.setToolTip(
-                f"Invert light barrier {index} before debounce, velocity calculation, and valve triggering"
-            )
-            self.light_barrier_invert_controls.append(checkbox)
-            polarity_layout.addWidget(checkbox)
-        polarity_layout.addStretch(1)
-        main_layout.addLayout(polarity_layout)
-
         control_box = QGroupBox("Online Settings")
         grid = QGridLayout(control_box)
         grid.setHorizontalSpacing(14)
@@ -2550,6 +2638,11 @@ class PressureControlWindow(QMainWindow):
         self.measure_force_delay_button.setToolTip(
             "Measure the time from a light barrier edge to a force-sensor peak"
         )
+        self.light_barrier_settings_button = QPushButton("Light Barrier Settings")
+        self.light_barrier_settings_button.setToolTip(
+            "Configure inversion and debounce separately for each light barrier"
+        )
+        self.light_barrier_settings_button.setEnabled(False)
         self.logging_status = QLabel("Logging: offline")
         self.logging_status.setMinimumWidth(170)
         self.load_button = QPushButton("Load Profile")
@@ -2560,6 +2653,7 @@ class PressureControlWindow(QMainWindow):
         button_layout.addWidget(self.calibrate_conveyor_button)
         button_layout.addWidget(self.jog_conveyor_button)
         button_layout.addWidget(self.measure_force_delay_button)
+        button_layout.addWidget(self.light_barrier_settings_button)
         button_layout.addWidget(self.logging_status)
         button_layout.addStretch(1)
         button_layout.addWidget(self.load_button)
@@ -2599,14 +2693,9 @@ class PressureControlWindow(QMainWindow):
                 "Light barrier debounce",
             )
         )
-        for index, checkbox in enumerate(
-            self.light_barrier_invert_controls, start=1
-        ):
-            checkbox.stateChanged.connect(
-                lambda _state, sensor=index: self.write_light_barrier_inversion(
-                    sensor
-                )
-            )
+        self.light_barrier_settings_button.clicked.connect(
+            self.open_light_barrier_settings
+        )
         self.conveyor_enabled.stateChanged.connect(
             lambda _state: self.write_conveyor_setting("enabled", self.conveyor_enabled.isChecked())
         )
@@ -2658,8 +2747,7 @@ class PressureControlWindow(QMainWindow):
     @pyqtSlot(bool, str)
     def on_connection_changed(self, connected: bool, message: str) -> None:
         self.reconnect_button.setEnabled(True)
-        for checkbox in self.light_barrier_invert_controls:
-            checkbox.setEnabled(connected)
+        self.light_barrier_settings_button.setEnabled(connected)
         if connected:
             self.statusBar().showMessage(f"ADS online: {AMS_NET_ID} / {PLC_IP}")
             self.logging_status.setText("Logging: waiting")
@@ -2679,6 +2767,12 @@ class PressureControlWindow(QMainWindow):
         self.light_barrier_inverted = list(
             snapshot.get("light_barrier_inverted", LIGHT_BARRIER_INVERT_DEFAULTS)
         )
+        self.light_barrier_debounce_enabled = list(
+            snapshot.get(
+                "light_barrier_debounce_enabled",
+                LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS,
+            )
+        )
         conveyor_settings = snapshot["conveyor"]
         calibration = snapshot["calibration"]
         self.conveyor_calibration = {
@@ -2686,10 +2780,6 @@ class PressureControlWindow(QMainWindow):
             "mm_per_full_step": float(calibration["mm_per_full_step"]),
             "valid": bool(calibration["valid"]),
         }
-        inversion_blockers = [
-            QSignalBlocker(checkbox)
-            for checkbox in self.light_barrier_invert_controls
-        ]
         with (
             QSignalBlocker(self.sensor_spacing_12),
             QSignalBlocker(self.sensor_spacing_34),
@@ -2704,16 +2794,10 @@ class PressureControlWindow(QMainWindow):
             self.sensor_spacing_34.setValue(spacing_34)
             self.sensor_spacing_56.setValue(spacing_56)
             self.light_barrier_debounce.setValue(light_barrier_debounce)
-            for checkbox, inverted in zip(
-                self.light_barrier_invert_controls,
-                self.light_barrier_inverted,
-            ):
-                checkbox.setChecked(bool(inverted))
             self.conveyor_enabled.setChecked(bool(conveyor_settings["enabled"]))
             self.conveyor_reverse.setChecked(bool(conveyor_settings["reverse"]))
             self.conveyor_speed.setValue(float(conveyor_settings["speed_mm_per_sec"]))
             self.conveyor_max_speed.setValue(float(conveyor_settings["max_speed_mm_per_sec"]))
-        del inversion_blockers
 
         arrays_by_index = {int(values["index"]): values for values in snapshot["arrays"]}
         for row in self.rows:
@@ -2776,6 +2860,12 @@ class PressureControlWindow(QMainWindow):
                     self.light_barrier_inverted, start=1
                 )
             },
+            **{
+                f"MAIN.GuiLightBarrierDebounceEnabled{index}": bool(enabled)
+                for index, enabled in enumerate(
+                    self.light_barrier_debounce_enabled, start=1
+                )
+            },
             "MAIN.GuiConveyorEnabled": self.conveyor_enabled.isChecked(),
             "MAIN.GuiConveyorReverse": self.conveyor_reverse.isChecked(),
             "MAIN.GuiConveyorSpeedMmPerSec": float(self.conveyor_speed.value()),
@@ -2831,13 +2921,25 @@ class PressureControlWindow(QMainWindow):
         self.ads.queue_write(symbol_name, float(value), label)
         self.statusBar().showMessage(f"{label} queued: {value:.1f} mm")
 
-    def write_light_barrier_inversion(self, sensor: int) -> None:
-        inverted = self.light_barrier_invert_controls[sensor - 1].isChecked()
-        self.light_barrier_inverted[sensor - 1] = inverted
-        self.ads.write_now(
-            {f"MAIN.GuiLightBarrierInvert{sensor}": inverted},
-            f"light_barrier_{sensor}_inversion",
+    def open_light_barrier_settings(self) -> None:
+        if not self.ads.is_connected:
+            self.statusBar().showMessage("Light barrier settings: ADS offline")
+            return
+        dialog = LightBarrierSettingsDialog(
+            self.ads,
+            self.light_barrier_inverted,
+            self.light_barrier_debounce_enabled,
+            self,
         )
+        dialog.setting_changed.connect(self._update_light_barrier_setting)
+        dialog.exec()
+
+    @pyqtSlot(int, bool, bool)
+    def _update_light_barrier_setting(
+        self, sensor: int, inverted: bool, debounce_enabled: bool
+    ) -> None:
+        self.light_barrier_inverted[sensor - 1] = inverted
+        self.light_barrier_debounce_enabled[sensor - 1] = debounce_enabled
 
     def write_conveyor_setting(self, field: str, value: bool | float) -> None:
         labels = {
@@ -3049,6 +3151,9 @@ class PressureControlWindow(QMainWindow):
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "light_barrier_debounce_ms": self.light_barrier_debounce.value(),
             "light_barrier_inverted": list(self.light_barrier_inverted),
+            "light_barrier_debounce_enabled": list(
+                self.light_barrier_debounce_enabled
+            ),
             "conveyor_enabled": self.conveyor_enabled.isChecked(),
             "conveyor_reverse": self.conveyor_reverse.isChecked(),
             "conveyor_speed_mm_per_sec": self.conveyor_speed.value(),
@@ -3083,7 +3188,7 @@ class PressureControlWindow(QMainWindow):
         try:
             profile = json.loads(Path(path).read_text(encoding="utf-8"))
             profile_version = int(profile.get("version", 1))
-            if profile_version not in {1, 2, 3, 4, 5, PROFILE_VERSION}:
+            if profile_version not in {1, 2, 3, 4, 5, 6, PROFILE_VERSION}:
                 raise ValueError("Unknown profile version")
 
             conveyor_enabled = bool(profile.get("conveyor_enabled", False))
@@ -3158,16 +3263,20 @@ class PressureControlWindow(QMainWindow):
             self.light_barrier_inverted = [
                 bool(value) for value in profile_inversions
             ]
-            inversion_blockers = [
-                QSignalBlocker(checkbox)
-                for checkbox in self.light_barrier_invert_controls
-            ]
-            for checkbox, inverted in zip(
-                self.light_barrier_invert_controls,
-                self.light_barrier_inverted,
+            profile_debounce_enabled = profile.get(
+                "light_barrier_debounce_enabled",
+                self.light_barrier_debounce_enabled,
+            )
+            if (
+                not isinstance(profile_debounce_enabled, list)
+                or len(profile_debounce_enabled) != 6
             ):
-                checkbox.setChecked(inverted)
-            del inversion_blockers
+                raise ValueError(
+                    "Light barrier debounce enable list must contain six values"
+                )
+            self.light_barrier_debounce_enabled = [
+                bool(value) for value in profile_debounce_enabled
+            ]
             with (
                 QSignalBlocker(self.light_barrier_debounce),
                 QSignalBlocker(self.conveyor_enabled),

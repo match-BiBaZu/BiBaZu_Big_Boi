@@ -173,6 +173,12 @@ VAR
 	GuiLightBarrierInvert4	: BOOL := TRUE;
 	GuiLightBarrierInvert5	: BOOL := FALSE;
 	GuiLightBarrierInvert6	: BOOL := FALSE;
+	GuiLightBarrierDebounceEnabled1	: BOOL := TRUE;
+	GuiLightBarrierDebounceEnabled2	: BOOL := TRUE;
+	GuiLightBarrierDebounceEnabled3	: BOOL := TRUE;
+	GuiLightBarrierDebounceEnabled4	: BOOL := TRUE;
+	GuiLightBarrierDebounceEnabled5	: BOOL := TRUE;
+	GuiLightBarrierDebounceEnabled6	: BOOL := TRUE;
 	GuiBarrierCalibrationStart	: BOOL := FALSE;
 	BarrierCalibrationActive	: BOOL := FALSE;
 	BarrierCalibrationFirstCaptured	: BOOL := FALSE;
@@ -214,6 +220,12 @@ VAR
 	LastLightBarrierInvert4	: BOOL := TRUE;
 	LastLightBarrierInvert5	: BOOL := FALSE;
 	LastLightBarrierInvert6	: BOOL := FALSE;
+	LastLightBarrierDebounceEnabled1	: BOOL := TRUE;
+	LastLightBarrierDebounceEnabled2	: BOOL := TRUE;
+	LastLightBarrierDebounceEnabled3	: BOOL := TRUE;
+	LastLightBarrierDebounceEnabled4	: BOOL := TRUE;
+	LastLightBarrierDebounceEnabled5	: BOOL := TRUE;
+	LastLightBarrierDebounceEnabled6	: BOOL := TRUE;
 	LightBarrierStable1		: BOOL := FALSE;
 	LightBarrierStable2		: BOOL := FALSE;
 	LightBarrierStable3		: BOOL := FALSE;
@@ -515,7 +527,13 @@ IF (GuiLightBarrierInvert1 <> LastLightBarrierInvert1)
 	OR (GuiLightBarrierInvert3 <> LastLightBarrierInvert3)
 	OR (GuiLightBarrierInvert4 <> LastLightBarrierInvert4)
 	OR (GuiLightBarrierInvert5 <> LastLightBarrierInvert5)
-	OR (GuiLightBarrierInvert6 <> LastLightBarrierInvert6) THEN
+	OR (GuiLightBarrierInvert6 <> LastLightBarrierInvert6)
+	OR (GuiLightBarrierDebounceEnabled1 <> LastLightBarrierDebounceEnabled1)
+	OR (GuiLightBarrierDebounceEnabled2 <> LastLightBarrierDebounceEnabled2)
+	OR (GuiLightBarrierDebounceEnabled3 <> LastLightBarrierDebounceEnabled3)
+	OR (GuiLightBarrierDebounceEnabled4 <> LastLightBarrierDebounceEnabled4)
+	OR (GuiLightBarrierDebounceEnabled5 <> LastLightBarrierDebounceEnabled5)
+	OR (GuiLightBarrierDebounceEnabled6 <> LastLightBarrierDebounceEnabled6) THEN
 	LightBarrierDebounceInitialized := FALSE;
 	LightBarrierStableCounter1 := 0;
 	LightBarrierStableCounter2 := 0;
@@ -530,6 +548,12 @@ LastLightBarrierInvert3 := GuiLightBarrierInvert3;
 LastLightBarrierInvert4 := GuiLightBarrierInvert4;
 LastLightBarrierInvert5 := GuiLightBarrierInvert5;
 LastLightBarrierInvert6 := GuiLightBarrierInvert6;
+LastLightBarrierDebounceEnabled1 := GuiLightBarrierDebounceEnabled1;
+LastLightBarrierDebounceEnabled2 := GuiLightBarrierDebounceEnabled2;
+LastLightBarrierDebounceEnabled3 := GuiLightBarrierDebounceEnabled3;
+LastLightBarrierDebounceEnabled4 := GuiLightBarrierDebounceEnabled4;
+LastLightBarrierDebounceEnabled5 := GuiLightBarrierDebounceEnabled5;
+LastLightBarrierDebounceEnabled6 := GuiLightBarrierDebounceEnabled6;
 
 // On startup, synchronize without creating a false edge.
 IF NOT LightBarrierDebounceInitialized THEN
@@ -553,7 +577,10 @@ IF NOT LightBarrierDebounceInitialized THEN
 	LightBarrierStableCounter6 := 0;
 	LightBarrierDebounceInitialized := TRUE;
 ELSE
-	IF LightBarrierLogical1 <> LightBarrierStable1 THEN
+	IF NOT GuiLightBarrierDebounceEnabled1 THEN
+		LightBarrierStable1 := LightBarrierLogical1;
+		LightBarrierStableCounter1 := 0;
+	ELSIF LightBarrierLogical1 <> LightBarrierStable1 THEN
 		IF LightBarrierStableCounter1 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter1 := LightBarrierStableCounter1 + 1;
 		END_IF
@@ -564,7 +591,10 @@ ELSE
 	ELSE
 		LightBarrierStableCounter1 := 0;
 	END_IF
-	IF LightBarrierLogical2 <> LightBarrierStable2 THEN
+	IF NOT GuiLightBarrierDebounceEnabled2 THEN
+		LightBarrierStable2 := LightBarrierLogical2;
+		LightBarrierStableCounter2 := 0;
+	ELSIF LightBarrierLogical2 <> LightBarrierStable2 THEN
 		IF LightBarrierStableCounter2 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter2 := LightBarrierStableCounter2 + 1;
 		END_IF
@@ -575,7 +605,10 @@ ELSE
 	ELSE
 		LightBarrierStableCounter2 := 0;
 	END_IF
-	IF LightBarrierLogical3 <> LightBarrierStable3 THEN
+	IF NOT GuiLightBarrierDebounceEnabled3 THEN
+		LightBarrierStable3 := LightBarrierLogical3;
+		LightBarrierStableCounter3 := 0;
+	ELSIF LightBarrierLogical3 <> LightBarrierStable3 THEN
 		IF LightBarrierStableCounter3 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter3 := LightBarrierStableCounter3 + 1;
 		END_IF
@@ -586,7 +619,10 @@ ELSE
 	ELSE
 		LightBarrierStableCounter3 := 0;
 	END_IF
-	IF LightBarrierLogical4 <> LightBarrierStable4 THEN
+	IF NOT GuiLightBarrierDebounceEnabled4 THEN
+		LightBarrierStable4 := LightBarrierLogical4;
+		LightBarrierStableCounter4 := 0;
+	ELSIF LightBarrierLogical4 <> LightBarrierStable4 THEN
 		IF LightBarrierStableCounter4 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter4 := LightBarrierStableCounter4 + 1;
 		END_IF
@@ -597,7 +633,10 @@ ELSE
 	ELSE
 		LightBarrierStableCounter4 := 0;
 	END_IF
-	IF LightBarrierLogical5 <> LightBarrierStable5 THEN
+	IF NOT GuiLightBarrierDebounceEnabled5 THEN
+		LightBarrierStable5 := LightBarrierLogical5;
+		LightBarrierStableCounter5 := 0;
+	ELSIF LightBarrierLogical5 <> LightBarrierStable5 THEN
 		IF LightBarrierStableCounter5 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter5 := LightBarrierStableCounter5 + 1;
 		END_IF
@@ -608,7 +647,10 @@ ELSE
 	ELSE
 		LightBarrierStableCounter5 := 0;
 	END_IF
-	IF LightBarrierLogical6 <> LightBarrierStable6 THEN
+	IF NOT GuiLightBarrierDebounceEnabled6 THEN
+		LightBarrierStable6 := LightBarrierLogical6;
+		LightBarrierStableCounter6 := 0;
+	ELSIF LightBarrierLogical6 <> LightBarrierStable6 THEN
 		IF LightBarrierStableCounter6 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter6 := LightBarrierStableCounter6 + 1;
 		END_IF
