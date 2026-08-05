@@ -367,9 +367,10 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 56)
+        self.assertEqual(len(plc.read_calls[0]), 62)
         self.assertEqual(snapshot["light_barriers"], [False] * 6)
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 6)
+        self.assertEqual(snapshot["light_barrier_inverted"], [False] * 6)
         self.assertEqual(snapshot["light_barrier_event_counts"], [0] * 6)
         self.assertEqual(snapshot["light_barrier_event_times_ms"], [0] * 6)
         self.assertEqual(snapshot["debounce_ms"], 0)
@@ -552,6 +553,9 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 result["force_single_nozzle_response_delays_ms"] = list(
                     window.ads.force_single_nozzle_response_delays_ms
                 )
+                result["light_barrier_inverted"] = list(
+                    window.light_barrier_inverted
+                )
                 window.close()
                 return result
 
@@ -627,6 +631,20 @@ class ProfileCompatibilityTests(unittest.TestCase):
             [34.0, 35.0, 36.0, 37.0],
         )
 
+    def test_version_6_profile_preserves_light_barrier_inversions(self):
+        result = self.load_profile(
+            {
+                "version": 6,
+                "arrays": [],
+                "light_barrier_inverted": [False, True, True, False, False, True],
+            }
+        )
+
+        self.assertEqual(
+            result["light_barrier_inverted"],
+            [False, True, True, False, False, True],
+        )
+
 
 class ConveyorSetupWindowTests(unittest.TestCase):
     @classmethod
@@ -643,6 +661,29 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertAlmostEqual(delta[0], 22.0)
         self.assertAlmostEqual(delta[1], 0.0)
         self.assertAlmostEqual(delta[2], 0.0)
+
+    def test_light_barrier_inversion_controls_write_individual_symbols(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        window.ads.connected = True
+        window.connected = True
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        self.assertEqual(
+            [checkbox.isChecked() for checkbox in window.barrier_inverted],
+            [False, False, True, True, False, False],
+        )
+        window.barrier_inverted[0].setChecked(True)
+
+        self.assertEqual(
+            writes[0],
+            ({"MAIN.GuiLightBarrierInvert1": True}, "light_barrier_1_inversion"),
+        )
+        window.ads.connected = False
+        window.close()
 
     def test_speed_statistics_report_mean_spread_and_target_error(self):
         result = setup_gui.calculate_speed_statistics([14.0, 15.0, 16.0], 15.0)

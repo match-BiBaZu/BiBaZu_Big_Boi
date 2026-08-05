@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"name": "CSVSaver",
+			"path": "../../CSVSaver"
+		},
+		{
+			"name": "BiBaZu_Big_Boi",
+			"path": ".."
+		}
+	],
+	"settings": {
+		"python-envs.defaultPackageManager": "ms-python.python:conda"
+	}
+}

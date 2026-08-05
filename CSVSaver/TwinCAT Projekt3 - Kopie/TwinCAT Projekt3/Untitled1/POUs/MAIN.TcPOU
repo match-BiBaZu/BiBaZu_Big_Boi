@@ -167,6 +167,12 @@ VAR
 	GuiBarrierCalibrationFirstSensor	: UINT := 1;
 	GuiBarrierCalibrationSecondSensor	: UINT := 2;
 	GuiBarrierCalibrationDebounceMs	: UINT := 20;
+	GuiLightBarrierInvert1	: BOOL := FALSE;
+	GuiLightBarrierInvert2	: BOOL := FALSE;
+	GuiLightBarrierInvert3	: BOOL := TRUE;
+	GuiLightBarrierInvert4	: BOOL := TRUE;
+	GuiLightBarrierInvert5	: BOOL := FALSE;
+	GuiLightBarrierInvert6	: BOOL := FALSE;
 	GuiBarrierCalibrationStart	: BOOL := FALSE;
 	BarrierCalibrationActive	: BOOL := FALSE;
 	BarrierCalibrationFirstCaptured	: BOOL := FALSE;
@@ -196,6 +202,18 @@ VAR
 	LightBarrierOn4 AT %I*	: BOOL := 0; //1 when detecting a reflection
 	LightBarrierOn5 AT %I*	: BOOL := 0; //1 when detecting a reflection
 	LightBarrierOn6 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierLogical1	: BOOL := FALSE;
+	LightBarrierLogical2	: BOOL := FALSE;
+	LightBarrierLogical3	: BOOL := FALSE;
+	LightBarrierLogical4	: BOOL := FALSE;
+	LightBarrierLogical5	: BOOL := FALSE;
+	LightBarrierLogical6	: BOOL := FALSE;
+	LastLightBarrierInvert1	: BOOL := FALSE;
+	LastLightBarrierInvert2	: BOOL := FALSE;
+	LastLightBarrierInvert3	: BOOL := TRUE;
+	LastLightBarrierInvert4	: BOOL := TRUE;
+	LastLightBarrierInvert5	: BOOL := FALSE;
+	LastLightBarrierInvert6	: BOOL := FALSE;
 	LightBarrierStable1		: BOOL := FALSE;
 	LightBarrierStable2		: BOOL := FALSE;
 	LightBarrierStable3		: BOOL := FALSE;
@@ -483,20 +501,50 @@ ELSIF GuiBarrierCalibrationDebounceMs > 200 THEN
 END_IF
 
 // All production timing and valve triggers use these shared, stable sensor states.
+// Normalize the electrical polarity first. TRUE means clear beam and FALSE means part present.
+LightBarrierLogical1 := LightBarrierOn1 <> GuiLightBarrierInvert1;
+LightBarrierLogical2 := LightBarrierOn2 <> GuiLightBarrierInvert2;
+LightBarrierLogical3 := LightBarrierOn3 <> GuiLightBarrierInvert3;
+LightBarrierLogical4 := LightBarrierOn4 <> GuiLightBarrierInvert4;
+LightBarrierLogical5 := LightBarrierOn5 <> GuiLightBarrierInvert5;
+LightBarrierLogical6 := LightBarrierOn6 <> GuiLightBarrierInvert6;
+
+// Changing polarity re-synchronizes the debouncer without generating an artificial edge.
+IF (GuiLightBarrierInvert1 <> LastLightBarrierInvert1)
+	OR (GuiLightBarrierInvert2 <> LastLightBarrierInvert2)
+	OR (GuiLightBarrierInvert3 <> LastLightBarrierInvert3)
+	OR (GuiLightBarrierInvert4 <> LastLightBarrierInvert4)
+	OR (GuiLightBarrierInvert5 <> LastLightBarrierInvert5)
+	OR (GuiLightBarrierInvert6 <> LastLightBarrierInvert6) THEN
+	LightBarrierDebounceInitialized := FALSE;
+	LightBarrierStableCounter1 := 0;
+	LightBarrierStableCounter2 := 0;
+	LightBarrierStableCounter3 := 0;
+	LightBarrierStableCounter4 := 0;
+	LightBarrierStableCounter5 := 0;
+	LightBarrierStableCounter6 := 0;
+END_IF
+LastLightBarrierInvert1 := GuiLightBarrierInvert1;
+LastLightBarrierInvert2 := GuiLightBarrierInvert2;
+LastLightBarrierInvert3 := GuiLightBarrierInvert3;
+LastLightBarrierInvert4 := GuiLightBarrierInvert4;
+LastLightBarrierInvert5 := GuiLightBarrierInvert5;
+LastLightBarrierInvert6 := GuiLightBarrierInvert6;
+
 // On startup, synchronize without creating a false edge.
 IF NOT LightBarrierDebounceInitialized THEN
-	LightBarrierStable1 := LightBarrierOn1;
-	LightBarrierStable2 := LightBarrierOn2;
-	LightBarrierStable3 := LightBarrierOn3;
-	LightBarrierStable4 := LightBarrierOn4;
-	LightBarrierStable5 := LightBarrierOn5;
-	LightBarrierStable6 := LightBarrierOn6;
-	LastLightBarrier1 := LightBarrierOn1;
-	LastLightBarrier2 := LightBarrierOn2;
-	LastLightBarrier3 := LightBarrierOn3;
-	LastLightBarrier4 := LightBarrierOn4;
-	LastLightBarrier5 := LightBarrierOn5;
-	LastLightBarrier6 := LightBarrierOn6;
+	LightBarrierStable1 := LightBarrierLogical1;
+	LightBarrierStable2 := LightBarrierLogical2;
+	LightBarrierStable3 := LightBarrierLogical3;
+	LightBarrierStable4 := LightBarrierLogical4;
+	LightBarrierStable5 := LightBarrierLogical5;
+	LightBarrierStable6 := LightBarrierLogical6;
+	LastLightBarrier1 := LightBarrierLogical1;
+	LastLightBarrier2 := LightBarrierLogical2;
+	LastLightBarrier3 := LightBarrierLogical3;
+	LastLightBarrier4 := LightBarrierLogical4;
+	LastLightBarrier5 := LightBarrierLogical5;
+	LastLightBarrier6 := LightBarrierLogical6;
 	LightBarrierStableCounter1 := 0;
 	LightBarrierStableCounter2 := 0;
 	LightBarrierStableCounter3 := 0;
@@ -505,67 +553,67 @@ IF NOT LightBarrierDebounceInitialized THEN
 	LightBarrierStableCounter6 := 0;
 	LightBarrierDebounceInitialized := TRUE;
 ELSE
-	IF LightBarrierOn1 <> LightBarrierStable1 THEN
+	IF LightBarrierLogical1 <> LightBarrierStable1 THEN
 		IF LightBarrierStableCounter1 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter1 := LightBarrierStableCounter1 + 1;
 		END_IF
 		IF LightBarrierStableCounter1 >= GuiBarrierCalibrationDebounceMs THEN
-			LightBarrierStable1 := LightBarrierOn1;
+			LightBarrierStable1 := LightBarrierLogical1;
 			LightBarrierStableCounter1 := 0;
 		END_IF
 	ELSE
 		LightBarrierStableCounter1 := 0;
 	END_IF
-	IF LightBarrierOn2 <> LightBarrierStable2 THEN
+	IF LightBarrierLogical2 <> LightBarrierStable2 THEN
 		IF LightBarrierStableCounter2 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter2 := LightBarrierStableCounter2 + 1;
 		END_IF
 		IF LightBarrierStableCounter2 >= GuiBarrierCalibrationDebounceMs THEN
-			LightBarrierStable2 := LightBarrierOn2;
+			LightBarrierStable2 := LightBarrierLogical2;
 			LightBarrierStableCounter2 := 0;
 		END_IF
 	ELSE
 		LightBarrierStableCounter2 := 0;
 	END_IF
-	IF LightBarrierOn3 <> LightBarrierStable3 THEN
+	IF LightBarrierLogical3 <> LightBarrierStable3 THEN
 		IF LightBarrierStableCounter3 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter3 := LightBarrierStableCounter3 + 1;
 		END_IF
 		IF LightBarrierStableCounter3 >= GuiBarrierCalibrationDebounceMs THEN
-			LightBarrierStable3 := LightBarrierOn3;
+			LightBarrierStable3 := LightBarrierLogical3;
 			LightBarrierStableCounter3 := 0;
 		END_IF
 	ELSE
 		LightBarrierStableCounter3 := 0;
 	END_IF
-	IF LightBarrierOn4 <> LightBarrierStable4 THEN
+	IF LightBarrierLogical4 <> LightBarrierStable4 THEN
 		IF LightBarrierStableCounter4 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter4 := LightBarrierStableCounter4 + 1;
 		END_IF
 		IF LightBarrierStableCounter4 >= GuiBarrierCalibrationDebounceMs THEN
-			LightBarrierStable4 := LightBarrierOn4;
+			LightBarrierStable4 := LightBarrierLogical4;
 			LightBarrierStableCounter4 := 0;
 		END_IF
 	ELSE
 		LightBarrierStableCounter4 := 0;
 	END_IF
-	IF LightBarrierOn5 <> LightBarrierStable5 THEN
+	IF LightBarrierLogical5 <> LightBarrierStable5 THEN
 		IF LightBarrierStableCounter5 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter5 := LightBarrierStableCounter5 + 1;
 		END_IF
 		IF LightBarrierStableCounter5 >= GuiBarrierCalibrationDebounceMs THEN
-			LightBarrierStable5 := LightBarrierOn5;
+			LightBarrierStable5 := LightBarrierLogical5;
 			LightBarrierStableCounter5 := 0;
 		END_IF
 	ELSE
 		LightBarrierStableCounter5 := 0;
 	END_IF
-	IF LightBarrierOn6 <> LightBarrierStable6 THEN
+	IF LightBarrierLogical6 <> LightBarrierStable6 THEN
 		IF LightBarrierStableCounter6 < GuiBarrierCalibrationDebounceMs THEN
 			LightBarrierStableCounter6 := LightBarrierStableCounter6 + 1;
 		END_IF
 		IF LightBarrierStableCounter6 >= GuiBarrierCalibrationDebounceMs THEN
-			LightBarrierStable6 := LightBarrierOn6;
+			LightBarrierStable6 := LightBarrierLogical6;
 			LightBarrierStableCounter6 := 0;
 		END_IF
 	ELSE
@@ -574,23 +622,23 @@ ELSE
 END_IF
 
 CASE GuiBarrierCalibrationFirstSensor OF
-	1: BarrierCalibrationFirstState := LightBarrierOn1;
-	2: BarrierCalibrationFirstState := LightBarrierOn2;
-	3: BarrierCalibrationFirstState := LightBarrierOn3;
-	4: BarrierCalibrationFirstState := LightBarrierOn4;
-	5: BarrierCalibrationFirstState := LightBarrierOn5;
-	6: BarrierCalibrationFirstState := LightBarrierOn6;
+	1: BarrierCalibrationFirstState := LightBarrierLogical1;
+	2: BarrierCalibrationFirstState := LightBarrierLogical2;
+	3: BarrierCalibrationFirstState := LightBarrierLogical3;
+	4: BarrierCalibrationFirstState := LightBarrierLogical4;
+	5: BarrierCalibrationFirstState := LightBarrierLogical5;
+	6: BarrierCalibrationFirstState := LightBarrierLogical6;
 ELSE
 	BarrierCalibrationFirstState := FALSE;
 END_CASE
 
 CASE GuiBarrierCalibrationSecondSensor OF
-	1: BarrierCalibrationSecondState := LightBarrierOn1;
-	2: BarrierCalibrationSecondState := LightBarrierOn2;
-	3: BarrierCalibrationSecondState := LightBarrierOn3;
-	4: BarrierCalibrationSecondState := LightBarrierOn4;
-	5: BarrierCalibrationSecondState := LightBarrierOn5;
-	6: BarrierCalibrationSecondState := LightBarrierOn6;
+	1: BarrierCalibrationSecondState := LightBarrierLogical1;
+	2: BarrierCalibrationSecondState := LightBarrierLogical2;
+	3: BarrierCalibrationSecondState := LightBarrierLogical3;
+	4: BarrierCalibrationSecondState := LightBarrierLogical4;
+	5: BarrierCalibrationSecondState := LightBarrierLogical5;
+	6: BarrierCalibrationSecondState := LightBarrierLogical6;
 ELSE
 	BarrierCalibrationSecondState := FALSE;
 END_CASE

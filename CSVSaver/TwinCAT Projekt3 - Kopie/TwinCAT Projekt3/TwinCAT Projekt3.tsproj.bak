@@ -29,7 +29,7 @@
 			</ArrayInfo>
 		</DataType>
 		<DataType>
-			<Name GUID="{18071995-0000-0000-0000-002000000002}" IecBaseType="true" AutoDeleteType="true" HideSubItems="true">ARRAY [0..1] OF BIT</Name>
+			<Name GUID="{18071995-0000-0000-0000-002000000002}" IecBaseType="true" BitType="true" AutoDeleteType="true" HideSubItems="true">ARRAY [0..1] OF BIT</Name>
 			<BitSize>2</BitSize>
 			<BaseType GUID="{18071995-0000-0000-0000-000000000010}">BIT</BaseType>
 			<ArrayInfo>
@@ -56,7 +56,7 @@
 			</ArrayInfo>
 		</DataType>
 		<DataType>
-			<Name GUID="{18071995-0000-0000-0000-00200000000C}" IecBaseType="true" AutoDeleteType="true" HideSubItems="true">ARRAY [0..11] OF BIT</Name>
+			<Name GUID="{18071995-0000-0000-0000-00200000000C}" IecBaseType="true" BitType="true" AutoDeleteType="true" HideSubItems="true">ARRAY [0..11] OF BIT</Name>
 			<BitSize>12</BitSize>
 			<BaseType GUID="{18071995-0000-0000-0000-000000000010}">BIT</BaseType>
 			<ArrayInfo>
@@ -74,7 +74,7 @@
 			</ArrayInfo>
 		</DataType>
 		<DataType>
-			<Name GUID="{18071995-0000-0000-0000-00200000000E}" IecBaseType="true" AutoDeleteType="true" HideSubItems="true">ARRAY [0..13] OF BIT</Name>
+			<Name GUID="{18071995-0000-0000-0000-00200000000E}" IecBaseType="true" BitType="true" AutoDeleteType="true" HideSubItems="true">ARRAY [0..13] OF BIT</Name>
 			<BitSize>14</BitSize>
 			<BaseType GUID="{18071995-0000-0000-0000-000000000010}">BIT</BaseType>
 			<ArrayInfo>
@@ -1062,8 +1062,8 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 						<EtherCAT SlaveType="2" PdiType="#x0405" MboxDataLinkLayer="true" StateMBoxPolling="true" CycleMBoxPollingTime="0" CoeType="39" FoeType="1" VendorId="#x00000002" ProductCode="#x1b873052" RevisionNo="#x00150000" InfoDataAddr="true" InfoDataSoeDS401="true" RepeatSupport="true" SetFrameRepeatTime="true" TimeoutMailbox2="2000" CheckRevisionNoType="3" PortPhys="51" SdoUploadWithMaxLength="true" MaxSlotCount="256" MaxSlotGroupCount="1" SlotPdoIncrement="1" SlotIndexIncrement="16" Type="EL7047 1Ch. Stepper motor output stage (50V, 5A)" Desc="EL7047" PortABoxInfo="#x01000012">
 							<SyncMan>001080002600010001000000400080008000001026010000</SyncMan>
 							<SyncMan>801080002200010002000000400080008000801022010000</SyncMan>
-							<SyncMan>00110e002400010003000000000000000800001124010000</SyncMan>
-							<SyncMan>80110e002000010004000000000000000800801120010000</SyncMan>
+							<SyncMan>001116002400010003000000000000000800001124010000</SyncMan>
+							<SyncMan>801118002000010004000000000000000800801120010000</SyncMan>
 							<Fmmu>0000000000000000001100020100000001000000000000000000000000000000</Fmmu>
 							<Fmmu>0000000000000000801100010100000002000000000000000000000000000000</Fmmu>
 							<Fmmu>00000000000000000d0800010100000003000000000000000000000000000000</Fmmu>
@@ -1240,7 +1240,7 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 									<Type>INT</Type>
 								</Entry>
 							</Pdo>
-							<Pdo Name="POS Status compact" Index="#x1a06" Flags="#x0010" SyncMan="3">
+							<Pdo Name="POS Status compact" Index="#x1a06" Flags="#x0010">
 								<Entry Name="Busy" Index="#x6020" Sub="#x01">
 									<Type>BIT</Type>
 								</Entry>
@@ -1269,7 +1269,7 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 									<Type GUID="{18071995-0000-0000-0000-002000000008}">ARRAY [0..0] OF BYTE</Type>
 								</Entry>
 							</Pdo>
-							<Pdo Name="POS Status" Index="#x1a07" Flags="#x0010">
+							<Pdo Name="POS Status" Index="#x1a07" Flags="#x0010" SyncMan="3">
 								<Entry Name="Busy" Index="#x6020" Sub="#x01">
 									<Type>BIT</Type>
 								</Entry>
@@ -1392,7 +1392,7 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 									<Type>INT</Type>
 								</Entry>
 							</Pdo>
-							<Pdo Name="POS Control compact" Index="#x1605" InOut="1" Flags="#x0010" SyncMan="2">
+							<Pdo Name="POS Control compact" Index="#x1605" InOut="1" Flags="#x0010">
 								<Entry Name="Execute" Index="#x7020" Sub="#x01">
 									<Type>BIT</Type>
 								</Entry>
@@ -1406,7 +1406,7 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 									<Type>UDINT</Type>
 								</Entry>
 							</Pdo>
-							<Pdo Name="POS Control" Index="#x1606" InOut="1" Flags="#x0010">
+							<Pdo Name="POS Control" Index="#x1606" InOut="1" Flags="#x0010" SyncMan="2">
 								<Entry Name="Execute" Index="#x7020" Sub="#x01">
 									<Type>BIT</Type>
 								</Entry>
@@ -1913,18 +1913,23 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 			</OwnerB>
 			<OwnerB Name="TIID^Device 1 (EtherCAT)^Term 6 (EK1100)^Term 19 (EL7047)">
 				<Link VarA="PlcTask Inputs^MAIN.StepperInfoDataState" VarB="InfoData^State"/>
-				<Link VarA="PlcTask Inputs^MAIN.StepperPosBusy" VarB="POS Status compact^Busy"/>
-				<Link VarA="PlcTask Inputs^MAIN.StepperPosError" VarB="POS Status compact^Error"/>
-				<Link VarA="PlcTask Inputs^MAIN.StepperPosInTarget" VarB="POS Status compact^In-Target"/>
-				<Link VarA="PlcTask Inputs^MAIN.StepperPosReadyToExecute" VarB="POS Status compact^Ready to execute"/>
-				<Link VarA="PlcTask Inputs^MAIN.StepperPosWarning" VarB="POS Status compact^Warning"/>
+				<Link VarA="PlcTask Inputs^MAIN.StepperPosBusy" VarB="POS Status^Busy"/>
+				<Link VarA="PlcTask Inputs^MAIN.StepperPosError" VarB="POS Status^Error"/>
+				<Link VarA="PlcTask Inputs^MAIN.StepperPosInTarget" VarB="POS Status^In-Target"/>
+				<Link VarA="PlcTask Inputs^MAIN.StepperPosReadyToExecute" VarB="POS Status^Ready to execute"/>
+				<Link VarA="PlcTask Inputs^MAIN.StepperPosWarning" VarB="POS Status^Warning"/>
 				<Link VarA="PlcTask Inputs^MAIN.StepperWcState" VarB="WcState^WcState"/>
 				<Link VarA="PlcTask Outputs^MAIN.StepperControlDigitalOutput1" VarB="STM Control^Digital output 1"/>
 				<Link VarA="PlcTask Outputs^MAIN.StepperControlEnable" VarB="STM Control^Enable"/>
 				<Link VarA="PlcTask Outputs^MAIN.StepperControlReduceTorque" VarB="STM Control^Reduce torque"/>
 				<Link VarA="PlcTask Outputs^MAIN.StepperControlReset" VarB="STM Control^Reset"/>
-				<Link VarA="PlcTask Outputs^MAIN.StepperPosEmergencyStop" VarB="POS Control compact^Emergency stop"/>
-				<Link VarA="PlcTask Outputs^MAIN.StepperPosExecute" VarB="POS Control compact^Execute"/>
+				<Link VarA="PlcTask Outputs^MAIN.StepperPosAcceleration" VarB="POS Control^Acceleration"/>
+				<Link VarA="PlcTask Outputs^MAIN.StepperPosDeceleration" VarB="POS Control^Deceleration"/>
+				<Link VarA="PlcTask Outputs^MAIN.StepperPosEmergencyStop" VarB="POS Control^Emergency stop"/>
+				<Link VarA="PlcTask Outputs^MAIN.StepperPosExecute" VarB="POS Control^Execute"/>
+				<Link VarA="PlcTask Outputs^MAIN.StepperPosStartType" VarB="POS Control^Start type"/>
+				<Link VarA="PlcTask Outputs^MAIN.StepperPosTargetPosition" VarB="POS Control^Target position"/>
+				<Link VarA="PlcTask Outputs^MAIN.StepperPosVelocity" VarB="POS Control^Velocity"/>
 			</OwnerB>
 			<OwnerB Name="TIID^Device 1 (EtherCAT)^Term 6 (EK1100)^Term 7 (EL2008)">
 				<Link VarA="PlcTask Outputs^MAIN.OpenValve1" VarB="Channel 1^Output"/>

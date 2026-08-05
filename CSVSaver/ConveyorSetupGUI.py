@@ -9,6 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -32,6 +33,7 @@ from PressureControlGUI import (
     ADS_TIMEOUT_MS,
     AMS_NET_ID,
     PLC_IP,
+    LIGHT_BARRIER_INVERT_DEFAULTS,
     AdsController,
     ConveyorCalibrationDialog,
     ConveyorJogDialog,
@@ -416,6 +418,7 @@ class ConveyorSetupWindow(QMainWindow):
         barrier_layout = QGridLayout(barrier_group)
         self.barrier_lamps = []
         self.barrier_labels = []
+        self.barrier_inverted = []
         for index in range(1, 7):
             column = index - 1
             title = QLabel(f"LB {index}")
@@ -424,11 +427,18 @@ class ConveyorSetupWindow(QMainWindow):
             lamp.setFixedSize(18, 18)
             state = QLabel("Unknown")
             state.setMinimumWidth(58)
+            inverted = QCheckBox("Invert")
+            inverted.setChecked(LIGHT_BARRIER_INVERT_DEFAULTS[index - 1])
+            inverted.setToolTip(
+                f"Invert the electrical signal of light barrier {index} before debouncing"
+            )
             barrier_layout.addWidget(title, 0, column)
             barrier_layout.addWidget(lamp, 1, column)
             barrier_layout.addWidget(state, 2, column)
+            barrier_layout.addWidget(inverted, 3, column)
             self.barrier_lamps.append(lamp)
             self.barrier_labels.append(state)
+            self.barrier_inverted.append(inverted)
             self._set_barrier_indicator(index - 1, None)
         barrier_layout.setColumnStretch(6, 1)
         layout.addWidget(barrier_group)
@@ -644,6 +654,19 @@ class ConveyorSetupWindow(QMainWindow):
         )
         self.ur_first_sensor.currentIndexChanged.connect(self._update_ur_controls)
         self.ur_second_sensor.currentIndexChanged.connect(self._update_ur_controls)
+        for index, checkbox in enumerate(self.barrier_inverted, start=1):
+            checkbox.stateChanged.connect(
+                lambda _state, sensor=index: self._write_barrier_inversion(sensor)
+            )
+
+    def _write_barrier_inversion(self, sensor: int) -> None:
+        if not self.connected:
+            return
+        inverted = self.barrier_inverted[sensor - 1].isChecked()
+        self.ads.write_now(
+            {f"MAIN.GuiLightBarrierInvert{sensor}": inverted},
+            f"light_barrier_{sensor}_inversion",
+        )
 
     def _on_calibration_tab_changed(self, index: int) -> None:
         if index == 1:
@@ -995,6 +1018,8 @@ class ConveyorSetupWindow(QMainWindow):
         self.ur_apply_button.setEnabled(False)
         self.ur_monitor_start_button.setEnabled(False)
         self.ur_monitor_stop_button.setEnabled(False)
+        for checkbox in self.barrier_inverted:
+            checkbox.setEnabled(enabled)
 
     def _set_barrier_indicator(self, index: int, state: bool | None) -> None:
         if state is None:
@@ -1045,8 +1070,21 @@ class ConveyorSetupWindow(QMainWindow):
         self.have_setup_status = True
         self.latest_status = status
         if not self.debounce_initialized:
-            with QSignalBlocker(self.debounce_time):
+            blockers = [
+                QSignalBlocker(self.debounce_time),
+                *(QSignalBlocker(checkbox) for checkbox in self.barrier_inverted),
+            ]
+            try:
                 self.debounce_time.setValue(status["debounce_ms"])
+                for checkbox, inverted in zip(
+                    self.barrier_inverted,
+                    status.get(
+                        "light_barrier_inverted", LIGHT_BARRIER_INVERT_DEFAULTS
+                    ),
+                ):
+                    checkbox.setChecked(bool(inverted))
+            finally:
+                del blockers
             self.debounce_initialized = True
         for index, barrier_state in enumerate(status["light_barriers"]):
             self._set_barrier_indicator(index, barrier_state)
@@ -1118,6 +1156,8 @@ class ConveyorSetupWindow(QMainWindow):
         self.measurement_speed.setEnabled(settings_enabled)
         self.maximum_travel.setEnabled(settings_enabled)
         self.debounce_time.setEnabled(settings_enabled)
+        for checkbox in self.barrier_inverted:
+            checkbox.setEnabled(self.connected and settings_enabled)
         self._update_apply_state()
         self._update_ur_controls()
 

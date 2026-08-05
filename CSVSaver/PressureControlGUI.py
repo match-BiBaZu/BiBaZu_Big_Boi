@@ -39,7 +39,7 @@ PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
-PROFILE_VERSION = 5
+PROFILE_VERSION = 6
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -75,6 +75,7 @@ OFFSET_MAX_MM = 5000.0
 LIGHT_BARRIER_DEBOUNCE_MIN_MS = 1
 LIGHT_BARRIER_DEBOUNCE_MAX_MS = 200
 LIGHT_BARRIER_DEBOUNCE_DEFAULT_MS = 20
+LIGHT_BARRIER_INVERT_DEFAULTS = (False, False, True, True, False, False)
 CONVEYOR_SPEED_MIN_MM_PER_SEC = 0.0
 CONVEYOR_SPEED_MAX_MM_PER_SEC = 5000.0
 CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC = 1.0
@@ -559,6 +560,7 @@ class AdsWorker(QObject):
             "MAIN.GuiSensorSpacing34Mm",
             "MAIN.GuiSensorSpacing56Mm",
             "MAIN.GuiBarrierCalibrationDebounceMs",
+            *[f"MAIN.GuiLightBarrierInvert{index}" for index in range(1, 7)],
             "MAIN.GuiConveyorEnabled",
             "MAIN.GuiConveyorReverse",
             "MAIN.GuiConveyorSpeedMmPerSec",
@@ -613,6 +615,10 @@ class AdsWorker(QObject):
             "light_barrier_debounce_ms": int(
                 values["MAIN.GuiBarrierCalibrationDebounceMs"]
             ),
+            "light_barrier_inverted": [
+                bool(values[f"MAIN.GuiLightBarrierInvert{index}"])
+                for index in range(1, 7)
+            ],
             "conveyor": {
                 "enabled": bool(values["MAIN.GuiConveyorEnabled"]),
                 "reverse": bool(values["MAIN.GuiConveyorReverse"]),
@@ -823,6 +829,7 @@ class AdsWorker(QObject):
         names = [
             *[f"MAIN.LightBarrierOn{index}" for index in range(1, 7)],
             *[f"MAIN.LightBarrierStable{index}" for index in range(1, 7)],
+            *[f"MAIN.GuiLightBarrierInvert{index}" for index in range(1, 7)],
             *[f"MAIN.LightBarrierEventCount{index}" for index in range(1, 7)],
             *[
                 f"MAIN.LightBarrierLastEventTimeMs{index}"
@@ -869,6 +876,10 @@ class AdsWorker(QObject):
             ],
             "raw_light_barriers": [
                 bool(values[f"MAIN.LightBarrierOn{index}"])
+                for index in range(1, 7)
+            ],
+            "light_barrier_inverted": [
+                bool(values[f"MAIN.GuiLightBarrierInvert{index}"])
                 for index in range(1, 7)
             ],
             "light_barrier_event_counts": [
@@ -2377,6 +2388,7 @@ class PressureControlWindow(QMainWindow):
         self.rows = [ArrayRow(index) for index in range(1, ARRAY_COUNT + 1)]
         self.last_shot_counter: int | None = None
         self.last_light_barrier_event_counts: list[int | None] = [None] * 6
+        self.light_barrier_inverted = list(LIGHT_BARRIER_INVERT_DEFAULTS)
         self.conveyor_calibration = {
             "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
             "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
@@ -2639,6 +2651,9 @@ class PressureControlWindow(QMainWindow):
     def apply_initial_snapshot(self, snapshot: dict) -> None:
         spacing_12, spacing_34, spacing_56 = snapshot["sensor_spacings"]
         light_barrier_debounce = snapshot["light_barrier_debounce_ms"]
+        self.light_barrier_inverted = list(
+            snapshot.get("light_barrier_inverted", LIGHT_BARRIER_INVERT_DEFAULTS)
+        )
         conveyor_settings = snapshot["conveyor"]
         calibration = snapshot["calibration"]
         self.conveyor_calibration = {
@@ -2720,6 +2735,12 @@ class PressureControlWindow(QMainWindow):
             "MAIN.GuiBarrierCalibrationDebounceMs": int(
                 self.light_barrier_debounce.value()
             ),
+            **{
+                f"MAIN.GuiLightBarrierInvert{index}": bool(inverted)
+                for index, inverted in enumerate(
+                    self.light_barrier_inverted, start=1
+                )
+            },
             "MAIN.GuiConveyorEnabled": self.conveyor_enabled.isChecked(),
             "MAIN.GuiConveyorReverse": self.conveyor_reverse.isChecked(),
             "MAIN.GuiConveyorSpeedMmPerSec": float(self.conveyor_speed.value()),
@@ -2984,6 +3005,7 @@ class PressureControlWindow(QMainWindow):
             "version": PROFILE_VERSION,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "light_barrier_debounce_ms": self.light_barrier_debounce.value(),
+            "light_barrier_inverted": list(self.light_barrier_inverted),
             "conveyor_enabled": self.conveyor_enabled.isChecked(),
             "conveyor_reverse": self.conveyor_reverse.isChecked(),
             "conveyor_speed_mm_per_sec": self.conveyor_speed.value(),
@@ -3018,7 +3040,7 @@ class PressureControlWindow(QMainWindow):
         try:
             profile = json.loads(Path(path).read_text(encoding="utf-8"))
             profile_version = int(profile.get("version", 1))
-            if profile_version not in {1, 2, 3, 4, PROFILE_VERSION}:
+            if profile_version not in {1, 2, 3, 4, 5, PROFILE_VERSION}:
                 raise ValueError("Unknown profile version")
 
             conveyor_enabled = bool(profile.get("conveyor_enabled", False))
@@ -3085,6 +3107,14 @@ class PressureControlWindow(QMainWindow):
                     self.light_barrier_debounce.value(),
                 )
             )
+            profile_inversions = profile.get(
+                "light_barrier_inverted", self.light_barrier_inverted
+            )
+            if not isinstance(profile_inversions, list) or len(profile_inversions) != 6:
+                raise ValueError("Light barrier inversion list must contain six values")
+            self.light_barrier_inverted = [
+                bool(value) for value in profile_inversions
+            ]
             with (
                 QSignalBlocker(self.light_barrier_debounce),
                 QSignalBlocker(self.conveyor_enabled),
