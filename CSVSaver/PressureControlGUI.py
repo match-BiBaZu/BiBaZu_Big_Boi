@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
 
 
 AMS_NET_ID = "10.145.4.14.1.1"
-PLC_IP = "192.168.10.23"
+PLC_IP = "192.168.0.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")

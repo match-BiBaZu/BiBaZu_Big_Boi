@@ -115,7 +115,7 @@
 		</System>
 		<Plc>
 			<Project GUID="{3607B6EC-BD99-4A0F-832D-D83A85F63667}" Name="Untitled1" PrjFilePath="Untitled1\Untitled1.plcproj" TmcFilePath="Untitled1\Untitled1.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" SymbolicMapping="true">
-				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{559AACD3-8D8A-0311-D80F-CBEED9F2785C}" TmcPath="Untitled1\Untitled1.tmc">
+				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{12A977A5-2216-C4FD-13D6-A022CB7371AD}" TmcPath="Untitled1\Untitled1.tmc">
 					<Name>Untitled1 Instance</Name>
 					<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 					<Vars VarGrpType="2" AreaNo="1">
@@ -372,13 +372,13 @@
 							<Type>UINT</Type>
 						</Var>
 						<Var>
-							<Name>MAIN.Valve1_IN</Name>
-							<Comment><![CDATA[Input for VTEM unit 1 valves]]></Comment>
+							<Name>MAIN.Valve0_IN</Name>
+							<Comment><![CDATA[Input for VTEM Valves]]></Comment>
 							<Type GUID="{E0088335-DE2C-5D66-A8AA-F4305DB1ED0C}">ARRAY [0..2] OF WORD</Type>
 						</Var>
 						<Var>
-							<Name>MAIN.Valve0_IN</Name>
-							<Comment><![CDATA[Input for VTEM Valves]]></Comment>
+							<Name>MAIN.Valve1_IN</Name>
+							<Comment><![CDATA[Input for VTEM unit 1 valves]]></Comment>
 							<Type GUID="{E0088335-DE2C-5D66-A8AA-F4305DB1ED0C}">ARRAY [0..2] OF WORD</Type>
 						</Var>
 					</Vars>

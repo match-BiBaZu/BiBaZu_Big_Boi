@@ -1,6 +1,6 @@
 {
   "version": 7,
-  "created_at": "2026-08-06T15:26:08",
+  "created_at": "2026-08-06T15:34:00",
   "light_barrier_debounce_ms": 20,
   "light_barrier_inverted": [
     false,
