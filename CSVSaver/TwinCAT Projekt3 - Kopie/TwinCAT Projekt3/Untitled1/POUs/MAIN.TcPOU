@@ -175,8 +175,8 @@ VAR
 	GuiLightBarrierInvert6	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled1	: BOOL := TRUE;
 	GuiLightBarrierDebounceEnabled2	: BOOL := TRUE;
-	GuiLightBarrierDebounceEnabled3	: BOOL := TRUE;
-	GuiLightBarrierDebounceEnabled4	: BOOL := TRUE;
+	GuiLightBarrierDebounceEnabled3	: BOOL := FALSE;
+	GuiLightBarrierDebounceEnabled4	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled5	: BOOL := TRUE;
 	GuiLightBarrierDebounceEnabled6	: BOOL := TRUE;
 	GuiBarrierCalibrationStart	: BOOL := FALSE;
@@ -222,8 +222,8 @@ VAR
 	LastLightBarrierInvert6	: BOOL := FALSE;
 	LastLightBarrierDebounceEnabled1	: BOOL := TRUE;
 	LastLightBarrierDebounceEnabled2	: BOOL := TRUE;
-	LastLightBarrierDebounceEnabled3	: BOOL := TRUE;
-	LastLightBarrierDebounceEnabled4	: BOOL := TRUE;
+	LastLightBarrierDebounceEnabled3	: BOOL := FALSE;
+	LastLightBarrierDebounceEnabled4	: BOOL := FALSE;
 	LastLightBarrierDebounceEnabled5	: BOOL := TRUE;
 	LastLightBarrierDebounceEnabled6	: BOOL := TRUE;
 	LightBarrierStable1		: BOOL := FALSE;

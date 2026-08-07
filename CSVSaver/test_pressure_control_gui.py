@@ -799,7 +799,10 @@ class ProfileCompatibilityTests(unittest.TestCase):
             result["light_barrier_inverted"],
             [False, True, True, False, False, True],
         )
-        self.assertEqual(result["light_barrier_debounce_enabled"], [True] * 6)
+        self.assertEqual(
+            result["light_barrier_debounce_enabled"],
+            [True, True, False, False, True, True],
+        )
 
     def test_version_7_profile_preserves_per_barrier_debounce_settings(self):
         result = self.load_profile(
