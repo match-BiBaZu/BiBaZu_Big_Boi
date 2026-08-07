@@ -1,9 +1,12 @@
 import json
+import gzip
 import os
 import tempfile
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -13,6 +16,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog
 
 import PressureControlGUI as gui
 import ConveyorSetupGUI as setup_gui
+import ur_angle_control
 
 
 class SignalBridge(QObject):
@@ -47,6 +51,44 @@ class FakeClient:
         self.plc = None
 
 
+class FakeUrRtdeConnection:
+    def __init__(self, states):
+        self.states = iter(states)
+        self.sent = []
+        self.disconnected = False
+        self.paused = False
+
+    def connect(self):
+        return None
+
+    def send_output_setup(self, names, types, frequency):
+        self.output_setup = (list(names), list(types), frequency)
+        return True
+
+    def send_input_setup(self, names, types):
+        self.input_setup = (list(names), list(types))
+        return SimpleNamespace()
+
+    def send_start(self):
+        return True
+
+    def receive(self):
+        return next(self.states)
+
+    def send(self, values):
+        self.sent.append(
+            (values.input_int_register_42, values.input_int_register_43)
+        )
+        return True
+
+    def send_pause(self):
+        self.paused = True
+        return True
+
+    def disconnect(self):
+        self.disconnected = True
+
+
 class AdsThreadTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -66,6 +108,58 @@ class AdsThreadTests(unittest.TestCase):
         row = gui.ArrayRow(1)
 
         self.assertEqual(row.pressure.singleStep(), 10)
+
+    def test_ur_angle_uses_tenths_of_a_degree_and_acknowledges_command(self):
+        connection = FakeUrRtdeConnection(
+            [
+                SimpleNamespace(
+                    output_int_register_41=0,
+                    output_int_register_42=7,
+                    output_int_register_43=1,
+                ),
+                SimpleNamespace(
+                    output_int_register_41=183,
+                    output_int_register_42=8,
+                    output_int_register_43=3,
+                ),
+            ]
+        )
+        client = ur_angle_control.UrAngleClient(
+            connection_factory=lambda _host, _port: connection
+        )
+
+        result = client.apply_angle(18.3)
+
+        self.assertEqual(connection.sent, [(183, 8)])
+        self.assertEqual(result, {"angle_deg": 18.3, "command": 8})
+        self.assertTrue(connection.paused)
+        self.assertTrue(connection.disconnected)
+
+    def test_ur_angle_range_is_15_5_through_21_degrees(self):
+        self.assertEqual(ur_angle_control.angle_to_tenths(15.5), 155)
+        self.assertEqual(ur_angle_control.angle_to_tenths(21.0), 210)
+        with self.assertRaises(ValueError):
+            ur_angle_control.angle_to_tenths(15.4)
+        with self.assertRaises(ValueError):
+            ur_angle_control.angle_to_tenths(21.1)
+
+    def test_continuous_ur_program_has_one_teachable_pose_and_computed_rpy(self):
+        program_path = Path(__file__).parent / "UR16e" / "BiBaZu_Continuous.urp"
+        with gzip.open(program_path, "rb") as handle:
+            root = ET.fromstring(handle.read())
+
+        self.assertEqual(root.attrib["name"], "BiBaZu_Continuous")
+        waypoints = root.findall(".//Waypoint")
+        self.assertEqual([node.attrib["name"] for node in waypoints], ["Rotation_Position"])
+        cached_scripts = "\n".join(
+            node.text or "" for node in root.findall(".//cachedContents")
+        )
+        self.assertIn("requested_angle >= 155", cached_scripts)
+        self.assertIn("requested_angle <= 210", cached_scripts)
+        self.assertIn("d2r(-45.0)", cached_scripts)
+        self.assertIn("d2r(angle / 10.0)", cached_scripts)
+        self.assertIn("d2r(-90.0)", cached_scripts)
+        self.assertIn("rpy2rotvec", cached_scripts)
 
     def test_six_nozzles_are_grouped_by_flip_axis(self):
         rows = [gui.ArrayRow(index) for index in range(1, 5)]
@@ -149,10 +243,10 @@ class AdsThreadTests(unittest.TestCase):
             controller.calibration_cache["mm_per_full_step"],
             0.32960026,
         )
-        self.assertEqual(controller.force_response_delays_ms, [25.8, 0.0, 0.0, 0.0])
+        self.assertEqual(controller.force_response_delays_ms, [15.0] * 4)
         self.assertEqual(
             controller.force_single_nozzle_response_delays_ms,
-            [34.0, 0.0, 0.0, 0.0],
+            [15.0] * 4,
         )
         controller.shutdown()
 
@@ -596,8 +690,29 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 result["light_barrier_debounce_enabled"] = list(
                     window.light_barrier_debounce_enabled
                 )
+                result["ur_ry_angle_deg"] = window.ur_angle_input.value()
                 window.close()
                 return result
+
+    def test_saved_profile_contains_ur_ry_angle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "profile.json"
+            with (
+                patch.object(gui.AdsController, "start"),
+                patch.object(
+                    QFileDialog,
+                    "getSaveFileName",
+                    return_value=(str(profile_path), "JSON Profile (*.json)"),
+                ),
+            ):
+                window = gui.PressureControlWindow()
+                window.ur_angle_input.setValue(20.4)
+                window.save_profile()
+                window.close()
+
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            self.assertEqual(profile["version"], 8)
+            self.assertEqual(profile["ur_ry_angle_deg"], 20.4)
 
     def test_version_1_profile_loads_uncalibrated(self):
         result = self.load_profile({"version": 1, "arrays": []})
@@ -618,10 +733,10 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(result["valid"])
         self.assertEqual(result["mm_per_full_step"], 0.05)
-        self.assertEqual(result["force_response_delays_ms"], [25.8, 0.0, 0.0, 0.0])
+        self.assertEqual(result["force_response_delays_ms"], [15.0] * 4)
         self.assertEqual(
             result["force_single_nozzle_response_delays_ms"],
-            [34.0, 0.0, 0.0, 0.0],
+            [15.0] * 4,
         )
 
     def test_version_3_profile_preserves_force_response_delays(self):
@@ -643,7 +758,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(
             result["force_single_nozzle_response_delays_ms"],
-            [34.0, 0.0, 0.0, 0.0],
+            [15.0] * 4,
         )
 
     def test_version_4_profile_preserves_both_response_delay_endpoints(self):
@@ -707,6 +822,17 @@ class ProfileCompatibilityTests(unittest.TestCase):
             result["light_barrier_debounce_enabled"],
             [True, False, True, False, True, False],
         )
+
+    def test_version_8_profile_preserves_ur_ry_angle(self):
+        result = self.load_profile(
+            {
+                "version": 8,
+                "arrays": [],
+                "ur_ry_angle_deg": 19.7,
+            }
+        )
+
+        self.assertEqual(result["ur_ry_angle_deg"], 19.7)
 
 
 class ConveyorSetupWindowTests(unittest.TestCase):

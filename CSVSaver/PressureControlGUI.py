@@ -33,13 +33,22 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ur_angle_control import (
+    UR_ANGLE_DEFAULT_DEG,
+    UR_ANGLE_MAX_DEG,
+    UR_ANGLE_MIN_DEG,
+    UR_ANGLE_STEP_DEG,
+    UR_HOST,
+    UrAngleClient,
+)
+
 
 AMS_NET_ID = "10.145.4.14.1.1"
-PLC_IP = "192.168.0.23"
+PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
-PROFILE_VERSION = 7
+PROFILE_VERSION = 8
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -90,8 +99,8 @@ FORCE_DELAY_WINDOW_DEFAULT_MS = 2000
 FORCE_DELAY_WINDOW_MIN_MS = 100
 FORCE_DELAY_WINDOW_MAX_MS = 30000
 FORCE_DELAY_MIN_RISE_DEFAULT = 0.05
-FORCE_RESPONSE_DELAY_DEFAULTS_MS = (25.8, 0.0, 0.0, 0.0)
-FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS = (34.0, 0.0, 0.0, 0.0)
+FORCE_RESPONSE_DELAY_DEFAULTS_MS = (15.0,) * ARRAY_COUNT
+FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS = (15.0,) * ARRAY_COUNT
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
 CONVEYOR_MM_PER_FULL_STEP_DEFAULT = 0.32960026
 CALIBRATION_JOG_STEPS_DEFAULT = 100
@@ -1398,6 +1407,68 @@ class AdsController(QObject):
                 self.thread.wait(ADS_TIMEOUT_MS)
 
 
+class UrAngleWorker(QObject):
+    angle_applied = pyqtSignal(float)
+    operation_failed = pyqtSignal(str)
+
+    def __init__(self, client: UrAngleClient | None = None) -> None:
+        super().__init__()
+        self.client = client or UrAngleClient()
+
+    @pyqtSlot(float)
+    def apply_angle(self, angle_deg: float) -> None:
+        try:
+            result = self.client.apply_angle(angle_deg)
+            self.angle_applied.emit(float(result["angle_deg"]))
+        except Exception as exc:
+            self.operation_failed.emit(str(exc))
+
+
+class UrAngleController(QObject):
+    angle_applied = pyqtSignal(float)
+    operation_failed = pyqtSignal(str)
+    busy_changed = pyqtSignal(bool)
+    apply_requested = pyqtSignal(float)
+
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        client: UrAngleClient | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.busy = False
+        self.thread = QThread(self)
+        self.worker = UrAngleWorker(client)
+        self.worker.moveToThread(self.thread)
+        self.apply_requested.connect(self.worker.apply_angle)
+        self.worker.angle_applied.connect(self._on_angle_applied)
+        self.worker.operation_failed.connect(self._on_operation_failed)
+        self.thread.start()
+
+    def apply_angle(self, angle_deg: float) -> None:
+        if self.busy:
+            return
+        self.busy = True
+        self.busy_changed.emit(True)
+        self.apply_requested.emit(float(angle_deg))
+
+    @pyqtSlot(float)
+    def _on_angle_applied(self, angle_deg: float) -> None:
+        self.busy = False
+        self.busy_changed.emit(False)
+        self.angle_applied.emit(angle_deg)
+
+    @pyqtSlot(str)
+    def _on_operation_failed(self, message: str) -> None:
+        self.busy = False
+        self.busy_changed.emit(False)
+        self.operation_failed.emit(message)
+
+    def shutdown(self) -> None:
+        self.thread.quit()
+        self.thread.wait(1000)
+
+
 def format_ads_error(exc: Exception) -> str:
     text = str(exc)
     if "symbol not found" in text.lower() or "1808" in text:
@@ -2095,7 +2166,7 @@ class ForceDelayDialog(QDialog):
         self.single_response_delay_input.setValue(
             self.ads.force_single_nozzle_response_delays_ms[0]
         )
-        self.effective_response_label = QLabel("25.8 ms (4 active nozzles)")
+        self.effective_response_label = QLabel("15.0 ms (4 active nozzles)")
         self.apply_response_button = QPushButton("Apply Compensation")
         settings.addWidget(QLabel("Array"), 0, 0)
         settings.addWidget(self.array_input, 0, 1)
@@ -2503,6 +2574,7 @@ class PressureControlWindow(QMainWindow):
 
         self._build_ui()
         self.ads = AdsController(self)
+        self.ur_angle = UrAngleController(self)
         self._connect_signals()
         self.logging_status.setText("Logging: connecting")
         self.statusBar().showMessage(f"Connecting to ADS controller ({ADS_TIMEOUT_MS} ms timeout)...")
@@ -2628,6 +2700,30 @@ class PressureControlWindow(QMainWindow):
         grid.setColumnStretch(9, 1)
         main_layout.addWidget(control_box)
 
+        ur_layout = QHBoxLayout()
+        ur_layout.addWidget(QLabel("UR Ry (RPY)"))
+        self.ur_angle_input = QDoubleSpinBox()
+        self.ur_angle_input.setRange(UR_ANGLE_MIN_DEG, UR_ANGLE_MAX_DEG)
+        self.ur_angle_input.setDecimals(1)
+        self.ur_angle_input.setSingleStep(UR_ANGLE_STEP_DEG)
+        self.ur_angle_input.setSuffix(" deg")
+        self.ur_angle_input.setValue(UR_ANGLE_DEFAULT_DEG)
+        self.ur_angle_input.setKeyboardTracking(False)
+        self.ur_angle_input.setToolTip(
+            "UR base-frame RPY pitch; roll remains -45 degrees and yaw -90 degrees"
+        )
+        ur_layout.addWidget(self.ur_angle_input)
+        self.apply_ur_angle_button = QPushButton("Apply UR Angle")
+        self.apply_ur_angle_button.setToolTip(
+            "Move the running BiBaZu_Continuous UR program to this orientation"
+        )
+        ur_layout.addWidget(self.apply_ur_angle_button)
+        self.ur_angle_status = QLabel(f"UR {UR_HOST}: ready")
+        self.ur_angle_status.setMinimumWidth(260)
+        ur_layout.addWidget(self.ur_angle_status)
+        ur_layout.addStretch(1)
+        main_layout.addLayout(ur_layout)
+
         button_layout = QHBoxLayout()
         self.reconnect_button = QPushButton("Reconnect")
         self.calibrate_conveyor_button = QPushButton("Calibrate Conveyor")
@@ -2677,6 +2773,10 @@ class PressureControlWindow(QMainWindow):
         self.load_button.clicked.connect(self.load_profile)
         self.save_button.clicked.connect(self.save_profile)
         self.write_all_button.clicked.connect(self.write_all_values)
+        self.apply_ur_angle_button.clicked.connect(self.apply_ur_angle)
+        self.ur_angle.busy_changed.connect(self.on_ur_angle_busy_changed)
+        self.ur_angle.angle_applied.connect(self.on_ur_angle_applied)
+        self.ur_angle.operation_failed.connect(self.on_ur_angle_error)
         self.sensor_spacing_12.valueChanged.connect(
             lambda value: self.write_sensor_spacing("MAIN.GuiSensorSpacing12Mm", value, "Sensor spacing 1-2")
         )
@@ -2743,6 +2843,28 @@ class PressureControlWindow(QMainWindow):
         for row in self.rows:
             row.status.setText("connecting")
         self.ads.reconnect()
+
+    def apply_ur_angle(self) -> None:
+        angle_deg = float(self.ur_angle_input.value())
+        self.ur_angle_status.setText(
+            f"UR {UR_HOST}: applying Ry {angle_deg:.1f} deg"
+        )
+        self.ur_angle.apply_angle(angle_deg)
+
+    @pyqtSlot(bool)
+    def on_ur_angle_busy_changed(self, busy: bool) -> None:
+        self.apply_ur_angle_button.setEnabled(not busy)
+        self.ur_angle_input.setEnabled(not busy)
+
+    @pyqtSlot(float)
+    def on_ur_angle_applied(self, angle_deg: float) -> None:
+        self.ur_angle_status.setText(
+            f"UR {UR_HOST}: Ry {angle_deg:.1f} deg applied"
+        )
+
+    @pyqtSlot(str)
+    def on_ur_angle_error(self, message: str) -> None:
+        self.ur_angle_status.setText(f"UR {UR_HOST}: {message}")
 
     @pyqtSlot(bool, str)
     def on_connection_changed(self, connected: bool, message: str) -> None:
@@ -3149,6 +3271,7 @@ class PressureControlWindow(QMainWindow):
         profile = {
             "version": PROFILE_VERSION,
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "ur_ry_angle_deg": self.ur_angle_input.value(),
             "light_barrier_debounce_ms": self.light_barrier_debounce.value(),
             "light_barrier_inverted": list(self.light_barrier_inverted),
             "light_barrier_debounce_enabled": list(
@@ -3188,8 +3311,14 @@ class PressureControlWindow(QMainWindow):
         try:
             profile = json.loads(Path(path).read_text(encoding="utf-8"))
             profile_version = int(profile.get("version", 1))
-            if profile_version not in {1, 2, 3, 4, 5, 6, PROFILE_VERSION}:
+            if profile_version not in range(1, PROFILE_VERSION + 1):
                 raise ValueError("Unknown profile version")
+
+            ur_angle_deg = float(
+                profile.get("ur_ry_angle_deg", UR_ANGLE_DEFAULT_DEG)
+            )
+            if not UR_ANGLE_MIN_DEG <= ur_angle_deg <= UR_ANGLE_MAX_DEG:
+                raise ValueError("UR Ry angle must be between 15.5 and 21.0 degrees")
 
             conveyor_enabled = bool(profile.get("conveyor_enabled", False))
             conveyor_reverse = bool(profile.get("conveyor_reverse", False))
@@ -3278,12 +3407,14 @@ class PressureControlWindow(QMainWindow):
                 bool(value) for value in profile_debounce_enabled
             ]
             with (
+                QSignalBlocker(self.ur_angle_input),
                 QSignalBlocker(self.light_barrier_debounce),
                 QSignalBlocker(self.conveyor_enabled),
                 QSignalBlocker(self.conveyor_reverse),
                 QSignalBlocker(self.conveyor_speed),
                 QSignalBlocker(self.conveyor_max_speed),
             ):
+                self.ur_angle_input.setValue(ur_angle_deg)
                 self.light_barrier_debounce.setValue(light_barrier_debounce)
                 self.conveyor_enabled.setChecked(conveyor_enabled)
                 self.conveyor_reverse.setChecked(conveyor_reverse)
@@ -3326,6 +3457,7 @@ class PressureControlWindow(QMainWindow):
             QMessageBox.critical(self, "Load Failed", str(exc))
 
     def closeEvent(self, event) -> None:
+        self.ur_angle.shutdown()
         self.ads.shutdown()
         super().closeEvent(event)
 

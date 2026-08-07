@@ -1,0 +1,132 @@
+{
+  "version": 7,
+  "created_at": "2026-08-07T17:51:01",
+  "light_barrier_debounce_ms": 20,
+  "light_barrier_inverted": [
+    false,
+    false,
+    true,
+    true,
+    false,
+    false
+  ],
+  "light_barrier_debounce_enabled": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "conveyor_enabled": true,
+  "conveyor_reverse": false,
+  "conveyor_speed_mm_per_sec": 100.0,
+  "conveyor_max_speed_mm_per_sec": 1000.0,
+  "conveyor_calibration": {
+    "marker_distance_mm": 315.0,
+    "mm_per_full_step": 0.3296002745628357,
+    "valid": true
+  },
+  "force_response_delays_ms": [
+    25.799999237060547,
+    15.0,
+    0.0,
+    0.0
+  ],
+  "force_single_nozzle_response_delays_ms": [
+    34.0,
+    15.0,
+    0.0,
+    0.0
+  ],
+  "arrays": [
+    {
+      "index": 1,
+      "enabled": false,
+      "nozzles_enabled": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        false
+      ],
+      "nozzle_1_enabled": true,
+      "nozzle_2_enabled": true,
+      "nozzle_3_enabled": true,
+      "nozzle_4_enabled": true,
+      "nozzle_5_enabled": false,
+      "nozzle_6_enabled": false,
+      "pressure_mbar": 3000,
+      "delay_ms": 0,
+      "pulse_duration_ms": 100,
+      "offset_mm": 0.0
+    },
+    {
+      "index": 2,
+      "enabled": true,
+      "nozzles_enabled": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        true
+      ],
+      "nozzle_1_enabled": false,
+      "nozzle_2_enabled": false,
+      "nozzle_3_enabled": false,
+      "nozzle_4_enabled": true,
+      "nozzle_5_enabled": true,
+      "nozzle_6_enabled": true,
+      "pressure_mbar": 4000,
+      "delay_ms": 0,
+      "pulse_duration_ms": 30,
+      "offset_mm": 74.0
+    },
+    {
+      "index": 3,
+      "enabled": false,
+      "nozzles_enabled": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        false
+      ],
+      "nozzle_1_enabled": true,
+      "nozzle_2_enabled": true,
+      "nozzle_3_enabled": true,
+      "nozzle_4_enabled": true,
+      "nozzle_5_enabled": false,
+      "nozzle_6_enabled": false,
+      "pressure_mbar": 3000,
+      "delay_ms": 0,
+      "pulse_duration_ms": 100,
+      "offset_mm": 0.0
+    },
+    {
+      "index": 4,
+      "enabled": false,
+      "nozzles_enabled": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        false
+      ],
+      "nozzle_1_enabled": true,
+      "nozzle_2_enabled": true,
+      "nozzle_3_enabled": true,
+      "nozzle_4_enabled": true,
+      "nozzle_5_enabled": false,
+      "nozzle_6_enabled": false,
+      "pressure_mbar": 3000,
+      "delay_ms": 0,
+      "pulse_duration_ms": 100,
+      "offset_mm": 0.0
+    }
+  ]
+}
