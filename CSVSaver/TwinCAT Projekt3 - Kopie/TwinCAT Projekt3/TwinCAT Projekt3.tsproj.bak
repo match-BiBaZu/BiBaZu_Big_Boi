@@ -1913,6 +1913,7 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 			</OwnerB>
 			<OwnerB Name="TIID^Device 1 (EtherCAT)^Term 6 (EK1100)^Term 19 (EL7047)">
 				<Link VarA="PlcTask Inputs^MAIN.StepperInfoDataState" VarB="InfoData^State"/>
+				<Link VarA="PlcTask Inputs^MAIN.StepperInternalPosition" VarB="POS Status^Actual position"/>
 				<Link VarA="PlcTask Inputs^MAIN.StepperPosBusy" VarB="POS Status^Busy"/>
 				<Link VarA="PlcTask Inputs^MAIN.StepperPosError" VarB="POS Status^Error"/>
 				<Link VarA="PlcTask Inputs^MAIN.StepperPosInTarget" VarB="POS Status^In-Target"/>

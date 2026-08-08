@@ -1,12 +1,50 @@
 {
   "Version": 1,
   "WorkspaceRootPath": "C:\\Users\\Administrator\\Documents\\Dashas_ws\\BiBaZu_Big_Boi\\CSVSaver\\TwinCAT Projekt3 - Kopie\\",
-  "Documents": [],
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{3607B6EC-BD99-4A0F-832D-D83A85F63667}|TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj|C:\\Users\\Administrator\\Documents\\Dashas_ws\\BiBaZu_Big_Boi\\CSVSaver\\TwinCAT Projekt3 - Kopie\\TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj@Library Manager||{CFF47BB1-5559-4BDE-A2AF-06B30BC64F6C}",
+      "RelativeMoniker": "D:0:0:{3607B6EC-BD99-4A0F-832D-D83A85F63667}|TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj|solutionrelative:TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj@Library Manager||{CFF47BB1-5559-4BDE-A2AF-06B30BC64F6C}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{3607B6EC-BD99-4A0F-832D-D83A85F63667}|TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj|C:\\Users\\Administrator\\Documents\\Dashas_ws\\BiBaZu_Big_Boi\\CSVSaver\\TwinCAT Projekt3 - Kopie\\TwinCAT Projekt3\\Untitled1\\POUs\\MAIN.TcPOU||{CFF47BB1-5559-4BDE-A2AF-06B30BC64F6C}",
+      "RelativeMoniker": "D:0:0:{3607B6EC-BD99-4A0F-832D-D83A85F63667}|TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj|solutionrelative:TwinCAT Projekt3\\Untitled1\\POUs\\MAIN.TcPOU||{CFF47BB1-5559-4BDE-A2AF-06B30BC64F6C}"
+    }
+  ],
   "DocumentGroupContainers": [
     {
       "Orientation": 0,
       "VerticalTabListWidth": 256,
-      "DocumentGroups": []
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "Library Manager",
+              "DocumentMoniker": "C:\\Users\\Administrator\\Documents\\Dashas_ws\\BiBaZu_Big_Boi\\CSVSaver\\TwinCAT Projekt3 - Kopie\\TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj@Library Manager",
+              "RelativeDocumentMoniker": "TwinCAT Projekt3\\Untitled1\\Untitled1.plcproj@Library Manager",
+              "ToolTip": "References [TwinCAT Projekt3.Untitled1]",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
+              "WhenOpened": "2026-08-08T18:17:58.761Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "MAIN",
+              "DocumentMoniker": "C:\\Users\\Administrator\\Documents\\Dashas_ws\\BiBaZu_Big_Boi\\CSVSaver\\TwinCAT Projekt3 - Kopie\\TwinCAT Projekt3\\Untitled1\\POUs\\MAIN.TcPOU",
+              "RelativeDocumentMoniker": "TwinCAT Projekt3\\Untitled1\\POUs\\MAIN.TcPOU",
+              "ToolTip": "MAIN [TwinCAT Projekt3.Untitled1]",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
+              "WhenOpened": "2026-08-08T18:10:07.45Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
     }
   ]
 }
