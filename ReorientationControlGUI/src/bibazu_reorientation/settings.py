@@ -32,6 +32,8 @@ class AppSettings:
             raise ValueError("Die AMS-Net-ID muss aus sechs Zahlen zwischen 0 und 255 bestehen")
         if not 1 <= self.plc_port <= 65535:
             raise ValueError("Der ADS-Port muss zwischen 1 und 65535 liegen")
+        if not 1.0 <= float(self.preview_fps) <= 60.0:
+            raise ValueError("Die Kamera-Vorschau muss zwischen 1 und 60 FPS liegen")
         cti = Path(self.cti_path.strip()).expanduser()
         if not cti.is_file():
             raise ValueError(f"Baumer-CTI nicht gefunden: {cti}")

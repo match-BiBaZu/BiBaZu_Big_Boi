@@ -27,6 +27,9 @@ class HardwareSettingsDialog(QDialog):
         self.camera_ip = QLineEdit(settings.camera_ip)
         self.camera_serial = QLineEdit(settings.camera_serial)
         self.cti_path = QLineEdit(settings.cti_path)
+        self.preview_fps = QSpinBox()
+        self.preview_fps.setRange(1, 60)
+        self.preview_fps.setValue(round(settings.preview_fps))
         self.plc_ip = QLineEdit(settings.plc_ip)
         self.ams_net_id = QLineEdit(settings.plc_ams_net_id)
         self.plc_port = QSpinBox()
@@ -39,6 +42,7 @@ class HardwareSettingsDialog(QDialog):
         form.addRow("Baumer Kamera-IP", self.camera_ip)
         form.addRow("Baumer Seriennummer (optional)", self.camera_serial)
         form.addRow("Baumer GenTL/CTI", self._cti_row())
+        form.addRow("Kamera-Vorschau (FPS)", self.preview_fps)
         form.addRow("SPS-IP", self.plc_ip)
         form.addRow("SPS AMS-Net-ID", self.ams_net_id)
         form.addRow("SPS ADS-Port", self.plc_port)
@@ -83,6 +87,7 @@ class HardwareSettingsDialog(QDialog):
             camera_ip=self.camera_ip.text(),
             camera_serial=self.camera_serial.text(),
             cti_path=self.cti_path.text(),
+            preview_fps=float(self.preview_fps.value()),
             plc_ip=self.plc_ip.text(),
             plc_ams_net_id=self.ams_net_id.text(),
             plc_port=self.plc_port.value(),

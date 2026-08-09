@@ -21,6 +21,8 @@ def test_hardware_settings_validation(tmp_path) -> None:
         replace(settings, light_1_address="AA:BB", light_2_address="AA:BB").validated()
     with pytest.raises(ValueError, match="AMS-Net-ID"):
         replace(settings, plc_ams_net_id="invalid").validated()
+    with pytest.raises(ValueError, match="Vorschau"):
+        replace(settings, preview_fps=0).validated()
 
 
 def test_hardware_dialog_exposes_all_connection_fields(qtbot, tmp_path) -> None:
@@ -29,5 +31,6 @@ def test_hardware_dialog_exposes_all_connection_fields(qtbot, tmp_path) -> None:
     assert dialog.camera_ip.text() == "169.254.117.70"
     assert dialog.plc_ip.text() == "192.168.0.23"
     assert dialog.plc_port.value() == 851
+    assert dialog.preview_fps.value() == 15
     assert dialog.light_1.text() == ""
     assert dialog.selected_settings().cti_path.endswith("baumer.cti")

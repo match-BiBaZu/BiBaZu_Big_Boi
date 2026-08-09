@@ -335,8 +335,15 @@ class MainWindow(QMainWindow):
             )
 
     async def _connect_lights_sequentially(self) -> None:
-        await self.light1.connect_async()
-        await self.light2.connect_async()
+        first = self.settings.light_1_address.strip()
+        second = self.settings.light_2_address.strip()
+        if first and second and first.casefold() != second.casefold():
+            await asyncio.gather(self.light1.connect_async(), self.light2.connect_async())
+        else:
+            # During first discovery, connect one after the other so that panel 2 can
+            # exclude the address selected for panel 1.
+            await self.light1.connect_async()
+            await self.light2.connect_async()
 
     def _camera_frame(self, frame: CameraFrame) -> None:
         self._last_camera_frame = frame.timestamp

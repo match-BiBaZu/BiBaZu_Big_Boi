@@ -13,6 +13,18 @@ from bibazu_reorientation.models import CameraFrame, CameraStatus, ConnectionSta
 from bibazu_reorientation.settings import AppSettings
 
 
+def advance_frame_deadline(deadline: float, interval: float, now: float) -> float:
+    """Advance a preview deadline without building up delayed Qt frames."""
+    if interval <= 0.0:
+        return now
+    if deadline <= 0.0:
+        return now + interval
+    if deadline > now:
+        return deadline
+    missed_intervals = int((now - deadline) // interval) + 1
+    return deadline + missed_intervals * interval
+
+
 def _uint8(image: np.ndarray, pixel_format: str) -> np.ndarray:
     if image.dtype == np.uint8:
         return image
@@ -104,8 +116,15 @@ class _CameraWorker(QObject):
                 )
             )
             self._running = True
+            preview_interval = 1.0 / max(1.0, float(self.settings.preview_fps))
+            next_preview = 0.0
             while self._running and not QThread.currentThread().isInterruptionRequested():
                 with acquisition.fetch(timeout=1.0) as buffer:
+                    now = time.monotonic()
+                    if now < next_preview:
+                        # Fetching still returns the GenTL buffer immediately, so the
+                        # camera stream is drained without flooding Qt with old frames.
+                        continue
                     component = buffer.payload.components[0]
                     image = convert_to_rgb(
                         component.data,
@@ -114,6 +133,9 @@ class _CameraWorker(QObject):
                         str(component.data_format),
                     )
                     self.frame.emit(CameraFrame(image, str(component.data_format), time.time()))
+                    next_preview = advance_frame_deadline(
+                        next_preview, preview_interval, now
+                    )
         except Exception as exc:
             self.error.emit(str(exc) or type(exc).__name__)
         finally:

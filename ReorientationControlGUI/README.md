@@ -58,6 +58,8 @@ des Kamerabildes oder das Menü **Konfiguration**.
 
 Unter **Konfiguration → Hardware-Einstellungen …** können Kamera-IP/-Seriennummer,
 Baumer-CTI, SPS-IP/AMS-Net-ID/ADS-Port und beide Neewer-BLE-Adressen geändert werden.
+Die Kamera-Vorschau ist dort auf 1–60 FPS begrenzbar (Standard: 15 FPS); niedrigere
+Werte reduzieren die GUI-Last bei hochauflösenden Kamerabildern.
 Nach dem Speichern muss die Anwendung einmal über das Desktop-Symbol neu gestartet
 werden. Bleiben beide Lichtadressen leer, sucht die Anwendung beim nächsten
 Verbindungsaufbau nacheinander zwei unterschiedliche Panels und speichert die
