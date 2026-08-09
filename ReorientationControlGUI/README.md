@@ -29,6 +29,29 @@ The generated YAML uses paths relative to its own location whenever possible.
 Legacy pressure profiles resolve omitted machine values only after the first PLC
 baseline read. Selecting a YAML or profile never writes to the PLC.
 
+### Bauteil, YOLO-Modell und Pressure-Profil auswählen
+
+In der Anwendung gibt es dafür zwei gleichwertige Wege: die Schaltflächen oberhalb
+des Kamerabildes oder das Menü **Konfiguration**.
+
+1. **Neue Bauteilkonfiguration (Modell + Profil) …** fragt Bauteilname,
+   YOLO-`.pt` und das Pressure-`.json` für `Pose 2 → Pose 1` ab.
+2. Anschließend wird eine kleine `.yaml` gespeichert. Sie hält diese drei Angaben
+   zusammen und kann später über **Bauteilkonfiguration öffnen …** erneut geladen
+   werden.
+3. Das ausgewählte Profil wird in der Hauptansicht als
+   `Pflichtprofil Pose 2 → Pose 1` angezeigt. Das reine Auswählen schreibt noch
+   nichts auf die SPS und startet weder Band noch Düsen.
+
+### Hardware einstellen
+
+Unter **Konfiguration → Hardware-Einstellungen …** können Kamera-IP/-Seriennummer,
+Baumer-CTI, SPS-IP/AMS-Net-ID/ADS-Port und beide Neewer-BLE-Adressen geändert werden.
+Nach dem Speichern muss die Anwendung einmal über das Desktop-Symbol neu gestartet
+werden. Bleiben beide Lichtadressen leer, sucht die Anwendung beim nächsten
+Verbindungsaufbau nacheinander zwei unterschiedliche Panels und speichert die
+gefundenen Adressen.
+
 ## Operating contract
 
 - V1 requires exactly the model classes `0 = Pose 1`, `1 = Pose 2`.

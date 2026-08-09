@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 import time
 from pathlib import Path
 
@@ -11,6 +14,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -31,7 +35,10 @@ from bibazu_reorientation.inference import InferenceConfig, InferenceWorker
 from bibazu_reorientation.models import CameraFrame, CycleState, InferenceFrame, PressureBaseline
 from bibazu_reorientation.profiles import load_pressure_profile
 from bibazu_reorientation.settings import AppSettings
+from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
 from bibazu_reorientation.ui.setup_dialog import SetupDialog
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LightPanel(QGroupBox):
@@ -87,7 +94,11 @@ class MainWindow(QMainWindow):
         self.pressure = PressureAdapter(settings)
         self.camera = CameraAdapter(settings)
         self.light1 = LightAdapter("Neewer-Leuchte 1", settings.light_1_address)
-        self.light2 = LightAdapter("Neewer-Leuchte 2", settings.light_2_address)
+        self.light2 = LightAdapter(
+            "Neewer-Leuchte 2",
+            settings.light_2_address,
+            excluded_addresses=lambda: {self.light1.address},
+        )
         self.controller = ReorientationController(self.pressure)
         self.inference: InferenceWorker | None = None
         self.part = None
@@ -95,6 +106,7 @@ class MainWindow(QMainWindow):
         self.ur_worker: UrAngleWorker | None = None
         self._last_camera_frame = 0.0
         self._preflight_ok = False
+        self._light_connect_task: asyncio.Task[None] | None = None
         self._build_ui()
         self._wire()
         self.freshness_timer = QTimer(self)
@@ -106,14 +118,25 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         menu = self.menuBar().addMenu("Konfiguration")
-        new = QAction("Neu …", self)
+        new = QAction("Neue Bauteilkonfiguration (Modell + Profil) …", self)
         new.triggered.connect(self.new_configuration)
         menu.addAction(new)
-        load = QAction("Öffnen …", self)
+        load = QAction("Bauteilkonfiguration öffnen …", self)
         load.triggered.connect(self.open_configuration)
         menu.addAction(load)
+        menu.addSeparator()
+        hardware_settings = QAction("Hardware-Einstellungen …", self)
+        hardware_settings.triggered.connect(self.open_hardware_settings)
+        menu.addAction(hardware_settings)
         self.part_label = QLabel("Keine Konfiguration")
         self.transition_label = QLabel("Pflichtprofil: Pose 2 → Pose 1")
+        config_buttons = QHBoxLayout()
+        new_config = QPushButton("Neue Konfiguration")
+        new_config.clicked.connect(self.new_configuration)
+        open_config = QPushButton("Konfiguration öffnen")
+        open_config.clicked.connect(self.open_configuration)
+        config_buttons.addWidget(new_config)
+        config_buttons.addWidget(open_config)
         self.video = QLabel("Kamera nicht verbunden")
         self.video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video.setMinimumSize(760, 520)
@@ -123,6 +146,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(self.part_label)
         left_layout.addWidget(self.transition_label)
+        left_layout.addLayout(config_buttons)
         left_layout.addWidget(self.video, 1)
         left_layout.addWidget(self.pose_label)
         self.plc_status = QLabel("SPS: getrennt")
@@ -170,22 +194,53 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
     def _wire(self) -> None:
-        self.pressure.connection_changed.connect(
-            lambda ok, detail: self.plc_status.setText(
-                f"SPS: {'verbunden' if ok else 'getrennt'} – {detail}"
-            )
-        )
+        self.pressure.connection_changed.connect(self._plc_connection_changed)
         self.pressure.baseline_ready.connect(self._baseline_ready)
         self.camera.state_changed.connect(
             lambda state, detail: self.camera_status.setText(f"Kamera: {state} {detail}")
         )
         self.camera.frame_ready.connect(self._camera_frame)
+        self.camera.error.connect(lambda detail: self._hardware_error("Kamera", detail))
         self.controller.preflight_changed.connect(self._preflight)
         self.controller.state_changed.connect(self._cycle_state_changed)
         self.light_panel1.confirm.toggled.connect(self._lights_changed)
         self.light_panel2.confirm.toggled.connect(self._lights_changed)
         self.light1.status_changed.connect(lambda _: self._lights_changed())
         self.light2.status_changed.connect(lambda _: self._lights_changed())
+        self.light1.error.connect(lambda detail: self._hardware_error("Leuchte 1", detail))
+        self.light2.error.connect(lambda detail: self._hardware_error("Leuchte 2", detail))
+
+    def _plc_connection_changed(self, connected: bool, detail: str) -> None:
+        self.plc_status.setText(f"SPS: {'verbunden' if connected else 'getrennt'} – {detail}")
+        if connected:
+            LOGGER.info(
+                "ADS connected: %s / %s", self.settings.plc_ams_net_id, self.settings.plc_ip
+            )
+        else:
+            LOGGER.error("ADS connection failed/lost: %s", detail)
+
+    @staticmethod
+    def _hardware_error(component: str, detail: str) -> None:
+        LOGGER.error("%s: %s", component, detail)
+
+    def open_hardware_settings(self) -> None:
+        dialog = HardwareSettingsDialog(self.settings, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        try:
+            selected = dialog.selected_settings()
+            selected.save()
+            self.settings = selected
+        except Exception as exc:
+            QMessageBox.critical(self, "Hardware-Einstellungen", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Hardware-Einstellungen gespeichert",
+            "Die Einstellungen wurden gespeichert. Bitte die Anwendung einmal schließen "
+            "und über das Desktop-Symbol neu öffnen, damit alle Hardware-Adapter mit den "
+            "neuen Werten erzeugt werden.",
+        )
 
     def new_configuration(self) -> None:
         try:
@@ -244,8 +299,14 @@ class MainWindow(QMainWindow):
     def connect_all(self) -> None:
         self.pressure.connect_device()
         self.camera.connect_device()
-        self.light1.connect_device()
-        self.light2.connect_device()
+        if self._light_connect_task is None or self._light_connect_task.done():
+            self._light_connect_task = asyncio.get_running_loop().create_task(
+                self._connect_lights_sequentially()
+            )
+
+    async def _connect_lights_sequentially(self) -> None:
+        await self.light1.connect_async()
+        await self.light2.connect_async()
 
     def _camera_frame(self, frame: CameraFrame) -> None:
         self._last_camera_frame = frame.timestamp
@@ -277,6 +338,19 @@ class MainWindow(QMainWindow):
 
     def _lights_changed(self) -> None:
         self.controller.set_light_addresses(self.light1.address, self.light2.address)
+        if (
+            self.light1.status.connected
+            and self.light2.status.connected
+            and self.light1.address
+            and self.light2.address
+            and self.light1.address.casefold() != self.light2.address.casefold()
+        ):
+            self.settings.light_1_address = self.light1.address
+            self.settings.light_2_address = self.light2.address
+            try:
+                self.settings.save()
+            except ValueError as exc:
+                LOGGER.error("Discovered light addresses could not be saved: %s", exc)
         ready1 = (
             self.light1.status.connected
             and self.light1.status.power is True
@@ -328,6 +402,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Zyklus", str(exc))
 
     async def shutdown_async(self) -> None:
+        if self._light_connect_task and not self._light_connect_task.done():
+            self._light_connect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._light_connect_task
         if self.inference:
             self.inference.stop()
         self.camera.shutdown()

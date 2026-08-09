@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from typing import Any
 
 from PyQt6.QtCore import QTimer, pyqtSignal
@@ -13,11 +14,17 @@ from bibazu_reorientation.models import ConnectionState, LightStatus
 class LightAdapter(DeviceAdapter):
     status_changed = pyqtSignal(object)
 
-    def __init__(self, name: str, address: str = "") -> None:
+    def __init__(
+        self,
+        name: str,
+        address: str = "",
+        excluded_addresses: Callable[[], set[str]] | None = None,
+    ) -> None:
         super().__init__(name)
         self.address = address
         self._light: Any = None
         self.status = LightStatus(address=address)
+        self._excluded_addresses = excluded_addresses or set
         self._task: asyncio.Task[Any] | None = None
         self._monitor = QTimer(self)
         self._monitor.setInterval(2000)
@@ -42,13 +49,24 @@ class LightAdapter(DeviceAdapter):
             return
         self._task = asyncio.get_running_loop().create_task(self._connect())
 
+    async def connect_async(self) -> None:
+        if self.state is ConnectionState.CONNECTED:
+            return
+        await self._connect()
+
     async def _connect(self) -> None:
         self._set_state(ConnectionState.CONNECTING, "Bluetooth-Verbindung")
         try:
             from neewerlite import NeewerLight, NeewerScanner
 
             devices = await NeewerScanner.scan(timeout=5.0)
-            candidates = [d for d in devices if not self.address or str(d.address) == self.address]
+            excluded = {address.casefold() for address in self._excluded_addresses() if address}
+            candidates = [
+                device
+                for device in devices
+                if (not self.address or str(device.address).casefold() == self.address.casefold())
+                and str(device.address).casefold() not in excluded
+            ]
             if not candidates:
                 raise RuntimeError("Keine passende Neewer-Leuchte gefunden")
             device = candidates[0]
