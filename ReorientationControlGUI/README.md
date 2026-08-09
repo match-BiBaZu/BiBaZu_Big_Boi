@@ -54,6 +54,11 @@ des Kamerabildes oder das Menü **Konfiguration**.
    Bestehende YAML-Dateien ohne `mesh_path` bleiben gültig und zeigen einen
    Platzhalter.
 
+Mit **Konfiguration bearbeiten** wird die aktuell geladene YAML vollständig
+vorausgefüllt geöffnet. Sie kann am bisherigen Ort überschrieben oder im
+Speicherdialog unter einem neuen Namen abgelegt werden. Während eines laufenden
+Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
+
 ### Hardware einstellen
 
 Unter **Konfiguration → Hardware-Einstellungen …** können Kamera-IP/-Seriennummer,

@@ -20,9 +20,14 @@ from bibazu_reorientation.models import PartDefinition
 
 
 class SetupDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, definition: PartDefinition | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Neue Bauteilkonfiguration")
+        self.definition = definition
+        self.setWindowTitle(
+            "Bauteilkonfiguration bearbeiten"
+            if definition is not None
+            else "Neue Bauteilkonfiguration"
+        )
         self.name = QLineEdit()
         self.model = QLineEdit()
         self.mesh = QLineEdit()
@@ -55,6 +60,18 @@ class SetupDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(buttons)
+        if definition is not None:
+            self._populate(definition)
+
+    def _populate(self, definition: PartDefinition) -> None:
+        self.name.setText(definition.part_name)
+        self.model.setText(str(definition.model_path))
+        self.mesh.setText(str(definition.mesh_path or ""))
+        self.profile.setText(str(definition.transitions[0].pressure_profile))
+        index = self.target_pose.findData(definition.target_pose)
+        if index >= 0:
+            self.target_pose.setCurrentIndex(index)
+        self._update_transition_label()
 
     @staticmethod
     def _workpiece_directory() -> str:
@@ -82,8 +99,13 @@ class SetupDialog(QDialog):
     def create(self) -> PartDefinition | None:
         if self.exec() != QDialog.DialogCode.Accepted:
             return None
+        suggested_path = (
+            str(self.definition.source_path)
+            if self.definition is not None and self.definition.source_path is not None
+            else f"{self.name.text().strip()}.yaml"
+        )
         target, _ = QFileDialog.getSaveFileName(
-            self, "Konfiguration speichern", f"{self.name.text().strip()}.yaml", "YAML (*.yaml)"
+            self, "Konfiguration speichern", suggested_path, "YAML (*.yaml *.yml)"
         )
         if not target:
             return None

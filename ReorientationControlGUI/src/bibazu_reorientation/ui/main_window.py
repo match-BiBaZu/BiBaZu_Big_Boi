@@ -119,12 +119,18 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         menu = self.menuBar().addMenu("Konfiguration")
-        new = QAction("Neue Bauteilkonfiguration (Modell + Profil) …", self)
-        new.triggered.connect(self.new_configuration)
-        menu.addAction(new)
-        load = QAction("Bauteilkonfiguration öffnen …", self)
-        load.triggered.connect(self.open_configuration)
-        menu.addAction(load)
+        self.new_config_action = QAction(
+            "Neue Bauteilkonfiguration (Modell + Profil) …", self
+        )
+        self.new_config_action.triggered.connect(self.new_configuration)
+        menu.addAction(self.new_config_action)
+        self.open_config_action = QAction("Bauteilkonfiguration öffnen …", self)
+        self.open_config_action.triggered.connect(self.open_configuration)
+        menu.addAction(self.open_config_action)
+        self.edit_config_action = QAction("Geladene Bauteilkonfiguration bearbeiten …", self)
+        self.edit_config_action.triggered.connect(self.edit_configuration)
+        self.edit_config_action.setEnabled(False)
+        menu.addAction(self.edit_config_action)
         menu.addSeparator()
         hardware_settings = QAction("Hardware-Einstellungen …", self)
         hardware_settings.triggered.connect(self.open_hardware_settings)
@@ -138,12 +144,16 @@ class MainWindow(QMainWindow):
             "background:#111827;color:#94a3b8;border:1px solid #334155;border-radius:8px"
         )
         config_buttons = QHBoxLayout()
-        new_config = QPushButton("Neue Konfiguration")
-        new_config.clicked.connect(self.new_configuration)
-        open_config = QPushButton("Konfiguration öffnen")
-        open_config.clicked.connect(self.open_configuration)
-        config_buttons.addWidget(new_config)
-        config_buttons.addWidget(open_config)
+        self.new_config_button = QPushButton("Neue Konfiguration")
+        self.new_config_button.clicked.connect(self.new_configuration)
+        self.open_config_button = QPushButton("Konfiguration öffnen")
+        self.open_config_button.clicked.connect(self.open_configuration)
+        self.edit_config_button = QPushButton("Konfiguration bearbeiten")
+        self.edit_config_button.clicked.connect(self.edit_configuration)
+        self.edit_config_button.setEnabled(False)
+        config_buttons.addWidget(self.new_config_button)
+        config_buttons.addWidget(self.open_config_button)
+        config_buttons.addWidget(self.edit_config_button)
         self.video = QLabel("Kamera nicht verbunden")
         self.video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video.setMinimumSize(760, 520)
@@ -272,8 +282,23 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Konfiguration", str(exc))
 
+    def edit_configuration(self) -> None:
+        if self.part is None:
+            QMessageBox.information(
+                self, "Konfiguration bearbeiten", "Bitte zuerst eine Konfiguration laden."
+            )
+            return
+        try:
+            part = SetupDialog(self, self.part).create()
+            if part:
+                self._load(part)
+        except Exception as exc:
+            QMessageBox.critical(self, "Konfiguration", str(exc))
+
     def _load(self, part) -> None:
         self.part = part
+        self.edit_config_action.setEnabled(True)
+        self.edit_config_button.setEnabled(True)
         self.profile = load_pressure_profile(
             part.transitions[0].pressure_profile, require_transition=False
         )
@@ -430,6 +455,17 @@ class MainWindow(QMainWindow):
 
     def _cycle_state_changed(self, state, detail: str) -> None:
         self.cycle_status.setText(f"{state}: {detail}")
+        configuration_editable = state in {
+            CycleState.NO_CONFIG,
+            CycleState.OFFLINE,
+            CycleState.READY,
+        }
+        self.new_config_action.setEnabled(configuration_editable)
+        self.open_config_action.setEnabled(configuration_editable)
+        self.edit_config_action.setEnabled(configuration_editable and self.part is not None)
+        self.new_config_button.setEnabled(configuration_editable)
+        self.open_config_button.setEnabled(configuration_editable)
+        self.edit_config_button.setEnabled(configuration_editable and self.part is not None)
         terminal = state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
         self.start_button.setText("Neuen Zyklus vorbereiten" if terminal else "Zyklus starten")
         self.start_button.setEnabled(terminal or (state is CycleState.READY and self._preflight_ok))
