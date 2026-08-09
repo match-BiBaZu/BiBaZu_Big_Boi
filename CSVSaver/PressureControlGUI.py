@@ -511,6 +511,19 @@ class AdsWorker(QObject):
         return self.plc().read_list_by_name(names, cache_symbol_info=True)
 
     def write_values_impl(self, values: dict) -> None:
+        try:
+            reorientation_owner = bool(
+                self.plc().read_by_name(
+                    "MAIN.GuiReorientationControlActive", pyads.PLCTYPE_BOOL
+                )
+            )
+        except Exception:
+            reorientation_owner = False
+        if reorientation_owner:
+            raise RuntimeError(
+                "BiBaZu Reorientation Control besitzt derzeit die SPS; "
+                "Legacy-Schreibzugriff verweigert."
+            )
         errors = self.plc().write_list_by_name(values, cache_symbol_info=True)
         failed = {
             name: error
@@ -533,6 +546,23 @@ class AdsWorker(QObject):
                 self.reconnect_timer.start()
             return
         try:
+            # Never let the legacy GUIs overwrite a staged/running reorientation
+            # cycle. Older PLC projects do not expose the owner symbol yet and
+            # therefore retain their previous behaviour.
+            try:
+                reorientation_owner = bool(
+                    self.plc().read_by_name(
+                        "MAIN.GuiReorientationControlActive", pyads.PLCTYPE_BOOL
+                    )
+                )
+            except Exception:
+                reorientation_owner = False
+            if reorientation_owner:
+                self.disconnect_ads(
+                    "BiBaZu Reorientation Control besitzt derzeit die SPS; "
+                    "PressureControlGUI bleibt schreibgeschützt."
+                )
+                return
             safe_values = dict(self.SAFE_STOP_VALUES)
             safe_values["MAIN.GuiResetVelocityEstimates"] = True
             self.write_values_impl(safe_values)

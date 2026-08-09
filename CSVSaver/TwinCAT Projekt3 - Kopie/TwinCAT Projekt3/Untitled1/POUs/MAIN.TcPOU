@@ -128,6 +128,29 @@ VAR
 	GuiForceSingleNozzleResponseDelayMs2	: REAL := 15.0;
 	GuiForceSingleNozzleResponseDelayMs3	: REAL := 15.0;
 	GuiForceSingleNozzleResponseDelayMs4	: REAL := 15.0;
+	// BiBaZu Reorientation Control ADS contract
+	GuiReorientationControlActive	: BOOL := FALSE;
+	GuiReorientationHeartbeat		: UDINT := 0;
+	GuiReorientationStart			: BOOL := FALSE;
+	GuiReorientationAbort			: BOOL := FALSE;
+	GuiReorientationReset			: BOOL := FALSE;
+	GuiReorientationExpectedArrayMask	: BYTE := 0;
+	ReorientationHeartbeatAck		: UDINT := 0;
+	ReorientationHeartbeatAlive	: BOOL := FALSE;
+	ReorientationState				: UINT := 0; //0 legacy,10 armed,20 running,30 drain,40 complete,90+ fault
+	ReorientationFaultCode			: UINT := 0;
+	ReorientationBusy				: BOOL := FALSE;
+	ReorientationExitSeen			: BOOL := FALSE;
+	ReorientationArraysIdle		: BOOL := TRUE;
+	ReorientationExpectedArrayMask	: BYTE := 0;
+	ReorientationTriggeredArrayMask	: BYTE := 0;
+	ReorientationComplete			: BOOL := FALSE;
+	ReorientationCycleCounter		: UDINT := 0;
+	ReorientationLastHeartbeat		: UDINT := 0;
+	ReorientationHeartbeatAgeMs	: UDINT := 0;
+	ReorientationCycleAgeMs		: UDINT := 0;
+	ReorientationDrainAgeMs		: UDINT := 0;
+	ReorientationSafeLatch			: BOOL := FALSE;
 	EstimatedVelocityMmPerSec	: REAL := 0.0;
 	EstimatedVelocityMmPerSec1	: REAL := 0.0;
 	EstimatedVelocityMmPerSec2	: REAL := 0.0;
@@ -424,6 +447,61 @@ END_VAR
 NozzlePressure2 := TO_REAL(RawNozzlePressure2) * 10.0 / 32767.0;
 LogPressureTrigger := FALSE;
 LightBarrierEventClockMs := LightBarrierEventClockMs + 1;
+
+// A communication loss must remain safe and must never fall back to legacy control.
+IF GuiReorientationControlActive THEN
+	IF GuiReorientationHeartbeat <> ReorientationLastHeartbeat THEN
+		ReorientationLastHeartbeat := GuiReorientationHeartbeat;
+		ReorientationHeartbeatAck := GuiReorientationHeartbeat;
+		ReorientationHeartbeatAgeMs := 0;
+		ReorientationHeartbeatAlive := TRUE;
+	ELSIF ReorientationHeartbeatAgeMs < 16#FFFFFFFF THEN
+		ReorientationHeartbeatAgeMs := ReorientationHeartbeatAgeMs + 1;
+	END_IF
+	IF ReorientationHeartbeatAgeMs > 2000 THEN
+		ReorientationHeartbeatAlive := FALSE;
+		ReorientationFaultCode := 91;
+		ReorientationState := 91;
+		ReorientationSafeLatch := TRUE;
+	END_IF
+ELSIF NOT ReorientationSafeLatch THEN
+	ReorientationHeartbeatAlive := FALSE;
+	ReorientationState := 0;
+END_IF
+
+IF GuiReorientationReset AND GuiReorientationControlActive THEN
+	ReorientationFaultCode := 0;
+	ReorientationSafeLatch := FALSE;
+	ReorientationState := 10;
+	ReorientationComplete := FALSE;
+	ReorientationExitSeen := FALSE;
+	ReorientationTriggeredArrayMask := 0;
+END_IF
+
+IF GuiReorientationAbort AND GuiReorientationControlActive THEN
+	ReorientationFaultCode := 90;
+	ReorientationState := 90;
+	ReorientationSafeLatch := TRUE;
+END_IF
+
+IF GuiReorientationControlActive AND (ReorientationState >= 20) AND (ReorientationState <= 30)
+	AND (StepperPosError OR (ErrorCode0 <> 0) OR (ErrorCode1 <> 0)) THEN
+	ReorientationFaultCode := 94;
+	ReorientationState := 94;
+	ReorientationSafeLatch := TRUE;
+END_IF
+
+IF ReorientationSafeLatch THEN
+	GuiConveyorEnabled := FALSE;
+	GuiArrayEnabled1 := FALSE;
+	GuiArrayEnabled2 := FALSE;
+	GuiArrayEnabled3 := FALSE;
+	GuiArrayEnabled4 := FALSE;
+	Array1TriggerPending := FALSE;
+	Array2TriggerPending := FALSE;
+	Array3TriggerPending := FALSE;
+	Array4TriggerPending := FALSE;
+END_IF
 
 IF GuiResetVelocityEstimates THEN
 	LastVelocityTimeMs := 0;
@@ -959,6 +1037,43 @@ LightBarrier3FallingEdge := (NOT LightBarrierStable3) AND LastLightBarrier3;
 LightBarrier4FallingEdge := (NOT LightBarrierStable4) AND LastLightBarrier4;
 LightBarrier5FallingEdge := (NOT LightBarrierStable5) AND LastLightBarrier5;
 LightBarrier6FallingEdge := (NOT LightBarrierStable6) AND LastLightBarrier6;
+
+// Reorientation cycle ownership and event latches. The conveyor is released only
+// after a fresh heartbeat and the GUI's explicit start pulse.
+IF GuiReorientationControlActive AND (ReorientationState = 0) THEN
+	ReorientationState := 10;
+END_IF
+IF GuiReorientationControlActive AND GuiReorientationStart AND (ReorientationState = 10) AND ReorientationHeartbeatAlive AND NOT ReorientationSafeLatch THEN
+	ReorientationExpectedArrayMask := GuiReorientationExpectedArrayMask;
+	ReorientationTriggeredArrayMask := 0;
+	ReorientationExitSeen := FALSE;
+	ReorientationComplete := FALSE;
+	ReorientationCycleAgeMs := 0;
+	ReorientationDrainAgeMs := 0;
+	ReorientationState := 20;
+END_IF
+
+IF GuiReorientationControlActive AND (ReorientationState = 20) THEN
+	ReorientationCycleAgeMs := ReorientationCycleAgeMs + 1;
+	IF LightBarrier2FallingEdge AND ((ReorientationExpectedArrayMask AND BYTE#1) <> BYTE#0) THEN
+		ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#1;
+	END_IF
+	IF LightBarrier4FallingEdge AND ((ReorientationExpectedArrayMask AND BYTE#2) <> BYTE#0) THEN
+		ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#2;
+	END_IF
+	IF LightBarrier6FallingEdge THEN
+		IF (ReorientationExpectedArrayMask AND BYTE#4) <> BYTE#0 THEN ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#4; END_IF
+		IF (ReorientationExpectedArrayMask AND BYTE#8) <> BYTE#0 THEN ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#8; END_IF
+		ReorientationExitSeen := TRUE;
+		GuiConveyorEnabled := FALSE;
+		ReorientationState := 30;
+		ReorientationDrainAgeMs := 0;
+	ELSIF ReorientationCycleAgeMs > 60000 THEN
+		ReorientationFaultCode := 92;
+		ReorientationState := 92;
+		ReorientationSafeLatch := TRUE;
+	END_IF
+END_IF
 
 // Record every accepted stable transition at PLC-cycle resolution for ADS diagnostics.
 IF LightBarrierStable1 <> LastLightBarrier1 THEN
@@ -1788,6 +1903,49 @@ CASE State4 OF
 			END_IF
 		END_IF
 END_CASE
+
+// Completion is independent of the legacy ShotCounter: all expected triggers and
+// the complete idle/valve state are required after the latched LB6 falling edge.
+ReorientationArraysIdle := (State = 2) AND (State2 = 2) AND (State3 = 2) AND (State4 = 2)
+	AND NOT Array1TriggerPending AND NOT Array2TriggerPending AND NOT Array3TriggerPending AND NOT Array4TriggerPending
+	AND NOT OpenValve1 AND NOT OpenValve2 AND NOT OpenValve3 AND NOT OpenValve4
+	AND NOT OpenValve5 AND NOT OpenValve6 AND NOT OpenValve7 AND NOT OpenValve8
+	AND NOT OpenValve9 AND NOT OpenValve10 AND NOT OpenValve11 AND NOT OpenValve12
+	AND NOT OpenValve13 AND NOT OpenValve14 AND NOT OpenValve15 AND NOT OpenValve16
+	AND NOT OpenValve17 AND NOT OpenValve18 AND NOT OpenValve19 AND NOT OpenValve20
+	AND NOT OpenValve21 AND NOT OpenValve22 AND NOT OpenValve23 AND NOT OpenValve24;
+
+IF GuiReorientationControlActive AND (ReorientationState = 30) THEN
+	ReorientationDrainAgeMs := ReorientationDrainAgeMs + 1;
+	IF ReorientationArraysIdle AND (ReorientationTriggeredArrayMask = ReorientationExpectedArrayMask) THEN
+		ReorientationComplete := TRUE;
+		ReorientationBusy := FALSE;
+		ReorientationCycleCounter := ReorientationCycleCounter + 1;
+		ReorientationState := 40;
+	ELSIF ReorientationDrainAgeMs > 35000 THEN
+		ReorientationFaultCode := 93;
+		ReorientationState := 93;
+		ReorientationSafeLatch := TRUE;
+	END_IF
+END_IF
+
+ReorientationBusy := GuiReorientationControlActive AND (ReorientationState >= 10) AND (ReorientationState < 40);
+
+// Hard close on abort/watchdog/timeout; retained profile values are harmless while
+// the enables and conveyor permit remain latched off.
+IF ReorientationSafeLatch THEN
+	Counter := 0; Counter2 := 0; Counter3 := 0; Counter4 := 0;
+	IF State = 3 THEN State := 2; END_IF
+	IF State2 = 3 THEN State2 := 2; END_IF
+	IF State3 = 3 THEN State3 := 2; END_IF
+	IF State4 = 3 THEN State4 := 2; END_IF
+	OpenValve1 := FALSE; OpenValve2 := FALSE; OpenValve3 := FALSE; OpenValve4 := FALSE;
+	OpenValve5 := FALSE; OpenValve6 := FALSE; OpenValve7 := FALSE; OpenValve8 := FALSE;
+	OpenValve9 := FALSE; OpenValve10 := FALSE; OpenValve11 := FALSE; OpenValve12 := FALSE;
+	OpenValve13 := FALSE; OpenValve14 := FALSE; OpenValve15 := FALSE; OpenValve16 := FALSE;
+	OpenValve17 := FALSE; OpenValve18 := FALSE; OpenValve19 := FALSE; OpenValve20 := FALSE;
+	OpenValve21 := FALSE; OpenValve22 := FALSE; OpenValve23 := FALSE; OpenValve24 := FALSE;
+END_IF
 
 // Setup movement must never trigger a nozzle, even if a state was active on entry.
 IF GuiConveyorCalibrationMode OR GuiVelocityCheckMode THEN
