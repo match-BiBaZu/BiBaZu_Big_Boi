@@ -11,6 +11,16 @@ from bibazu_reorientation.hardware.base import DeviceAdapter
 from bibazu_reorientation.models import ConnectionState, LightStatus
 
 
+def _attribute(value: Any, name: str, default: Any = None) -> Any:
+    result = getattr(value, name, default)
+    return result() if callable(result) else result
+
+
+def _looks_like_neewer(device: Any) -> bool:
+    name = str(_attribute(device, "name", "") or "").upper()
+    return any(token in name for token in ("NEEWER", "RGB660", "RGB 660", "NW-", "ZN-"))
+
+
 class LightAdapter(DeviceAdapter):
     status_changed = pyqtSignal(object)
 
@@ -59,28 +69,43 @@ class LightAdapter(DeviceAdapter):
         try:
             from neewerlite import NeewerLight, NeewerScanner
 
-            devices = await NeewerScanner.scan(timeout=5.0)
+            try:
+                devices = await NeewerScanner.scan(timeout=5.0)
+            except TypeError:
+                devices = await NeewerScanner.scan()
             excluded = {address.casefold() for address in self._excluded_addresses() if address}
             candidates = [
                 device
                 for device in devices
                 if (not self.address or str(device.address).casefold() == self.address.casefold())
                 and str(device.address).casefold() not in excluded
+                and (bool(self.address) or _looks_like_neewer(device))
             ]
             if not candidates:
-                raise RuntimeError("Keine passende Neewer-Leuchte gefunden")
-            device = candidates[0]
+                raise RuntimeError(
+                    "Keine passende RGB660/NEEWER-Leuchte gefunden. Panel einschalten, "
+                    "Bluetooth-Symbol aktivieren und die Smartphone-App trennen."
+                )
+            device = sorted(
+                candidates,
+                key=lambda item: int(_attribute(item, "rssi", -999) or -999),
+                reverse=True,
+            )[0]
             self.address = str(device.address)
-            self._light = NeewerLight(device, name=self.name)
-            await asyncio.wait_for(self._light.connect(), 5.0)
+            device_name = str(_attribute(device, "name", ""))
+            profile_name = "RGB660" if "660" in device_name.upper() else self.name
+            # Unter Windows muss das beim Scan erhaltene BLEDevice weitergegeben werden.
+            # Nur die Adresse reicht bei zufälligen WinRT-Adressen häufig nicht aus.
+            self._light = NeewerLight(device, name=profile_name)
+            await self._light.connect()
             self.status.address = self.address
-            self.status.name = str(getattr(device, "name", self.name))
+            self.status.name = str(_attribute(device, "name", self.name) or self.name)
             self.status.connected = True
             self.status.values_are_confirmed_commands = False
             self._set_state(ConnectionState.CONNECTED, self.address)
             self.status_changed.emit(self.status)
         except Exception as exc:
-            self._emit_error(str(exc))
+            self._emit_error(str(exc) or type(exc).__name__)
 
     def set_cct(self, brightness: int, kelvin: int) -> None:
         self._schedule("CCT", brightness, kelvin)
@@ -115,7 +140,7 @@ class LightAdapter(DeviceAdapter):
             self.status.values_are_confirmed_commands = True
             self.status_changed.emit(self.status)
         except Exception as exc:
-            self._emit_error(str(exc))
+            self._emit_error(str(exc) or type(exc).__name__)
 
     async def shutdown(self) -> None:
         if self._task:

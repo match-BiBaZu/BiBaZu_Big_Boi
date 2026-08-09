@@ -8,6 +8,10 @@ Pose 2 applies the configured PressureControl profile `2 → 1`.
 
 Python 3.12 and the Baumer Camera Explorer/GenTL producer are required. Close
 Camera Explorer and every other GenTL client before connecting the camera.
+This explicitly includes **Automated Image Capture**: close that GUI completely
+before connecting the Baumer camera or either Neewer panel here. Also check Task
+Manager for an old `pythonw.exe` instance if no window is visible. Only one of the
+two hardware GUIs may control the camera/lights at a time.
 
 ```powershell
 cd ReorientationControlGUI

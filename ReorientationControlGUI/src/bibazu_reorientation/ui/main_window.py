@@ -313,6 +313,10 @@ class MainWindow(QMainWindow):
         self.controller.set_camera_fresh(time.time() - frame.timestamp <= 1.0)
         if self.inference:
             self.inference.submit(frame.image, frame.timestamp)
+        else:
+            # A live preview is useful while setting up hardware, before a part/model
+            # configuration has been selected.
+            self._show_image(frame.image)
 
     def _inference_frame(self, frame: InferenceFrame) -> None:
         self._show_image(frame.image)

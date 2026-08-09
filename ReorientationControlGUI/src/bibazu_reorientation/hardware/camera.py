@@ -23,25 +23,39 @@ def _uint8(image: np.ndarray, pixel_format: str) -> np.ndarray:
 
 def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.ndarray:
     image = np.asarray(data)
-    fmt = pixel_format.lower()
+    original_format = str(pixel_format)
+    fmt = original_format.lower()
     if "packed" in fmt or fmt.endswith("p"):
         raise ValueError(f"Gepacktes Pixelformat wird nicht unterstützt: {pixel_format}")
     if fmt.startswith("mono"):
+        if image.size != width * height:
+            raise ValueError(
+                f"Unerwartete Datenmenge für {original_format}: {image.size}"
+            )
         mono = _uint8(image.reshape(height, width), pixel_format)
         return np.ascontiguousarray(cv2.cvtColor(mono, cv2.COLOR_GRAY2RGB))
-    if fmt.startswith("bayer"):
-        mosaic = _uint8(image.reshape(height, width), pixel_format)
-        pattern = next((p for p in ("rg", "gr", "gb", "bg") if p in fmt), None)
-        if pattern is None:
-            raise ValueError(f"Unbekanntes Bayerformat: {pixel_format}")
-        code = getattr(cv2, f"COLOR_BAYER_{pattern.upper()}2RGB")
-        return np.ascontiguousarray(cv2.cvtColor(mosaic, code))
-    shaped = _uint8(image.reshape(height, width, -1), pixel_format)
-    if shaped.shape[2] != 3:
-        raise ValueError(f"Unerwartete Kanalzahl für {pixel_format}")
-    if fmt.startswith("bgr"):
-        shaped = cv2.cvtColor(shaped, cv2.COLOR_BGR2RGB)
-    return np.ascontiguousarray(shaped)
+
+    bayer_codes = {
+        "bayerrg": cv2.COLOR_BayerRG2RGB,
+        "bayerbg": cv2.COLOR_BayerBG2RGB,
+        "bayergr": cv2.COLOR_BayerGR2RGB,
+        "bayergb": cv2.COLOR_BayerGB2RGB,
+    }
+    for prefix, code in bayer_codes.items():
+        if fmt.startswith(prefix):
+            if image.size != width * height:
+                raise ValueError(
+                    f"Unerwartete Datenmenge für {original_format}: {image.size}"
+                )
+            mosaic = _uint8(image.reshape(height, width), pixel_format)
+            return np.ascontiguousarray(cv2.cvtColor(mosaic, code))
+
+    if fmt.startswith("rgb8"):
+        return np.ascontiguousarray(image.reshape(height, width, 3).astype(np.uint8))
+    if fmt.startswith("bgr8"):
+        bgr = image.reshape(height, width, 3).astype(np.uint8)
+        return np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+    raise ValueError(f"Nicht unterstütztes Pixelformat: {original_format}")
 
 
 class _CameraWorker(QObject):
@@ -101,7 +115,7 @@ class _CameraWorker(QObject):
                     )
                     self.frame.emit(CameraFrame(image, str(component.data_format), time.time()))
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.error.emit(str(exc) or type(exc).__name__)
         finally:
             if acquisition is not None:
                 acquisition.stop()

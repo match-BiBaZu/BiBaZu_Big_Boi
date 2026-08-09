@@ -46,14 +46,29 @@ class _AdsWorker(QObject):
                 self.settings.plc_ams_net_id, self.settings.plc_port, self.settings.plc_ip
             )
             self.plc.open()
-            self.connection.emit(True, "ADS verbunden")
+            ads_state, device_state = self.plc.read_state()
+            # Unlike Automated Image Capture, this application requires the v1
+            # reorientation PLC contract. Fail explicitly when an older PLC build is
+            # active instead of silently replacing missing symbols with safe-looking
+            # defaults.
+            self.plc.read_by_name("MAIN.ReorientationState", pyads.PLCTYPE_UINT)
+            self.connection.emit(
+                True,
+                f"ADS verbunden (AMS {ads_state}, Gerät {device_state}; Vertrag v1)",
+            )
             self.baseline.emit(self._read_baseline())
             self.poller = QTimer(self)
             self.poller.setInterval(100)
             self.poller.timeout.connect(self._poll)
             self.poller.start()
         except Exception as exc:
-            self.connection.emit(False, str(exc))
+            if self.plc is not None:
+                try:
+                    self.plc.close()
+                except Exception:
+                    LOGGER.exception("ADS close after failed connect failed")
+                self.plc = None
+            self.connection.emit(False, str(exc) or type(exc).__name__)
 
     def _read(self, name: str, plc_type: Any, default: Any) -> Any:
         try:
@@ -132,6 +147,9 @@ class _AdsWorker(QObject):
             def r(name: str, plc_type: Any, default: Any) -> Any:
                 return self._read(f"MAIN.{name}", plc_type, default)
 
+            def required_r(name: str, plc_type: Any) -> Any:
+                return self.plc.read_by_name(f"MAIN.{name}", plc_type)
+
             self.snapshot.emit(
                 PlcSnapshot(
                     connected=True,
@@ -163,29 +181,46 @@ class _AdsWorker(QObject):
                         bool(r(f"LightBarrierStable{i}", pyads.PLCTYPE_BOOL, False))
                         for i in range(1, 7)
                     ),
-                    reorientation_state=int(r("ReorientationState", pyads.PLCTYPE_UINT, 0)),
+                    reorientation_state=int(
+                        required_r("ReorientationState", pyads.PLCTYPE_UINT)
+                    ),
                     reorientation_fault_code=int(
-                        r("ReorientationFaultCode", pyads.PLCTYPE_UINT, 0)
+                        required_r("ReorientationFaultCode", pyads.PLCTYPE_UINT)
                     ),
                     heartbeat_alive=bool(
-                        r("ReorientationHeartbeatAlive", pyads.PLCTYPE_BOOL, False)
+                        required_r("ReorientationHeartbeatAlive", pyads.PLCTYPE_BOOL)
                     ),
-                    heartbeat_ack=int(r("ReorientationHeartbeatAck", pyads.PLCTYPE_UDINT, 0)),
-                    busy=bool(r("ReorientationBusy", pyads.PLCTYPE_BOOL, False)),
-                    exit_seen=bool(r("ReorientationExitSeen", pyads.PLCTYPE_BOOL, False)),
-                    arrays_idle=bool(r("ReorientationArraysIdle", pyads.PLCTYPE_BOOL, False)),
+                    heartbeat_ack=int(
+                        required_r("ReorientationHeartbeatAck", pyads.PLCTYPE_UDINT)
+                    ),
+                    busy=bool(required_r("ReorientationBusy", pyads.PLCTYPE_BOOL)),
+                    exit_seen=bool(
+                        required_r("ReorientationExitSeen", pyads.PLCTYPE_BOOL)
+                    ),
+                    arrays_idle=bool(
+                        required_r("ReorientationArraysIdle", pyads.PLCTYPE_BOOL)
+                    ),
                     expected_array_mask=int(
-                        r("ReorientationExpectedArrayMask", pyads.PLCTYPE_BYTE, 0)
+                        required_r("ReorientationExpectedArrayMask", pyads.PLCTYPE_BYTE)
                     ),
                     triggered_array_mask=int(
-                        r("ReorientationTriggeredArrayMask", pyads.PLCTYPE_BYTE, 0)
+                        required_r("ReorientationTriggeredArrayMask", pyads.PLCTYPE_BYTE)
                     ),
-                    complete=bool(r("ReorientationComplete", pyads.PLCTYPE_BOOL, False)),
-                    cycle_counter=int(r("ReorientationCycleCounter", pyads.PLCTYPE_UDINT, 0)),
+                    complete=bool(
+                        required_r("ReorientationComplete", pyads.PLCTYPE_BOOL)
+                    ),
+                    cycle_counter=int(
+                        required_r("ReorientationCycleCounter", pyads.PLCTYPE_UDINT)
+                    ),
                 )
             )
         except Exception as exc:
-            self.connection.emit(False, str(exc))
+            if self.poller:
+                self.poller.stop()
+            self.connection.emit(
+                False,
+                "ADS-/PLC-Vertrag nicht mehr lesbar: " + (str(exc) or type(exc).__name__),
+            )
 
     @pyqtSlot()
     def close(self) -> None:
