@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
         self.model_label.setStyleSheet(
             "background:#111827;color:#94a3b8;border:1px solid #334155;border-radius:8px"
         )
-        config_buttons = QHBoxLayout()
+        config_buttons = QVBoxLayout()
         self.new_config_button = QPushButton("Neue Konfiguration")
         self.new_config_button.clicked.connect(self.new_configuration)
         self.open_config_button = QPushButton("Konfiguration öffnen")
