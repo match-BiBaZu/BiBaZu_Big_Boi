@@ -30,6 +30,30 @@ def test_yaml_roundtrip_and_relative_paths(tmp_path: Path) -> None:
     assert TransitionResolver(saved).plan(2)[0].pressure_profile == profile
 
 
+def test_target_pose_two_and_mesh_path(tmp_path: Path) -> None:
+    model = tmp_path / "best.pt"
+    profile = tmp_path / "1-to-2.json"
+    mesh = tmp_path / "part.STL"
+    model.write_bytes(b"model")
+    profile.write_text(json.dumps({"version": 1, "arrays": []}), encoding="utf-8")
+    mesh.write_bytes(b"solid part\nendsolid part\n")
+
+    saved = save_part_definition(
+        tmp_path / "part.yaml",
+        part_name="Teil B",
+        model_path=model,
+        pressure_profile=profile,
+        target_pose=2,
+        mesh_path=mesh,
+    )
+
+    assert saved.target_pose == 2
+    assert saved.mesh_path == mesh
+    assert (saved.transitions[0].from_pose, saved.transitions[0].to_pose) == (1, 2)
+    assert TransitionResolver(saved).plan(2) == ()
+    assert TransitionResolver(saved).plan(1)[0].pressure_profile == profile
+
+
 def test_rejects_wrong_pose_mapping(tmp_path: Path) -> None:
     (tmp_path / "best.pt").write_bytes(b"x")
     (tmp_path / "p.json").write_text("{}", encoding="utf-8")

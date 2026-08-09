@@ -34,7 +34,10 @@ class FakePressure(QObject):
         self.writes.append((name, values, verify))
 
 
-def configured_controller(tmp_path: Path) -> tuple[ReorientationController, FakePressure]:
+def configured_controller(
+    tmp_path: Path, target_pose: int = 1
+) -> tuple[ReorientationController, FakePressure]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     model = tmp_path / "best.pt"
     profile_path = tmp_path / "profile.json"
     model.write_bytes(b"model")
@@ -70,6 +73,7 @@ def configured_controller(tmp_path: Path) -> tuple[ReorientationController, Fake
         part_name="Testteil",
         model_path=model,
         pressure_profile=profile_path,
+        target_pose=target_pose,
     )
     pressure = FakePressure()
     controller = ReorientationController(pressure, RunJournal(tmp_path / "runs"))
@@ -134,6 +138,22 @@ def test_pose_one_uses_zero_array_mask(tmp_path: Path) -> None:
     enables = pressure.writes[-1][1]
     assert enables["MAIN.GuiReorientationExpectedArrayMask"] == 0
     assert not any(enables[f"MAIN.GuiArrayEnabled{i}"] for i in range(1, 5))
+
+
+def test_pose_two_target_passes_through_and_pose_one_actuates(tmp_path: Path) -> None:
+    controller, pressure = configured_controller(tmp_path, target_pose=2)
+    controller.start_cycle()
+    started = time.time()
+    for index in range(3):
+        controller.accept_inference(inference_frame(2, started + index * 0.01))
+    assert pressure.writes[0][0] == "safe_stop"
+    assert controller._plan.expected_array_mask == 0
+
+    second, _ = configured_controller(tmp_path / "second", target_pose=2)
+    second.start_cycle()
+    for index in range(3):
+        second.accept_inference(inference_frame(1, started + index * 0.01))
+    assert second._plan.expected_array_mask == 1
 
 
 def test_illegal_double_start(tmp_path: Path) -> None:

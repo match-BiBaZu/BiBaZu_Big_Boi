@@ -56,6 +56,7 @@ class PartDefinition:
     poses: tuple[PoseDefinition, ...]
     target_pose: int
     transitions: tuple[TransitionSpec, ...]
+    mesh_path: Path | None = None
     source_path: Path | None = None
 
 

@@ -74,7 +74,7 @@ class ReorientationController(QObject):
         if self.state not in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
             raise RuntimeError("Konfiguration kann während eines Zyklus nicht gewechselt werden")
         self.part, self.profile = part, profile
-        TransitionResolver(part).plan(2, 1)
+        TransitionResolver(part).plan(3 - part.target_pose, part.target_pose)
         self._refresh_preflight()
 
     def set_model_ready(self, ready: bool) -> None:
@@ -192,7 +192,9 @@ class ReorientationController(QObject):
                 "fault_logging", f"Entscheidungsbild konnte nicht gespeichert werden: {exc}"
             )
             return
-        self._plan = build_write_plan(self.profile, actuate=decision.pose_id != 1)
+        self._plan = build_write_plan(
+            self.profile, actuate=decision.pose_id != self.part.target_pose
+        )
         self._set_state(CycleState.DECIDED, f"Pose {decision.pose_id}")
         self._set_state(CycleState.STAGING)
         self.pressure.write("safe_stop", self._plan.safe_stop, True)
@@ -317,7 +319,11 @@ class ReorientationController(QObject):
             datetime.now(UTC),
             self._detected_pose,
             self.part.target_pose,
-            "pass_through" if self._detected_pose == 1 else "2_to_1",
+            (
+                "pass_through"
+                if self._detected_pose == self.part.target_pose
+                else f"{self._detected_pose}_to_{self.part.target_pose}"
+            ),
             0 if self._plan is None else self._plan.expected_array_mask,
             self.snapshot.triggered_array_mask,
             code,

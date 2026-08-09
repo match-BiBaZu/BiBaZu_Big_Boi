@@ -32,6 +32,7 @@ from bibazu_reorientation.hardware.light import LightAdapter
 from bibazu_reorientation.hardware.pressure import PressureAdapter
 from bibazu_reorientation.hardware.robot import UrAngleWorker
 from bibazu_reorientation.inference import InferenceConfig, InferenceWorker
+from bibazu_reorientation.mesh_preview import render_mesh_preview
 from bibazu_reorientation.models import CameraFrame, CycleState, InferenceFrame, PressureBaseline
 from bibazu_reorientation.profiles import load_pressure_profile
 from bibazu_reorientation.settings import AppSettings
@@ -129,7 +130,13 @@ class MainWindow(QMainWindow):
         hardware_settings.triggered.connect(self.open_hardware_settings)
         menu.addAction(hardware_settings)
         self.part_label = QLabel("Keine Konfiguration")
-        self.transition_label = QLabel("Pflichtprofil: Pose 2 → Pose 1")
+        self.transition_label = QLabel("Aktuierungsprofil: –")
+        self.model_label = QLabel("Kein 3D-Modell gewählt")
+        self.model_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.model_label.setFixedSize(250, 175)
+        self.model_label.setStyleSheet(
+            "background:#111827;color:#94a3b8;border:1px solid #334155;border-radius:8px"
+        )
         config_buttons = QHBoxLayout()
         new_config = QPushButton("Neue Konfiguration")
         new_config.clicked.connect(self.new_configuration)
@@ -144,9 +151,15 @@ class MainWindow(QMainWindow):
         self.pose_label = QLabel("Erkannte Pose: –    Zielpose: 1    Konfidenz: –")
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.addWidget(self.part_label)
-        left_layout.addWidget(self.transition_label)
-        left_layout.addLayout(config_buttons)
+        configuration_details = QVBoxLayout()
+        configuration_details.addWidget(self.part_label)
+        configuration_details.addWidget(self.transition_label)
+        configuration_details.addLayout(config_buttons)
+        configuration_details.addStretch()
+        configuration_header = QHBoxLayout()
+        configuration_header.addWidget(self.model_label)
+        configuration_header.addLayout(configuration_details, 1)
+        left_layout.addLayout(configuration_header)
         left_layout.addWidget(self.video, 1)
         left_layout.addWidget(self.pose_label)
         self.plc_status = QLabel("SPS: getrennt")
@@ -272,10 +285,27 @@ class MainWindow(QMainWindow):
             # Legacy profiles resolve omitted machine fields from the PLC baseline
             # after the first successful ADS connection.
             pass
-        self.part_label.setText(f"Bauteil: {part.part_name}")
-        self.transition_label.setText(
-            f"Pflichtprofil Pose 2 → Pose 1: {self.profile.source_path.name}"
+        self.part_label.setText(
+            f"Bauteil: {part.part_name}\n"
+            f"YOLO: {part.model_path.name}\n"
+            f"Zielpose: Pose {part.target_pose}"
         )
+        transition = part.transitions[0]
+        self.transition_label.setText(
+            f"Aktuierungsprofil Pose {transition.from_pose} → Pose {transition.to_pose}: "
+            f"{self.profile.source_path.name}"
+        )
+        if part.mesh_path is None:
+            self.model_label.setPixmap(QPixmap())
+            self.model_label.setText("Kein 3D-Modell in dieser YAML")
+        else:
+            try:
+                self.model_label.setText("")
+                self.model_label.setPixmap(render_mesh_preview(part.mesh_path))
+                self.model_label.setToolTip(str(part.mesh_path))
+            except Exception as exc:
+                self.model_label.setPixmap(QPixmap())
+                self.model_label.setText(f"3D-Vorschau nicht möglich:\n{exc}")
         self.ur_button.setEnabled(self.profile.ur_ry_angle_deg is not None)
         if self.inference:
             self.inference.stop()
@@ -323,7 +353,8 @@ class MainWindow(QMainWindow):
         if len(frame.detections) == 1:
             detection = frame.detections[0]
             self.pose_label.setText(
-                f"Erkannte Pose: {detection.class_id + 1}    Zielpose: 1    "
+                f"Erkannte Pose: {detection.class_id + 1}    "
+                f"Zielpose: {self.part.target_pose if self.part else '–'}    "
                 f"Konfidenz: {detection.confidence:.1%}"
             )
         self.controller.accept_inference(frame)

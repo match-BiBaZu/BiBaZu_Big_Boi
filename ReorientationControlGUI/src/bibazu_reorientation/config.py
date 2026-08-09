@@ -24,6 +24,22 @@ def _resolve(base: Path, value: Any, field: str, suffix: str) -> Path:
     return path
 
 
+def _resolve_mesh(base: Path, value: Any) -> Path | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("mesh_path muss ein Dateipfad sein")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    path = path.resolve()
+    if path.suffix.lower() not in {".stl", ".obj"}:
+        raise ValueError("mesh_path muss auf eine STL- oder OBJ-Datei zeigen")
+    if not path.is_file():
+        raise ValueError(f"3D-Modell nicht gefunden: {path}")
+    return path
+
+
 def load_part_definition(path: Path) -> PartDefinition:
     source = Path(path).expanduser().resolve()
     try:
@@ -63,8 +79,8 @@ def load_part_definition(path: Path) -> PartDefinition:
             raise ValueError("Klasse 0 muss 'Pose 1' und Klasse 1 muss 'Pose 2' heißen")
 
     target_pose = int(payload.get("target_pose", 0))
-    if target_pose != 1:
-        raise ValueError("V1 unterstützt ausschließlich Pose 1 als Ziel")
+    if target_pose not in {1, 2}:
+        raise ValueError("V1 unterstützt Pose 1 oder Pose 2 als Ziel")
     transitions_raw = payload.get("transitions")
     if not isinstance(transitions_raw, list) or len(transitions_raw) != 1:
         raise ValueError("V1 benötigt genau den Übergang Pose 2 nach Pose 1")
@@ -79,8 +95,12 @@ def load_part_definition(path: Path) -> PartDefinition:
             ".json",
         ),
     )
-    if (transition.from_pose, transition.to_pose) != (2, 1):
-        raise ValueError("V1 benötigt genau den Übergang Pose 2 nach Pose 1")
+    expected_transition = (3 - target_pose, target_pose)
+    if (transition.from_pose, transition.to_pose) != expected_transition:
+        raise ValueError(
+            f"V1 benötigt für Zielpose {target_pose} genau den Übergang "
+            f"Pose {expected_transition[0]} nach Pose {target_pose}"
+        )
     return PartDefinition(
         schema_version=version,
         part_name=part_name,
@@ -88,6 +108,7 @@ def load_part_definition(path: Path) -> PartDefinition:
         poses=poses,
         target_pose=target_pose,
         transitions=(transition,),
+        mesh_path=_resolve_mesh(source.parent, payload.get("mesh_path")),
         source_path=source,
     )
 
@@ -106,6 +127,8 @@ def save_part_definition(
     part_name: str,
     model_path: Path,
     pressure_profile: Path,
+    target_pose: int = 1,
+    mesh_path: Path | None = None,
 ) -> PartDefinition:
     destination = Path(path).expanduser().resolve()
     if not part_name.strip():
@@ -116,6 +139,14 @@ def save_part_definition(
         raise ValueError(f"YOLO-Modell nicht gefunden: {model_path}")
     if pressure_profile.suffix.lower() != ".json" or not pressure_profile.is_file():
         raise ValueError(f"Pressure-Profil nicht gefunden: {pressure_profile}")
+    if target_pose not in {1, 2}:
+        raise ValueError("Die Zielpose muss Pose 1 oder Pose 2 sein")
+    resolved_mesh: Path | None = None
+    if mesh_path is not None and str(mesh_path).strip():
+        resolved_mesh = Path(mesh_path).expanduser().resolve()
+        if resolved_mesh.suffix.lower() not in {".stl", ".obj"} or not resolved_mesh.is_file():
+            raise ValueError(f"3D-Modell nicht gefunden oder nicht unterstützt: {resolved_mesh}")
+    source_pose = 3 - target_pose
     payload = {
         "schema_version": SCHEMA_VERSION,
         "part_name": part_name.strip(),
@@ -124,15 +155,17 @@ def save_part_definition(
             {"id": 1, "label": "Pose 1", "model_class_id": 0},
             {"id": 2, "label": "Pose 2", "model_class_id": 1},
         ],
-        "target_pose": 1,
+        "target_pose": target_pose,
         "transitions": [
             {
-                "from_pose": 2,
-                "to_pose": 1,
+                "from_pose": source_pose,
+                "to_pose": target_pose,
                 "pressure_profile": _portable_path(Path(pressure_profile), destination),
             }
         ],
     }
+    if resolved_mesh is not None:
+        payload["mesh_path"] = _portable_path(resolved_mesh, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     temporary.write_text(
