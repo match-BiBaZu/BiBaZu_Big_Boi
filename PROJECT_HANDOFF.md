@@ -1,8 +1,10 @@
 # BiBaZu Big Boi - Projektuebergabe
 
-Stand: 2026-08-08  
-Abgeglichen mit Git-Commit: `12cc783` (`main`)  
-Aktives Repository auf dem bisherigen PC: `C:\Users\nunning\BiBaZu_Big_Boi`
+Stand: 2026-08-09
+
+Abgeglichen mit Git-Basis: `e14e66b` (`main`) plus lokaler Reorientation-Control-Arbeit
+
+Aktiver Workspace auf dem aktuellen PC: `C:\Users\Administrator\Documents\Dashas_ws`
 
 Dieses Dokument beschreibt das Ziel des Pruefstands, die aktuelle Hardware- und
 Softwarearchitektur, die Anforderungen an beide GUIs, wichtige Kalibrierungen,
@@ -37,6 +39,10 @@ Die wesentlichen Aufgaben des Systems sind:
   und ueber mehrere Bauteile statistisch auswerten.
 - Versuchsparameter als Motion-/Pressure-Profile speichern und laden.
 - Druck-, Lichtschranken-, Kraftdelay- und UR-Plausibilitaetsdaten protokollieren.
+- Bauteile mit Baumer-Kamera und einem Zwei-Klassen-YOLO-Modell als Pose 1 oder
+  Pose 2 erkennen und einen gerichteten Reorientierungszyklus ueberwachen.
+- Bauteil-, Modell-, Zielpose-, 3D-Modell- und Pressure-Profil-Zuordnungen als
+  portable YAML-Konfiguration speichern und erneut bearbeiten.
 
 ## 2. Repository-Struktur
 
@@ -54,6 +60,11 @@ Die relevanten Dateien liegen unter `CSVSaver`:
 | `CSVSaver/pressure_profiles/` | Gespeicherte JSON-Profile |
 | `CSVSaver/TwinCAT Projekt3 - Kopie/TwinCAT Projekt3/` | TwinCAT-System- und PLC-Projekt |
 | `.../Untitled1/POUs/MAIN.TcPOU` | Zentrale SPS-Logik |
+| `ReorientationControlGUI/` | Eigenstaendige GUI fuer Kamera-/YOLO-gefuehrte Einzelzyklen |
+| `ReorientationControlGUI/pyproject.toml` | Python-3.12-Abhaengigkeiten und CLI `bibazu-reorientation` |
+| `ReorientationControlGUI/src/bibazu_reorientation/` | Modulare Domain-, Hardware-, UI-, Logging- und Controller-Schichten |
+| `ReorientationControlGUI/tests/` | Unit- und Offscreen-GUI-Tests der neuen Anwendung |
+| `WindowsLaunchers/` | Desktop-/Startmenue-Installer und vier anwendungsspezifische Icons |
 
 Wichtige erzeugte Logs:
 
@@ -62,9 +73,19 @@ Wichtige erzeugte Logs:
 - `CSVSaver/force_peak_delay_log.csv`
 - `CSVSaver/ur_speed_plausibility.csv`
 
-Die CSV-Dateien und Profile sind aktuell Teil des Repositories. Vor groesseren
+Reorientation-Laeufe liegen standardmaessig unter
+`%LOCALAPPDATA%\BiBaZuReorientationControl\runs`; das rotierende Diagnoseprotokoll
+liegt im benachbarten Ordner `logs`.
+
+Die historischen CSV-Dateien und Profile sind aktuell Teil des Repositories. Vor groesseren
 Messreihen sollte entschieden werden, ob die Logs versioniert, archiviert oder
 aus Git herausgenommen werden sollen.
+
+`Automated Image Capture` liegt weiterhin als separates Schwesterrepository
+`..\automated_image_capture`. Reorientation Control importiert daraus zur Laufzeit
+nichts; Kamera-, Licht- und Inferenzbausteine sind lokal im neuen Paket enthalten.
+Der Windows-Launcher fuer Automated Image Capture zeigt jedoch bewusst auf dieses
+Schwesterrepository und erwartet dort eine eigene `.venv`.
 
 ## 3. Gesamtarchitektur
 
@@ -92,7 +113,7 @@ Die GUIs bedienen die SPS asynchron per ADS. Die komplette
 Aktuelle Kommunikationsparameter:
 
 - AMS Net ID: `10.145.4.14.1.1`
-- PLC-IP: `192.168.10.23`
+- PLC-IP: `192.168.0.23`
 - PLC-Port: TwinCAT 3 PLC1 / ADS-Port 851
 - ADS-Timeout: `500 ms`
 - automatischer Reconnect: alle `2000 ms`
@@ -106,6 +127,31 @@ Bei ADS-Verlust werden normale ausstehende Writes verworfen. Nach einem
 Reconnect wird zuerst ein sicherer Stopzustand geschrieben und danach ein
 vollstaendiger Snapshot gelesen. Ein gerade laufender ADS-Zugriff kann einen
 GUI-Stop trotzdem bis zu 500 ms verzoegern. Das ist keine Sicherheitsfunktion.
+
+### 3.3 Reorientation-Control-Prozessmodell
+
+`ReorientationControlGUI` ist bewusst keine versteckte Instanz der monolithischen
+Pressure-GUI. Die Anwendung trennt die laufenden Aufgaben wie folgt:
+
+- ADS/SPS: ein dauerhafter Worker in einem eigenen `QThread`
+- Baumer/GenTL: ein eigener Kamera-Worker in einem eigenen `QThread`
+- YOLO Detect/OBB: ein eigener Inferenz-Worker mit `latest frame only`
+- zwei Neewer RGB660 Pro II: getrennte `asyncio`-Tasks im `qasync`-Qt-Eventloop
+- GUI, Vorschau und Zustandsanzeige: ausschliesslich im Qt-Hauptthread
+
+Der Kamera-Worker leert den GenTL-Stream kontinuierlich, konvertiert und emittiert
+aber nur die konfigurierte Vorschau-Bildrate. Default sind `15 FPS`, einstellbar
+von 1 bis 60 FPS. Dadurch entsteht bei einer schnellen Baumer-Kamera keine
+Warteschlange alter Vollbilder. YOLO verarbeitet ebenfalls nur das jeweils neueste
+Bild und ist auf 5 FPS begrenzt. Sind beide BLE-Adressen gespeichert, verbinden
+sich die Panels parallel; bei der erstmaligen Suche absichtlich nacheinander,
+damit beide Adapter nicht dasselbe Panel waehlen.
+
+Baumer Camera Explorer, Automated Image Capture und Reorientation Control duerfen
+die Kamera nicht gleichzeitig oeffnen. Dasselbe gilt praktisch fuer die beiden
+BLE-Panels. Unsichtbar weiterlaufende `pythonw.exe`-Instanzen im Task-Manager
+kontrollieren. Automated Image Capture und Reorientation Control muessen vor dem
+Wechsel jeweils vollstaendig geschlossen werden.
 
 ## 4. Hardware und I/O-Zuordnung
 
@@ -471,6 +517,183 @@ Empfohlenes Verfahren fuer Lichtschrankenabstaende:
 6. Ergebnis per `Apply Sensor Spacing` an die SPS schreiben und danach mit einem
    neuen Sollwert plausibilisieren.
 
+## 8.1 BiBaZu Reorientation Control
+
+Startordner: `ReorientationControlGUI`
+
+Paket/CLI: `bibazu_reorientation` / `bibazu-reorientation`
+
+Produktname: **BiBaZu Reorientation Control**
+
+Die neue Anwendung fuehrt die Ergebnisse von PressureControl, Kameraaufnahme und
+YOLO fuer genau ein ueberwachtes Bauteil pro Zyklus zusammen. V1 kennt genau zwei
+Posen. YOLO-Klasse 0 muss `Pose 1`, Klasse 1 muss `Pose 2` heissen. Als Ziel kann
+Pose 1 oder Pose 2 konfiguriert werden:
+
+- Ziel Pose 1: Pose 1 wird ohne Duesenimpulse transportiert, Pose 2 verwendet das
+  konfigurierte Profil `2 -> 1`.
+- Ziel Pose 2: Pose 2 wird ohne Duesenimpulse transportiert, Pose 1 verwendet das
+  konfigurierte Profil `1 -> 2`.
+
+Der Pass-through verwendet Bandrichtung, Geschwindigkeit und Kalibrierung des
+ausgewaehlten Pressure-Profils, aber eine effektive Arraymaske von null. V1
+bestaetigt den SPS-seitigen Transport-/Triggerabschluss, nicht die tatsaechlich
+erreichte Endorientierung. Eine kamerabasierte Nachkontrolle kommt erst spaeter.
+
+### Bauteilkonfiguration und Bedienoberflaeche
+
+Die drei Schaltflaechen links oben stehen vertikal untereinander:
+
+- `Neue Konfiguration`
+- `Konfiguration oeffnen`
+- `Konfiguration bearbeiten`
+
+Neu/Bearbeiten fragt Bauteilname, YOLO-`.pt`, STL-/OBJ-Modell, Zielpose und das
+gerichtete Pressure-JSON ab. Bearbeiten uebernimmt alle Werte der geladenen YAML;
+dieselbe Datei kann ueberschrieben oder unter neuem Namen gespeichert werden.
+Waehrend eines aktiven Zyklus sind alle drei Aktionen gesperrt.
+
+YAML-Schema v1:
+
+```yaml
+schema_version: 1
+part_name: Df1a
+model_path: models/best.pt
+mesh_path: ../../bibazu_geometry_to_pose/Werkstücke_STL_grob/Df1a.STL
+poses:
+  - {id: 1, label: Pose 1, model_class_id: 0}
+  - {id: 2, label: Pose 2, model_class_id: 1}
+target_pose: 1
+transitions:
+  - {from_pose: 2, to_pose: 1, pressure_profile: profiles/Df1a_2_to_1.json}
+```
+
+Relative Modell-, Mesh- und Profilpfade werden relativ zur YAML aufgeloest.
+`mesh_path` ist rueckwaertskompatibel optional. Die GUI rendert das STL/OBJ links
+oben ohne zusaetzliche Rotation; fuer V1 gilt die gespeicherte Orientierung als
+Zielorientierung. Der Dateidialog startet im Workspace unter
+`bibazu_geometry_to_pose/Werkstücke_STL_grob`. Spaetere Pose-/Sequenzdaten sollen
+Rotationen liefern, ohne dieses Config-Modell zu ersetzen.
+
+Das Pressure-Profil liefert Druck, aktive Arrays/Duesen, Delay, Pulsdauer,
+Offset, Bandparameter, Lichtschrankeneinstellungen und Kalibrierung. Das reine
+Auswaehlen oder Laden schreibt nichts an die SPS. Versionen 1 bis 8 werden in ein
+kanonisches unveraenderliches Modell migriert; fehlende alte Maschinenfelder
+werden erst gegen einen einmalig gelesenen PLC-Baseline-Snapshot aufgeloest.
+Fehlende Arrays sind deaktiviert, alte Duesenlisten werden auf sechs Duesen
+erweitert. Ein ausfuehrbares Uebergangsprofil braucht Vorwaertsfahrt, positive
+Geschwindigkeit und mindestens ein aktives Array mit aktiver Duese. Rueckwaertsfahrt
+ist in V1 nicht zulaessig.
+
+### Kamera, YOLO und Beleuchtung
+
+Unter `Konfiguration -> Hardware-Einstellungen` werden Kamera-IP/-Seriennummer,
+Baumer-CTI, Vorschau-FPS, SPS-IP/AMS-Net-ID/Port und beide BLE-Adressen gespeichert.
+Backend ist `QSettings` unter
+`LeibnizUniversitaetHannover/BiBaZuReorientationControl`. Defaults:
+
+- Baumer-IP: `169.254.117.70`
+- CTI: `C:\Program Files\Baumer Camera Explorer\bgapi2_gige.cti`
+- Vorschau: `15 FPS`, einstellbar `1..60`
+- SPS: IP `192.168.0.23`, AMS `10.145.4.14.1.1`, Port `851`
+
+YOLO unterstuetzt normale Detect-Boxen und OBB. Ein gueltiger Entscheid verlangt
+genau ein vollstaendig sichtbares, bekanntes Objekt auf drei unterschiedlichen,
+frischen, aufeinanderfolgenden Frames. Null, mehrere, unbekannte, widerspruechliche
+oder veraltete Erkennungen setzen den Konsens zurueck. Der Warm-up-Frame wird
+verworfen; GPU wird verwendet, wenn verfuegbar, sonst CPU.
+
+Beide Neewer RGB660 Pro II muessen verbunden und eingeschaltet sein. Pro aktueller
+Verbindung muss mindestens ein Lichtbefehl bestaetigt und die manuelle
+Zyklus-Checkbox gesetzt sein. BLE meldet nur den zuletzt bestaetigten Befehl,
+keinen physisch gemessenen Istwert. Beim Trennen bleiben die Panels in ihrem
+letzten Zustand; explizite Ausschaltbuttons sind vorhanden.
+
+### Ablauf und Preflight
+
+Zustaende der GUI:
+
+```text
+NO_CONFIG/OFFLINE -> READY -> DETECTING -> DECIDED -> STAGING ->
+ARMED -> RUNNING -> DRAINING -> COMPLETE
+```
+
+Aktive Zustaende koennen in `ABORTED` oder einen sichtbaren `FAULT` wechseln.
+Preflight verlangt insbesondere aufgewärmtes Modell, frischen Kameraframe,
+beide bestaetigten Leuchten, ADS plus Reorientation-PLC-Vertrag, stehendes Band,
+gueltige Bandkalibrierung, vier idle Arrays, keine Pending-Trigger, 24 geschlossene
+Ventile, fehlerfreie EL7047/VTEM-Zustaende und sechs fuer mindestens
+Debounce+100 ms freie normalisierte Lichtschranken.
+
+Ein `ur_ry_angle_deg` wird nur verwendet, wenn das Feld im Profil tatsaechlich
+vorhanden ist. Dann muss der Winkel ueber den separaten Button angewendet und
+exakt quittiert werden. Alte Profile erhalten keinen impliziten 18-Grad-Befehl.
+
+Staging-Reihenfolge:
+
+1. Band, Arrays und Messmodi deaktivieren und Readback pruefen.
+2. Profilkonfiguration ohne Freigabe schreiben und vollstaendig zuruecklesen.
+3. PLC-Ownership und Heartbeat etablieren.
+4. Effektive Arraymaske und Bandfreigabe zuletzt schreiben.
+5. Bei Abschluss/Abort Roh-Enables false schreiben und pruefen, erst dann den
+   Owner freigeben.
+
+### PLC-Reorientation-Vertrag
+
+GUI nach PLC:
+
+- `GuiReorientationControlActive`
+- `GuiReorientationHeartbeat`
+- `GuiReorientationStart`
+- `GuiReorientationAbort`
+- `GuiReorientationReset`
+- `GuiReorientationExpectedArrayMask`
+
+PLC nach GUI:
+
+- `ReorientationHeartbeatAck`, `ReorientationHeartbeatAlive`
+- `ReorientationState`, `ReorientationFaultCode`, `ReorientationBusy`
+- `ReorientationExitSeen`, `ReorientationArraysIdle`
+- `ReorientationExpectedArrayMask`, `ReorientationTriggeredArrayMask`
+- `ReorientationComplete`, `ReorientationCycleCounter`
+
+Heartbeatintervall ist 250 ms, PLC-Timeout 2 s, maximales Warten bis LB6 60 s,
+Drain-Timeout 35 s. Die PLC latcht die entprellte fallende LB6-Flanke, stoppt
+danach den Transport und meldet erst Complete, wenn erwartete und ausgeloeste
+Arraymasken exakt gleich sind, alle vier State-Machines idle sind, kein Pending
+existiert und alle 24 Ventile aus sind. Fehlercodes: 90 manueller Abort, 91
+Heartbeat, 92 Zyklus/LB6, 93 Drain, 94 Antrieb/VTEM.
+
+Bei Heartbeatverlust bleibt ein Safe-Latch aktiv; es darf keinen automatischen
+Rueckfall in die Legacy-Freigaben geben. `PressureControlGUI` und
+`ConveyorSetupGUI` verweigern ihren ersten Write, solange Reorientation den Owner
+haelt. Weitere parallele ADS-Schreiber bleiben verboten. Das PLC-Programm muss
+gebaut, aktiviert und auf Port 851 geladen sein; ein im Quelltext vorhandenes
+Symbol beweist nicht, dass die laufende PLC bereits diesen Stand verwendet.
+
+### Reorientation-Logging
+
+Pro Versuch entstehen eine schema-versionierte CSV-Zeile, ein atomar gespeichertes
+PNG des Entscheidungsframes sowie Kopien der YAML und des verwendeten Profils.
+Enthalten sind unter anderem Cycle-ID/Zeitpunkte, absolute Pfade und SHA256,
+drei Konsensmessungen, erkannte/Zielpose, Aktion, UR-Status, Lichtadressen,
+erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywerte.
+
+### Aktueller Inbetriebnahmestand 2026-08-09
+
+- Beide LED-Panels verbinden sich in der Reorientation-GUI praktisch erfolgreich.
+- Der urspruengliche GUI-Lag nach `Alle Komponenten verbinden` wurde auf eine
+  ungebegrenzte Kameraframe-Flut zurueckgefuehrt und per Preview-Limit/latest-only
+  korrigiert; erneuter Hardwaretest nach Neustart steht noch aus.
+- Automated Image Capture erreicht Kamera und uebrige Hardware auf diesem PC.
+  Der Reorientation-Kameraadapter wurde danach an dessen robuste Windows-/Baumer-
+  Behandlung angenaehert; der reale Dauerlauf muss noch bestaetigt werden.
+- SPS-IP `192.168.0.23` ist vom Betreiber bestaetigt. AMS bleibt
+  `10.145.4.14.1.1`. Die GUI validiert nun auch `MAIN.ReorientationState`, statt
+  fehlende Vertragssymbole still durch Defaultwerte zu ersetzen.
+- Vollstaendiger Pose-1-/Pose-2-Zyklus, Watchdog, LB6/Drain und Fehlerabnahme sind
+  noch nicht an druckbeaufschlagter Hardware freigegeben.
+
 ## 9. UR-Roboter
 
 Aktuelle Netzwerkdaten:
@@ -564,6 +787,16 @@ Kraftdelaymessung.
 Einzelne UR-Passagen mit Sollgeschwindigkeit, Sensorpaar, Richtung, Laufzeit,
 gemessener Geschwindigkeit und Abweichung.
 
+### Reorientation-Runexport
+
+Standardpfad: `%LOCALAPPDATA%\BiBaZuReorientationControl\runs`. Jeder Versuch
+erhaelt eine Cycle-ID, ein atomar gespeichertes PNG des Entscheidungsframes, eine
+CSV-Ergebniszeile sowie Kopien von YAML und Pressure-Profil. Pfade und SHA256
+halten den verwendeten Stand nachvollziehbar. Erfolg, manueller Abbruch,
+PLC-/ADS-/Loggingfehler und Watchdogzustand werden als terminales Ergebnis
+protokolliert. Diagnosemeldungen rotieren getrennt unter
+`%LOCALAPPDATA%\BiBaZuReorientationControl\logs`.
+
 ## 12. Einrichtung auf einem neuen PC
 
 ### 12.1 Software
@@ -573,8 +806,9 @@ gemessener Geschwindigkeit und Abweichung.
 2. TwinCAT XAE in einer mit dem Projekt kompatiblen Version installieren. Das
    aktuelle PLC-Objekt nennt TwinCAT `3.1.4026.18`.
 3. Die im Projekt benoetigte Festo-Bibliothek `FestoVTEMdc` installieren.
-4. Python installieren. Der bisherige PC verwendet Python 3.14.6.
-5. Python-Abhaengigkeiten installieren:
+4. Python installieren. Die Legacy-GUIs liefen bisher mit Python 3.14.6. Die neue
+   Reorientation-Anwendung verlangt reproduzierbar Python `>=3.12,<3.13`.
+5. Legacy-Abhaengigkeiten installieren:
 
 ```powershell
 python -m pip install PyQt6==6.11.0 pyads==3.6.0
@@ -582,9 +816,29 @@ python -m pip install PyQt6==6.11.0 pyads==3.6.0
 
 Die vendorte UR-RTDE-Bibliothek wird direkt aus dem Repository importiert.
 
+6. Reorientation Control mit `uv` einrichten:
+
+```powershell
+cd ReorientationControlGUI
+uv sync --extra dev
+uv run bibazu-reorientation
+```
+
+Das eigene `pyproject.toml` enthaelt PyQt6/qasync, pyads, Harvester/GenICam,
+Bleak/neewerlite, NumPy/OpenCV, PyYAML, Ultralytics sowie gepinnte
+Torch/Torchvision-CUDA-11.8-Pakete.
+
+7. Fuer Bediener ohne Terminal im Repository
+   `WindowsLaunchers\Verknuepfungen-installieren.cmd` doppelklicken. Dadurch
+   entstehen Desktop- und Startmenueeintraege mit eigenen Icons fuer Reorientation
+   Control, Pressure Control, Conveyor Setup und Automated Image Capture. Die
+   Links starten `pythonw.exe` direkt aus der jeweiligen `.venv` und verwenden
+   nach einem Quellcodeupdate automatisch den aktuellen Stand. Nach Verschieben
+   des Workspace den Installer erneut ausfuehren.
+
 ### 12.2 Netzwerk und ADS
 
-1. Netzwerkzugriff auf die SPS unter `192.168.10.23` herstellen.
+1. Netzwerkzugriff auf die SPS unter `192.168.0.23` herstellen.
 2. Eine funktionierende ADS-Route zur AMS Net ID `10.145.4.14.1.1` einrichten.
 3. Netzwerkzugriff auf den UR unter `10.10.10.10` herstellen.
 4. Ports 30002 und 30004 zum UR pruefen.
@@ -619,6 +873,18 @@ python PressureControlGUI.py
 Zuletzt liefen 47 Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
 muessen nach jedem Umzug erneut durchgefuehrt werden.
 
+Im Verzeichnis `ReorientationControlGUI`:
+
+```powershell
+uv run ruff check src tests
+uv run pytest
+```
+
+Aktueller Stand: Ruff ohne Befund und `34` bestandene Reorientation-Tests. Diese
+decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
+Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
+Settings und Offscreen-GUI ab. Sie ersetzen keine Hardwareabnahme.
+
 ## 13. Empfohlene Wiederinbetriebnahme
 
 1. Anlage drucklos und Motorleistung aus: Verdrahtung aller Ventile,
@@ -637,6 +903,16 @@ muessen nach jedem Umzug erneut durchgefuehrt werden.
 9. Force-Delay-Messung mit einzelnem Array und kontrolliertem Profil pruefen.
 10. Erst danach Druck, Pulsdauer, aktive Duesenzahl und Geschwindigkeit schrittweise
     erhoehen.
+11. Aktualisiertes `MAIN.TcPOU` bauen, aktivieren und online alle
+    `Reorientation*`-Symbole auf Port 851 kontrollieren.
+12. Reorientation zunaechst drucklos verbinden: Kamera-Livebild, YOLO-Warm-up,
+    beide Panels, PLC-Vertrag und Preflight pruefen.
+13. Pose-Pass-through mit erwarteter Maske null pruefen; kein Ventil darf pulsen.
+14. Danach genau einen Uebergang mit konservativem Profil und physischem Not-Aus
+    testen. LB6, Trigger-Maske, Drain, Ventil-idle und CycleCounter online pruefen.
+15. Abschliessend Heartbeatverlust, ADS-Abbruch, manuellen Stop, blockierte LB6
+    und fehlenden Trigger kontrolliert abnehmen. Kein Fall darf automatisch
+    wieder anlaufen.
 
 ## 14. Sicherheit und bekannte Grenzen
 
@@ -664,6 +940,14 @@ muessen nach jedem Umzug erneut durchgefuehrt werden.
 - Ein laufender ADS-Aufruf kann einen GUI-Stop bis zum 500-ms-Timeout verzogern.
 - Relative Dateipfade wie `pressure_profiles` und `pressure_log.csv` setzen
   voraus, dass die GUI aus `CSVSaver` gestartet wird.
+- Reorientation-`Completed` bestaetigt PLC-Transport und erwartete Trigger, aber
+  keine kamerabestaetigte Endorientierung.
+- Kamera und BLE-Panels duerfen nicht gleichzeitig von Automated Image Capture
+  und Reorientation Control kontrolliert werden.
+- PLC-Watchdog und GUI-Stopp sind nicht sicherheitsgerichtet. Physischer Not-Aus
+  und pneumatische Druckentlastung bleiben zwingend.
+- Der historische `ShotCounter` zaehlt nur abgeschlossene Array-1-Impulse und ist
+  kein gueltiger Gesamtabschluss; Reorientation verwendet den neuen PLC-Vertrag.
 
 ## 15. Offene bzw. naechste sinnvolle Arbeiten
 
@@ -676,11 +960,18 @@ muessen nach jedem Umzug erneut durchgefuehrt werden.
    sich diese deutlich von vier Duesen unterscheiden.
 5. Sensorabstaende und Force-Delay-Werte nach jedem mechanischen Umbau neu
    validieren.
-6. Eine `requirements.txt` oder `pyproject.toml` ergaenzen, damit die
-   Python-Umgebung reproduzierbar installiert werden kann.
+6. Fuer die beiden Legacy-GUIs ebenfalls ein Dependency-Manifest ergaenzen. Die
+   neue Reorientation-GUI besitzt bereits ein eigenes `pyproject.toml`/`uv.lock`.
 7. Grosse Mess-CSV-Dateien aus dem normalen Source-Control-Workflow auslagern,
    falls das Repository weiter stark waechst.
 8. Veraltete `Term 14`-Kommentare in `MAIN.TcPOU` auf `Term 19` korrigieren.
+9. Reorientation-Hardwareabnahme gemaess Abschnitt 13 vollstaendig durchfuehren
+   und Ergebnisse/PLC-Buildstand dokumentieren.
+10. Spaetere `sequence_yaml`-Anbindung, mehr als zwei Posen, gerichteten
+    Mehrkanten-Resolver und kamerabasierte Nachkontrolle implementieren.
+11. PLC-seitigen Cycle-Snapshot aller live verwendeten Profilparameter ergaenzen
+    bzw. online verifizieren, damit Fremdwrites nach Arm den laufenden Impuls
+    nicht veraendern koennen.
 
 ## 16. Entwicklungsregeln fuer weitere Aenderungen
 
@@ -705,8 +996,11 @@ muessen nach jedem Umzug erneut durchgefuehrt werden.
 ```text
 Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
-Tests:              python -m unittest test_pressure_control_gui.py
-PLC:                192.168.10.23 / AMS 10.145.4.14.1.1 / Port 851
+Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
+Legacy-Tests:       python -m unittest test_pressure_control_gui.py (47)
+Reorientation-Test: uv run pytest (34), uv run ruff check src tests
+Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
+PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004
 PLC-Zyklus:         1 ms
 Arrays/Duesen:      4 / 6
