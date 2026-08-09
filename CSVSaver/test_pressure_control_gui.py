@@ -1,5 +1,5 @@
-import json
 import gzip
+import json
 import os
 import tempfile
 import time
@@ -11,12 +11,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import ConveyorSetupGUI as setup_gui
+import PressureControlGUI as gui
+import ur_angle_control
 from PyQt6.QtCore import QEventLoop, QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QFileDialog
-
-import PressureControlGUI as gui
-import ConveyorSetupGUI as setup_gui
-import ur_angle_control
 
 
 class SignalBridge(QObject):
@@ -210,6 +209,8 @@ class AdsThreadTests(unittest.TestCase):
             controller,
             [False, False, True, True, False, False],
             [True] * 6,
+            (23.54, 39.9, 64.69),
+            20,
         )
 
         self.assertEqual(
@@ -220,6 +221,17 @@ class AdsThreadTests(unittest.TestCase):
             [checkbox.isChecked() for checkbox in dialog.debounce_controls],
             [True] * 6,
         )
+        self.assertEqual(
+            [control.value() for control in dialog.spacing_controls],
+            [23.5, 39.9, 64.7],
+        )
+        self.assertEqual(dialog.debounce_ms_control.value(), 20)
+        measurement_changes = []
+        dialog.measurement_changed.connect(
+            lambda *values: measurement_changes.append(values)
+        )
+        dialog.spacing_controls[0].setValue(25.0)
+        self.assertEqual(measurement_changes[-1], (25.0, 39.9, 64.7, 20))
         dialog.debounce_controls[1].setChecked(False)
 
         self.assertEqual(
@@ -691,6 +703,8 @@ class ProfileCompatibilityTests(unittest.TestCase):
                     window.light_barrier_debounce_enabled
                 )
                 result["ur_ry_angle_deg"] = window.ur_angle_input.value()
+                result["conveyor_max_speed"] = window.conveyor_max_speed.value()
+                result["conveyor_max_hidden"] = window.conveyor_max_speed.isHidden()
                 window.close()
                 return result
 
@@ -718,6 +732,18 @@ class ProfileCompatibilityTests(unittest.TestCase):
         result = self.load_profile({"version": 1, "arrays": []})
         self.assertFalse(result["valid"])
         self.assertEqual(result["mm_per_full_step"], 0.0)
+        self.assertEqual(result["conveyor_max_speed"], 1000.0)
+        self.assertTrue(result["conveyor_max_hidden"])
+
+    def test_hidden_conveyor_max_ignores_profile_override(self):
+        result = self.load_profile(
+            {
+                "version": 8,
+                "arrays": [],
+                "conveyor_max_speed_mm_per_sec": 2345.0,
+            }
+        )
+        self.assertEqual(result["conveyor_max_speed"], 1000.0)
 
     def test_version_2_profile_preserves_calibration(self):
         result = self.load_profile(
@@ -836,6 +862,117 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
 
         self.assertEqual(result["ur_ry_angle_deg"], 19.7)
+
+
+class RoadmapTransitionGuiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def roadmap_payload():
+        return {
+            "schema_version": 1,
+            "source": r"C:\parts\Df1a.STL",
+            "geometry_status": "provisional",
+            "nodes": [
+                {
+                    "node_id": 1,
+                    "pose_ids": [1, 4, 7],
+                    "kind": "robust",
+                    "floor_contact_topology": "face",
+                    "wall_contact_topology": "face",
+                },
+                {
+                    "node_id": 2,
+                    "pose_ids": [2, 5, 8],
+                    "kind": "robust",
+                    "floor_contact_topology": "face",
+                    "wall_contact_topology": "edge",
+                },
+                {
+                    "node_id": 3,
+                    "pose_ids": [3],
+                    "kind": "metastable",
+                    "floor_contact_topology": "edge",
+                    "wall_contact_topology": "face",
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "a0:1->2:free_y",
+                    "source": 1,
+                    "target": 2,
+                    "transition_kind": "actuated",
+                    "actuation": "free_y",
+                    "signed_angle_deg": 90.0,
+                    "capture_width_deg": 42.0,
+                    "geometric_score": 0.45,
+                },
+                {
+                    "edge_id": "p0:3->2",
+                    "source": 3,
+                    "target": 2,
+                    "transition_kind": "passive_tip",
+                    "actuation": "passive",
+                    "signed_angle_deg": 0.0,
+                    "capture_width_deg": 0.0,
+                    "geometric_score": 0.8,
+                },
+            ],
+        }
+
+    def load_document(self):
+        directory = tempfile.TemporaryDirectory()
+        path = Path(directory.name) / "Df1a_roadmap.json"
+        path.write_text(json.dumps(self.roadmap_payload()), encoding="utf-8")
+        return directory, gui.load_roadmap_document(path)
+
+    def test_roadmap_dialog_selects_only_actuated_transition(self):
+        directory, document = self.load_document()
+        try:
+            dialog = gui.RoadmapTransitionDialog(document)
+            self.assertEqual(len(document.poses), 3)
+            self.assertEqual(dialog.transition_table.rowCount(), 2)
+            dialog.transition_table.selectRow(0)
+            self.assertTrue(dialog.use_button.isEnabled())
+            dialog._accept_selected_transition()
+            selection = dialog.selected_transition
+            self.assertIsNotNone(selection)
+            self.assertEqual(selection.transition.display_name, "Übergang 1-2")
+            self.assertEqual(
+                selection.profile_name_stem,
+                "Df1a_Uebergang_1-2_free_y",
+            )
+        finally:
+            directory.cleanup()
+
+    def test_selected_transition_sets_banner_and_profile_name_suggestion(self):
+        directory, document = self.load_document()
+        try:
+            dialog = gui.RoadmapTransitionDialog(document)
+            dialog.transition_table.selectRow(0)
+            dialog._accept_selected_transition()
+            selection = dialog.selected_transition
+            self.assertIsNotNone(selection)
+            with patch.object(gui.AdsController, "start"):
+                window = gui.PressureControlWindow()
+            window._apply_roadmap_transition(selection)
+            self.assertFalse(window.transition_context_frame.isHidden())
+            self.assertIn("Übergang 1-2", window.transition_context_text.text())
+            with patch.object(
+                QFileDialog,
+                "getSaveFileName",
+                return_value=("", "JSON Profile (*.json)"),
+            ) as save_dialog:
+                window.save_profile()
+            suggested_path = save_dialog.call_args.args[2]
+            self.assertTrue(
+                suggested_path.endswith("Df1a_Uebergang_1-2_free_y.json")
+            )
+            window.close()
+        finally:
+            directory.cleanup()
 
 
 class ConveyorSetupWindowTests(unittest.TestCase):

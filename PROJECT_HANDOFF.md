@@ -2,7 +2,8 @@
 
 Stand: 2026-08-09
 
-Abgeglichen mit Git-Basis: `e14e66b` (`main`) plus lokaler Reorientation-Control-Arbeit
+Abgeglichen mit Git-Basis: `d6182a0` (`main`) plus lokaler
+Pressure-Control-Roadmap-Auswahl
 
 Aktiver Workspace auf dem aktuellen PC: `C:\Users\Administrator\Documents\Dashas_ws`
 
@@ -51,6 +52,7 @@ Die relevanten Dateien liegen unter `CSVSaver`:
 | Pfad | Aufgabe |
 | --- | --- |
 | `CSVSaver/PressureControlGUI.py` | Haupt-GUI fuer Versuchsprofile, Duesen, Druck, Timing, Foerderband und Messdialoge |
+| `CSVSaver/roadmap_transition_dialog.py` | Roadmap-JSON laden, Posekarten anzeigen und gerichteten Kalibrieruebergang auswaehlen |
 | `CSVSaver/ConveyorSetupGUI.py` | Separate Inbetriebnahme-GUI fuer Foerderband und Lichtschranken |
 | `CSVSaver/test_pressure_control_gui.py` | Unit-Tests fuer Berechnungen, ADS-Worker, Profile und GUI-Verhalten |
 | `CSVSaver/ur_angle_control.py` | RTDE-Client fuer das explizite Anwenden des UR-Ry-Winkels |
@@ -461,9 +463,9 @@ Startdatei: `CSVSaver/PressureControlGUI.py`
 
 Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
 
-- Sensorabstaende LB1-2, LB3-4 und LB5-6
-- globalen Debounce-Wert und das Untermenue `Light Barrier Settings`
-- Foerderband Enable, Reverse, Reset, Geschwindigkeit und Maximalgeschwindigkeit
+- Foerderband Enable, Reverse, Reset und Geschwindigkeit
+- `Light Barrier Settings` mit Sensorabstaenden LB1-2, LB3-4 und LB5-6,
+  globaler Debounce-Zeit sowie Invert-/Debounce-Enable je Lichtschranke
 - UR-Ry-Sollwinkel mit explizitem `Apply UR Angle`
 - vier Arrayzeilen mit Array-Enable, sechs Duesen-Checkboxen, Druck, manuellem
   Delay, Pulsdauer, Offset, geschaetzter Geschwindigkeit und Offsetdelay
@@ -471,12 +473,48 @@ Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
 - `Jog Conveyor`
 - `Measure Force Delay`
 - Profil laden/speichern
+- `Load Pose Roadmap` zur Auswahl eines gerichteten Kalibrieruebergangs
 - `Write All Values`
 
 Die Lichtschranken-Invertierung wird im Settings-Dialog sichtbar dargestellt und
 zusammen mit dem Profil gespeichert. Selektives Abschalten der Entprellung ist
 im selben Dialog moeglich. LB3 und LB4 sind standardmaessig invertiert und nicht
 entprellt.
+
+`Conveyor max` ist in der Haupt-GUI bewusst ausgeblendet und wird vorlaeufig
+fest mit `1000.0 mm/s` gespeichert und an die SPS geschrieben. Auch ein Profil
+mit abweichendem Altwert ueberschreibt diesen festen Wert derzeit nicht.
+
+### Roadmap-Auswahl fuer die Uebergangskalibrierung
+
+`Load Pose Roadmap` erwartet die versionierte `*_roadmap.json` aus dem
+Schwesterrepository `bibazu_geometry_to_pose`. Der aktuelle Export bettet pro
+Pose ein kleines PNG als `thumbnail_png_base64` direkt in die JSON ein. Dadurch
+benoetigt die Pressure-GUI zum Anzeigen der Posekarten kein trimesh, Matplotlib
+oder lokales CAD. Aeltere Roadmaps ohne Bilder bleiben ladbar und zeigen einen
+Textplatzhalter.
+
+Der modale Dialog zeigt:
+
+- robuste Posen mit kraeftigem Rahmen,
+- metastabile Zwischenposen mit gestricheltem Rahmen,
+- alle gerichteten direkten Kanten in einer anklickbaren Tabelle,
+- die Roadmap-ID als `Uebergang <von>-<nach>`,
+- Aktuator, Sollwinkel, Einfangbreite `w` und geometrischen Score `s`.
+
+Passive Kippkanten bleiben sichtbar, sind aber nicht als Druckkalibrierung
+auswaehlbar. Ein Doppelklick oder `Uebergang uebernehmen` schliesst den Dialog
+und setzt den Kalibrierkontext. Im Hauptfenster erscheint danach oben mittig ein
+blaues Banner mit Bauteil, Uebergangs-ID, Aktion und je einem Bild der Quell- und
+Zielpose. Wird anschliessend `Save Profile` verwendet, lautet der vorgeschlagene
+Dateiname beispielsweise:
+
+```text
+Df1a_Uebergang_9-35_wall_main_neg_x.json
+```
+
+Die Profilversion bleibt 8, weil der Roadmap-Kontext nicht als neues Profilfeld
+gespeichert wird; er beeinflusst derzeit nur Anzeige und Dateinamensvorschlag.
 
 Beim Oeffnen von Kalibrier- oder Jogdialogen wird normales Conveyor-Enable
 ausgeschaltet. Beim Schliessen erfolgt kein automatischer Wiederanlauf.
@@ -742,7 +780,8 @@ Versionen 1 bis 8 werden weiterhin geladen. Das aktuelle Format speichert:
 - globale Lichtschranken-Entprellzeit
 - sechs Invertierungsflags
 - sechs Debounce-Enable-Flags
-- Conveyor Enable, Reverse, Geschwindigkeit und Maximalgeschwindigkeit
+- Conveyor Enable, Reverse und Geschwindigkeit; der weiterhin gespeicherte
+  Maximalwert ist fest auf `1000.0 mm/s` gesetzt
 - Conveyor-Markierungsabstand, `mm/Vollschritt` und Gueltigkeit
 - Kraftantwortzeit je Array fuer eine Duese und fuer vier oder mehr Duesen
 - je Array: Enable, sechs Duesen-Flags, Druck, manueller Delay, Pulsdauer und
@@ -870,7 +909,7 @@ python ConveyorSetupGUI.py
 python PressureControlGUI.py
 ```
 
-Zuletzt liefen 47 Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
+Zuletzt liefen 50 Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
 muessen nach jedem Umzug erneut durchgefuehrt werden.
 
 Im Verzeichnis `ReorientationControlGUI`:

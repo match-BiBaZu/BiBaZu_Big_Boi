@@ -7,7 +7,16 @@ from datetime import datetime
 from pathlib import Path
 
 import pyads
-from PyQt6.QtCore import QObject, Qt, QSignalBlocker, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QObject,
+    QSignalBlocker,
+    Qt,
+    QThread,
+    QTimer,
+    pyqtSignal,
+    pyqtSlot,
+)
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -16,10 +25,11 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -33,6 +43,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from roadmap_transition_dialog import (
+    RoadmapTransitionDialog,
+    SelectedRoadmapTransition,
+    action_display_label,
+    load_roadmap_document,
+    pose_pixmap,
+)
 from ur_angle_control import (
     UR_ANGLE_DEFAULT_DEG,
     UR_ANGLE_MAX_DEG,
@@ -97,6 +114,7 @@ CONVEYOR_SPEED_MIN_MM_PER_SEC = 0.0
 CONVEYOR_SPEED_MAX_MM_PER_SEC = 5000.0
 CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC = 1.0
 CONVEYOR_MAX_SPEED_MAX_MM_PER_SEC = 5000.0
+CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC = 1000.0
 ESTIMATE_POLL_INTERVAL_MS = 750
 ESTIMATE_DISPLAY_EPSILON = 0.05
 CALIBRATION_POLL_INTERVAL_MS = 100
@@ -1659,12 +1677,15 @@ class ArrayRow:
 
 class LightBarrierSettingsDialog(QDialog):
     setting_changed = pyqtSignal(int, bool, bool)
+    measurement_changed = pyqtSignal(float, float, float, int)
 
     def __init__(
         self,
         ads: AdsController,
         inverted: list[bool],
         debounce_enabled: list[bool],
+        sensor_spacings_mm: tuple[float, float, float],
+        debounce_ms: int,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1673,6 +1694,55 @@ class LightBarrierSettingsDialog(QDialog):
         self.setModal(True)
 
         layout = QVBoxLayout(self)
+        measurement_box = QGroupBox("Measurement Settings")
+        measurement_grid = QGridLayout(measurement_box)
+        self.spacing_controls: list[QDoubleSpinBox] = []
+        spacing_labels = ("Sensor spacing 1-2", "Sensor spacing 3-4", "Sensor spacing 5-6")
+        spacing_symbols = (
+            "MAIN.GuiSensorSpacing12Mm",
+            "MAIN.GuiSensorSpacing34Mm",
+            "MAIN.GuiSensorSpacing56Mm",
+        )
+        for index, (label, symbol, value) in enumerate(
+            zip(spacing_labels, spacing_symbols, sensor_spacings_mm)
+        ):
+            control = QDoubleSpinBox()
+            control.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
+            control.setSuffix(" mm")
+            control.setDecimals(1)
+            control.setSingleStep(1.0)
+            control.setValue(float(value))
+            control.setToolTip(f"Physical distance for {label.lower()}")
+            control.valueChanged.connect(
+                lambda changed, s=symbol, name=label: self._write_measurement_setting(
+                    s, float(changed), name
+                )
+            )
+            self.spacing_controls.append(control)
+            measurement_grid.addWidget(QLabel(label), index, 0)
+            measurement_grid.addWidget(control, index, 1)
+
+        self.debounce_ms_control = QSpinBox()
+        self.debounce_ms_control.setRange(
+            LIGHT_BARRIER_DEBOUNCE_MIN_MS, LIGHT_BARRIER_DEBOUNCE_MAX_MS
+        )
+        self.debounce_ms_control.setSuffix(" ms")
+        self.debounce_ms_control.setValue(int(debounce_ms))
+        self.debounce_ms_control.setToolTip(
+            "Stable signal time used by velocity measurement and every valve trigger"
+        )
+        self.debounce_ms_control.valueChanged.connect(
+            lambda changed: self._write_measurement_setting(
+                "MAIN.GuiBarrierCalibrationDebounceMs",
+                int(changed),
+                "Light barrier debounce",
+            )
+        )
+        measurement_grid.addWidget(QLabel("Light barrier debounce"), 3, 0)
+        measurement_grid.addWidget(self.debounce_ms_control, 3, 1)
+        measurement_grid.setColumnStretch(2, 1)
+        layout.addWidget(measurement_box)
+
         settings_box = QGroupBox("Signal Settings")
         grid = QGridLayout(settings_box)
         grid.addWidget(QLabel("Light barrier"), 0, 0)
@@ -1715,6 +1785,15 @@ class LightBarrierSettingsDialog(QDialog):
         self.ads.connection_changed.connect(self._connection_changed)
         self._connection_changed(self.ads.is_connected, "")
 
+    def _write_measurement_setting(
+        self, symbol: str, value: float, label: str
+    ) -> None:
+        self.ads.queue_write(symbol, value, label)
+        self.measurement_changed.emit(
+            *(float(control.value()) for control in self.spacing_controls),
+            int(self.debounce_ms_control.value()),
+        )
+
     def _write_setting(self, sensor: int) -> None:
         inverted = self.invert_controls[sensor - 1].isChecked()
         debounce_enabled = self.debounce_controls[sensor - 1].isChecked()
@@ -1729,7 +1808,12 @@ class LightBarrierSettingsDialog(QDialog):
 
     @pyqtSlot(bool, str)
     def _connection_changed(self, connected: bool, _message: str) -> None:
-        for control in (*self.invert_controls, *self.debounce_controls):
+        for control in (
+            *self.spacing_controls,
+            self.debounce_ms_control,
+            *self.invert_controls,
+            *self.debounce_controls,
+        ):
             control.setEnabled(connected)
 
     def done(self, result: int) -> None:
@@ -2600,6 +2684,7 @@ class PressureControlWindow(QMainWindow):
         self.light_barrier_debounce_enabled = list(
             LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS
         )
+        self.selected_roadmap_transition: SelectedRoadmapTransition | None = None
         self.conveyor_calibration = {
             "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
             "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
@@ -2607,7 +2692,7 @@ class PressureControlWindow(QMainWindow):
         }
 
         self.setWindowTitle("Nozzle Array Pressure Control")
-        self.resize(1350, 440)
+        self.resize(1450, 560)
 
         self._build_ui()
         self.ads = AdsController(self)
@@ -2623,8 +2708,33 @@ class PressureControlWindow(QMainWindow):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
+        self.transition_context_frame = QFrame()
+        self.transition_context_frame.setObjectName("transitionContext")
+        self.transition_context_frame.setStyleSheet(
+            "QFrame#transitionContext { background: #e7f3ff; "
+            "border: 2px solid #1677c8; border-radius: 7px; }"
+        )
+        transition_context_layout = QHBoxLayout(self.transition_context_frame)
+        transition_context_layout.addStretch(1)
+        self.transition_source_image = QLabel()
+        self.transition_source_image.setFixedSize(120, 88)
+        self.transition_source_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        transition_context_layout.addWidget(self.transition_source_image)
+        self.transition_context_text = QLabel()
+        self.transition_context_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.transition_context_text.setStyleSheet(
+            "font-size: 17px; font-weight: 700; color: #0b4f83; padding: 6px 14px;"
+        )
+        transition_context_layout.addWidget(self.transition_context_text)
+        self.transition_target_image = QLabel()
+        self.transition_target_image.setFixedSize(120, 88)
+        self.transition_target_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        transition_context_layout.addWidget(self.transition_target_image)
+        transition_context_layout.addStretch(1)
+        self.transition_context_frame.setVisible(False)
+        main_layout.addWidget(self.transition_context_frame)
+
         machine_layout = QHBoxLayout()
-        machine_layout.addWidget(QLabel("Sensor spacing 1-2"))
         self.sensor_spacing_12 = QDoubleSpinBox()
         self.sensor_spacing_12.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
         self.sensor_spacing_12.setSuffix(" mm")
@@ -2632,9 +2742,6 @@ class PressureControlWindow(QMainWindow):
         self.sensor_spacing_12.setSingleStep(1.0)
         self.sensor_spacing_12.setValue(SENSOR_SPACING_12_DEFAULT_MM)
         self.sensor_spacing_12.setToolTip("Physical distance between light barrier 1 and light barrier 2")
-        machine_layout.addWidget(self.sensor_spacing_12)
-        machine_layout.addSpacing(20)
-        machine_layout.addWidget(QLabel("Sensor spacing 3-4"))
         self.sensor_spacing_34 = QDoubleSpinBox()
         self.sensor_spacing_34.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
         self.sensor_spacing_34.setSuffix(" mm")
@@ -2642,9 +2749,6 @@ class PressureControlWindow(QMainWindow):
         self.sensor_spacing_34.setSingleStep(1.0)
         self.sensor_spacing_34.setValue(SENSOR_SPACING_34_DEFAULT_MM)
         self.sensor_spacing_34.setToolTip("Physical distance between light barrier 3 and light barrier 4")
-        machine_layout.addWidget(self.sensor_spacing_34)
-        machine_layout.addSpacing(20)
-        machine_layout.addWidget(QLabel("Sensor spacing 5-6"))
         self.sensor_spacing_56 = QDoubleSpinBox()
         self.sensor_spacing_56.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
         self.sensor_spacing_56.setSuffix(" mm")
@@ -2652,9 +2756,6 @@ class PressureControlWindow(QMainWindow):
         self.sensor_spacing_56.setSingleStep(1.0)
         self.sensor_spacing_56.setValue(SENSOR_SPACING_56_DEFAULT_MM)
         self.sensor_spacing_56.setToolTip("Physical distance between light barrier 5 and light barrier 6")
-        machine_layout.addWidget(self.sensor_spacing_56)
-        machine_layout.addSpacing(20)
-        machine_layout.addWidget(QLabel("Light barrier debounce"))
         self.light_barrier_debounce = QSpinBox()
         self.light_barrier_debounce.setRange(
             LIGHT_BARRIER_DEBOUNCE_MIN_MS, LIGHT_BARRIER_DEBOUNCE_MAX_MS
@@ -2664,8 +2765,6 @@ class PressureControlWindow(QMainWindow):
         self.light_barrier_debounce.setToolTip(
             "Stable signal time used by velocity measurement and every valve trigger"
         )
-        machine_layout.addWidget(self.light_barrier_debounce)
-        machine_layout.addSpacing(20)
         self.conveyor_enabled = QCheckBox("Conveyor")
         self.conveyor_enabled.setChecked(False)
         self.conveyor_enabled.setToolTip("Enable or disable the EL7047 conveyor motor")
@@ -2688,15 +2787,14 @@ class PressureControlWindow(QMainWindow):
         self.conveyor_speed.setToolTip("Conveyor belt speed setpoint stored in the motion profile")
         machine_layout.addWidget(self.conveyor_speed)
         machine_layout.addSpacing(20)
-        machine_layout.addWidget(QLabel("Conveyor max"))
-        self.conveyor_max_speed = QDoubleSpinBox()
+        self.conveyor_max_speed = QDoubleSpinBox(root)
         self.conveyor_max_speed.setRange(CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC, CONVEYOR_MAX_SPEED_MAX_MM_PER_SEC)
         self.conveyor_max_speed.setSuffix(" mm/s")
         self.conveyor_max_speed.setDecimals(1)
         self.conveyor_max_speed.setSingleStep(10.0)
-        self.conveyor_max_speed.setValue(1000.0)
+        self.conveyor_max_speed.setValue(CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC)
         self.conveyor_max_speed.setToolTip("Speed that corresponds to 100 percent EL7047 STM Velocity")
-        machine_layout.addWidget(self.conveyor_max_speed)
+        self.conveyor_max_speed.setVisible(False)
         machine_layout.addStretch(1)
         main_layout.addLayout(machine_layout)
 
@@ -2781,6 +2879,10 @@ class PressureControlWindow(QMainWindow):
         self.load_button = QPushButton("Load Profile")
         self.save_button = QPushButton("Save Profile")
         self.write_all_button = QPushButton("Write All Values")
+        self.load_roadmap_button = QPushButton("Load Pose Roadmap")
+        self.load_roadmap_button.setToolTip(
+            "Load a chute-pose roadmap JSON and select a transition to calibrate"
+        )
 
         button_layout.addWidget(self.reconnect_button)
         button_layout.addWidget(self.calibrate_conveyor_button)
@@ -2789,6 +2891,7 @@ class PressureControlWindow(QMainWindow):
         button_layout.addWidget(self.light_barrier_settings_button)
         button_layout.addWidget(self.logging_status)
         button_layout.addStretch(1)
+        button_layout.addWidget(self.load_roadmap_button)
         button_layout.addWidget(self.load_button)
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.write_all_button)
@@ -2807,6 +2910,7 @@ class PressureControlWindow(QMainWindow):
         self.calibrate_conveyor_button.clicked.connect(self.open_conveyor_calibration)
         self.jog_conveyor_button.clicked.connect(self.open_conveyor_jogging)
         self.measure_force_delay_button.clicked.connect(self.open_force_delay_measurement)
+        self.load_roadmap_button.clicked.connect(self.load_pose_roadmap)
         self.load_button.clicked.connect(self.load_profile)
         self.save_button.clicked.connect(self.save_profile)
         self.write_all_button.clicked.connect(self.write_all_values)
@@ -2956,7 +3060,7 @@ class PressureControlWindow(QMainWindow):
             self.conveyor_enabled.setChecked(bool(conveyor_settings["enabled"]))
             self.conveyor_reverse.setChecked(bool(conveyor_settings["reverse"]))
             self.conveyor_speed.setValue(float(conveyor_settings["speed_mm_per_sec"]))
-            self.conveyor_max_speed.setValue(float(conveyor_settings["max_speed_mm_per_sec"]))
+            self.conveyor_max_speed.setValue(CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC)
 
         arrays_by_index = {int(values["index"]): values for values in snapshot["arrays"]}
         for row in self.rows:
@@ -3088,9 +3192,18 @@ class PressureControlWindow(QMainWindow):
             self.ads,
             self.light_barrier_inverted,
             self.light_barrier_debounce_enabled,
+            (
+                self.sensor_spacing_12.value(),
+                self.sensor_spacing_34.value(),
+                self.sensor_spacing_56.value(),
+            ),
+            self.light_barrier_debounce.value(),
             self,
         )
         dialog.setting_changed.connect(self._update_light_barrier_setting)
+        dialog.measurement_changed.connect(
+            self._update_light_barrier_measurements
+        )
         dialog.exec()
 
     @pyqtSlot(int, bool, bool)
@@ -3099,6 +3212,90 @@ class PressureControlWindow(QMainWindow):
     ) -> None:
         self.light_barrier_inverted[sensor - 1] = inverted
         self.light_barrier_debounce_enabled[sensor - 1] = debounce_enabled
+
+    @pyqtSlot(float, float, float, int)
+    def _update_light_barrier_measurements(
+        self, spacing_12: float, spacing_34: float, spacing_56: float, debounce_ms: int
+    ) -> None:
+        controls_and_values = (
+            (self.sensor_spacing_12, spacing_12),
+            (self.sensor_spacing_34, spacing_34),
+            (self.sensor_spacing_56, spacing_56),
+            (self.light_barrier_debounce, debounce_ms),
+        )
+        blockers = [QSignalBlocker(control) for control, _value in controls_and_values]
+        try:
+            for control, value in controls_and_values:
+                control.setValue(value)
+        finally:
+            del blockers
+
+    def load_pose_roadmap(self) -> None:
+        workspace_roadmaps = (
+            Path(__file__).resolve().parents[2]
+            / "bibazu_geometry_to_pose"
+            / "Poses_Found_Robust"
+        )
+        start_directory = workspace_roadmaps if workspace_roadmaps.exists() else Path.cwd()
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Load Pose Roadmap",
+            str(start_directory),
+            "Pose Roadmap JSON (*_roadmap.json *.json)",
+        )
+        if not path:
+            return
+        try:
+            document = load_roadmap_document(path)
+            dialog = RoadmapTransitionDialog(document, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                self.statusBar().showMessage("Pose roadmap closed without selection")
+                return
+            if dialog.selected_transition is None:
+                self.statusBar().showMessage("No calibratable transition selected")
+                return
+            self._apply_roadmap_transition(dialog.selected_transition)
+        except (OSError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+            QMessageBox.critical(self, "Roadmap Load Failed", str(exc))
+
+    def _apply_roadmap_transition(
+        self, selection: SelectedRoadmapTransition
+    ) -> None:
+        self.selected_roadmap_transition = selection
+        transition = selection.transition
+        self.transition_context_text.setText(
+            f"{selection.part_name}<br>"
+            f"{transition.display_name}<br>"
+            f"<span style='font-size: 13px; font-weight: 500;'>"
+            f"{action_display_label(transition.actuation)} · "
+            f"{transition.signed_angle_deg:+.1f}°</span>"
+        )
+        self._set_transition_pose_image(
+            self.transition_source_image,
+            selection.source_pose,
+            f"Pose {transition.source_pose_id}",
+        )
+        self._set_transition_pose_image(
+            self.transition_target_image,
+            selection.target_pose,
+            f"Pose {transition.target_pose_id}",
+        )
+        self.transition_context_frame.setVisible(True)
+        self.statusBar().showMessage(
+            f"Calibration context selected: {transition.display_name}"
+        )
+
+    @staticmethod
+    def _set_transition_pose_image(label: QLabel, pose, fallback_text: str) -> None:
+        pixmap = pose_pixmap(pose, 112, 82)
+        if pixmap.isNull():
+            label.setPixmap(QPixmap())
+            label.setText(fallback_text)
+            label.setStyleSheet("color: #0b4f83; font-weight: 600;")
+        else:
+            label.setText("")
+            label.setPixmap(pixmap)
+            label.setStyleSheet("background: white; border: 1px solid #8bb8dd;")
 
     def write_conveyor_setting(self, field: str, value: bool | float) -> None:
         labels = {
@@ -3295,7 +3492,12 @@ class PressureControlWindow(QMainWindow):
 
     def save_profile(self) -> None:
         PROFILE_DIR.mkdir(exist_ok=True)
-        default_name = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        if self.selected_roadmap_transition is not None:
+            default_name = (
+                f"{self.selected_roadmap_transition.profile_name_stem}.json"
+            )
+        else:
+            default_name = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         path, _selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save Profile",
@@ -3360,9 +3562,7 @@ class PressureControlWindow(QMainWindow):
             conveyor_enabled = bool(profile.get("conveyor_enabled", False))
             conveyor_reverse = bool(profile.get("conveyor_reverse", False))
             conveyor_speed = float(profile.get("conveyor_speed_mm_per_sec", self.conveyor_speed.value()))
-            conveyor_max_speed = float(
-                profile.get("conveyor_max_speed_mm_per_sec", self.conveyor_max_speed.value())
-            )
+            conveyor_max_speed = CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC
             if profile_version >= 2:
                 calibration_data = profile.get("conveyor_calibration", {})
                 calibration_mm_per_step = float(
