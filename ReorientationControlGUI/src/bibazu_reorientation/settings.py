@@ -16,7 +16,7 @@ class AppSettings:
     preview_fps: float = 15.0
     light_1_address: str = ""
     light_2_address: str = ""
-    plc_ip: str = "192.168.10.23"
+    plc_ip: str = "192.168.0.23"
     plc_ams_net_id: str = "10.145.4.14.1.1"
     plc_port: int = 851
     cycle_timeout_s: float = 60.0

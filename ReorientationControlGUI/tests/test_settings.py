@@ -27,7 +27,7 @@ def test_hardware_dialog_exposes_all_connection_fields(qtbot, tmp_path) -> None:
     dialog = HardwareSettingsDialog(valid_settings(tmp_path))
     qtbot.addWidget(dialog)
     assert dialog.camera_ip.text() == "169.254.117.70"
-    assert dialog.plc_ip.text() == "192.168.10.23"
+    assert dialog.plc_ip.text() == "192.168.0.23"
     assert dialog.plc_port.value() == 851
     assert dialog.light_1.text() == ""
     assert dialog.selected_settings().cti_path.endswith("baumer.cti")

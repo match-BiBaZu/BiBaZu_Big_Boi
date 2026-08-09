@@ -20,7 +20,7 @@ Für Bediener ohne Terminal können Desktop- und Startmenü-Verknüpfungen über
 installiert werden.
 
 The first start uses camera IP `169.254.117.70`, ADS target
-`10.145.4.14.1.1:851` at `192.168.10.23`, and the standard Baumer CTI path.
+`10.145.4.14.1.1:851` at `192.168.0.23`, and the standard Baumer CTI path.
 Device settings are stored with `QSettings` under
 `LeibnizUniversitaetHannover/BiBaZuReorientationControl`.
 
