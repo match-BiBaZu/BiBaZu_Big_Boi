@@ -1,6 +1,6 @@
 # BiBaZu Big Boi - Projektuebergabe
 
-Stand: 2026-08-09
+Stand: 2026-08-10
 
 Abgeglichen mit Git-Basis: `d6182a0` (`main`) plus lokaler
 Pressure-Control-Roadmap-Auswahl
@@ -65,6 +65,9 @@ Die relevanten Dateien liegen unter `CSVSaver`:
 | `ReorientationControlGUI/` | Eigenstaendige GUI fuer Kamera-/YOLO-gefuehrte Einzelzyklen |
 | `ReorientationControlGUI/pyproject.toml` | Python-3.12-Abhaengigkeiten und CLI `bibazu-reorientation` |
 | `ReorientationControlGUI/src/bibazu_reorientation/` | Modulare Domain-, Hardware-, UI-, Logging- und Controller-Schichten |
+| `ReorientationControlGUI/src/bibazu_reorientation/roadmap.py` | Handover-YAML und internen JSON-Export validieren und in Posen/Kanten normalisieren |
+| `ReorientationControlGUI/src/bibazu_reorientation/ui/roadmap_pose_dialog.py` | Anklickbare Bildauswahl fuer die physische Zielpose |
+| `ReorientationControlGUI/src/bibazu_reorientation/ui/roadmap_setup_dialog.py` | Roadmap-v2-Konfiguration, Klassenmapping, Zielbild und Profile je Kante |
 | `ReorientationControlGUI/tests/` | Unit- und Offscreen-GUI-Tests der neuen Anwendung |
 | `WindowsLaunchers/` | Desktop-/Startmenue-Installer und vier anwendungsspezifische Icons |
 
@@ -502,6 +505,10 @@ Der modale Dialog zeigt:
 - die Roadmap-ID als `Uebergang <von>-<nach>`,
 - Aktuator, Sollwinkel, Einfangbreite `w` und geometrischen Score `s`.
 
+Kanten, deren Quelle und Ziel beide robust sind, werden unabhaengig von der
+Reihenfolge in der JSON zuerst angezeigt und blau/fett hervorgehoben. Alle
+Kanten mit mindestens einer metastabilen Pose folgen dezenter darunter.
+
 Passive Kippkanten bleiben sichtbar, sind aber nicht als Druckkalibrierung
 auswaehlbar. Ein Doppelklick oder `Uebergang uebernehmen` schliesst den Dialog
 und setzt den Kalibrierkontext. Im Hauptfenster erscheint danach oben mittig ein
@@ -586,10 +593,32 @@ Die drei Schaltflaechen links oben stehen vertikal untereinander:
 - `Konfiguration oeffnen`
 - `Konfiguration bearbeiten`
 
-Neu/Bearbeiten fragt Bauteilname, YOLO-`.pt`, STL-/OBJ-Modell, Zielpose und das
-gerichtete Pressure-JSON ab. Bearbeiten uebernimmt alle Werte der geladenen YAML;
-dieselbe Datei kann ueberschrieben oder unter neuem Namen gespeichert werden.
-Waehrend eines aktiven Zyklus sind alle drei Aktionen gesperrt.
+Neue Konfigurationen beginnen jetzt mit einer Roadmap (`.yaml`, `.yml` oder
+`.json`). Unterstuetzt werden das Handover-Format mit `part/poses/transitions` und
+der interne Export mit `source/nodes/edges`. Beide werden streng in ein gemeinsames
+Modell aus allen stabilen/metastabilen Posen, Quaternionen und gerichteten Kanten
+ueberfuehrt. Bei einer Handover-YAML werden Vorschaubilder aus einem strukturell
+passenden gleichnamigen JSON uebernommen.
+
+Der Dialog fuellt Bauteilname und CAD-Pfad vor, laesst beide aber editierbar. Jede
+robuste Pose erhaelt explizit eine eindeutige YOLO-Klassen-ID. Die Zielpose wird
+ueber die Bildkarten ausgewaehlt. Pressure-Profile sind nur fuer aktuierte
+Robust-zu-Robust-Kanten editierbar; passive und metastabile Uebergaenge bleiben in
+einer separaten Infotabelle. Df1a ergibt 11 Posen, 23 Kanten, 4 robuste Posen und
+die sechs Profilzeilen `9->35`, `9->60`, `24->35`, `24->60`, `35->24`, `60->9`.
+Parallele Kanten werden ausschliesslich ueber `edge_id` unterschieden.
+
+Schema-v2-Dateien duerfen ohne Profile als Entwurf gespeichert werden. Die
+Readiness zeigt fehlende Profile, Erreichbarkeit zum Ziel, Klassenmapping,
+Roadmap-Hash und bewusst abweichende Stammdaten. Beim Laden wird SHA-256 geprueft;
+eine Aenderung verlangt `Roadmap neu uebernehmen`. Dabei bleiben nur Zuordnungen
+mit weiterhin identischen Pose-/Kanten-IDs erhalten.
+
+Wichtig: Schema v2 ist aktuell nur Import und Konfiguration. Die Hauptansicht
+zeigt Roadmap/Ziel/Vollstaendigkeit, sperrt aber `Zyklus starten` mit
+`Mehrposen-Ausfuehrung noch nicht freigegeben`. Das Laden konfiguriert weder den
+v1-Controller noch YOLO und erzeugt keine SPS-Schreibzugriffe. Schema v1 bleibt
+unveraendert ladbar, bearbeitbar und ausfuehrbar.
 
 YAML-Schema v1:
 
@@ -602,16 +631,45 @@ poses:
   - {id: 1, label: Pose 1, model_class_id: 0}
   - {id: 2, label: Pose 2, model_class_id: 1}
 target_pose: 1
+roadmap_path: ../../bibazu_geometry_to_pose/Poses_Found_Robust/Df1a_roadmap_provisional/Df1a_roadmap.json
+target_roadmap_pose_id: 15
 transitions:
   - {from_pose: 2, to_pose: 1, pressure_profile: profiles/Df1a_2_to_1.json}
 ```
 
-Relative Modell-, Mesh- und Profilpfade werden relativ zur YAML aufgeloest.
-`mesh_path` ist rueckwaertskompatibel optional. Die GUI rendert das STL/OBJ links
+Relative Modell-, Mesh-, Roadmap- und Profilpfade werden relativ zur YAML
+aufgeloest. `mesh_path`, `roadmap_path` und `target_roadmap_pose_id` sind
+rueckwaertskompatibel optional; die beiden Roadmap-Felder muessen gemeinsam
+gesetzt sein und die ID muss in der Roadmap robust sein. Die GUI rendert das STL/OBJ links
 oben ohne zusaetzliche Rotation; fuer V1 gilt die gespeicherte Orientierung als
 Zielorientierung. Der Dateidialog startet im Workspace unter
 `bibazu_geometry_to_pose/Werkstücke_STL_grob`. Spaetere Pose-/Sequenzdaten sollen
 Rotationen liefern, ohne dieses Config-Modell zu ersetzen.
+
+YAML-Schema v2 (gekuerzt):
+
+```yaml
+schema_version: 2
+roadmap_path: ../../bibazu_geometry_to_pose/.../Df1a_roadmap.yaml
+roadmap_sha256: <64 hex Zeichen>
+part_name: Df1a
+mesh_path: ../../bibazu_geometry_to_pose/Werkstücke_STL_grob/Df1a.STL
+model_path: models/Df1a_best.pt
+poses:
+  - {id: 9, label: Pose 9, model_class_id: 0}
+  - {id: 24, label: Pose 24, model_class_id: 1}
+  - {id: 35, label: Pose 35, model_class_id: 2}
+  - {id: 60, label: Pose 60, model_class_id: 3}
+target_pose: 35
+transition_profiles:
+  "a0:9->35:wall_main_neg_x": profiles/Df1a_9_to_35.json
+  "a1:9->60:free_z": null
+```
+
+Alle v2-Pfade werden soweit das Laufwerk es erlaubt auch mit `..` relativ zur
+Config gespeichert und beim Laden relativ zu dieser aufgeloest. Zugeordnete
+Profile werden strukturell validiert; Legacy-Felder duerfen weiterhin den spaeteren
+PLC-Baseline-Snapshot benoetigen.
 
 Das Pressure-Profil liefert Druck, aktive Arrays/Duesen, Delay, Pulsdauer,
 Offset, Bandparameter, Lichtschrankeneinstellungen und Kalibrierung. Das reine
@@ -909,7 +967,7 @@ python ConveyorSetupGUI.py
 python PressureControlGUI.py
 ```
 
-Zuletzt liefen 50 Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
+Zuletzt liefen 51 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
 muessen nach jedem Umzug erneut durchgefuehrt werden.
 
 Im Verzeichnis `ReorientationControlGUI`:
@@ -919,10 +977,12 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `34` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `53` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
-Settings und Offscreen-GUI ab. Sie ersetzen keine Hardwareabnahme.
+Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
+Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen und die harte
+Mehrposen-Ausfuehrungssperre ab. Sie ersetzen keine Hardwareabnahme.
 
 ## 13. Empfohlene Wiederinbetriebnahme
 
@@ -1037,7 +1097,7 @@ Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
 Legacy-Tests:       python -m unittest test_pressure_control_gui.py (47)
-Reorientation-Test: uv run pytest (34), uv run ruff check src tests
+Reorientation-Test: uv run pytest (53), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004

@@ -45,7 +45,13 @@ class PoseDefinition:
 class TransitionSpec:
     from_pose: int
     to_pose: int
-    pressure_profile: Path
+    pressure_profile: Path | None
+    edge_id: str = ""
+    transition_kind: str = "actuated"
+    actuation: str = ""
+    signed_angle_deg: float | None = None
+    geometric_score: float | None = None
+    experimental_status: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,6 +64,37 @@ class PartDefinition:
     transitions: tuple[TransitionSpec, ...]
     mesh_path: Path | None = None
     source_path: Path | None = None
+    roadmap_path: Path | None = None
+    target_roadmap_pose_id: int | None = None
+    roadmap_sha256: str | None = None
+    roadmap_changed: bool = False
+    roadmap_added_pose_ids: tuple[int, ...] = ()
+    roadmap_removed_pose_ids: tuple[int, ...] = ()
+    roadmap_added_edge_ids: tuple[str, ...] = ()
+    roadmap_removed_edge_ids: tuple[str, ...] = ()
+
+    @property
+    def is_roadmap_configuration(self) -> bool:
+        return self.schema_version == 2
+
+
+@dataclass(slots=True, frozen=True)
+class RoadmapReadiness:
+    missing_profile_edge_ids: tuple[str, ...]
+    reachable_pose_ids: tuple[int, ...]
+    unreachable_pose_ids: tuple[int, ...]
+    unmapped_pose_ids: tuple[int, ...]
+    roadmap_hash_matches: bool
+    name_differs: bool
+    mesh_differs: bool
+
+    @property
+    def is_complete(self) -> bool:
+        return (
+            not self.missing_profile_edge_ids
+            and not self.unmapped_pose_ids
+            and self.roadmap_hash_matches
+        )
 
 
 @dataclass(slots=True, frozen=True)

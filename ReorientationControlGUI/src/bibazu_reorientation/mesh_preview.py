@@ -48,11 +48,33 @@ def load_mesh_triangles(path: Path) -> np.ndarray:
     raise ValueError(f"Nicht unterstütztes 3D-Format: {source.suffix}")
 
 
-def render_mesh_preview(path: Path, width: int = 250, height: int = 175) -> QPixmap:
+def _quaternion_matrix(
+    quaternion_xyzw: tuple[float, float, float, float],
+) -> np.ndarray:
+    x, y, z, w = quaternion_xyzw
+    return np.asarray(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def render_mesh_preview(
+    path: Path,
+    width: int = 250,
+    height: int = 175,
+    quaternion_xyzw: tuple[float, float, float, float] | None = None,
+    caption: str = "Zielorientierung · Modellansicht",
+) -> QPixmap:
     triangles = load_mesh_triangles(path)
     points = triangles.reshape(-1, 3)
     center = (points.min(axis=0) + points.max(axis=0)) * 0.5
     centered = triangles - center
+    if quaternion_xyzw is not None:
+        centered = centered @ _quaternion_matrix(quaternion_xyzw).T
 
     azimuth = np.deg2rad(-40.0)
     elevation = np.deg2rad(24.0)
@@ -96,6 +118,6 @@ def render_mesh_preview(path: Path, width: int = 250, height: int = 175) -> QPix
         painter.setPen(QPen(QColor("#164e63"), 0.7))
         painter.drawPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in projected[index]]))
     painter.setPen(QPen(QColor("#94a3b8"), 1.0))
-    painter.drawText(8, height - 8, "Zielorientierung · Modellansicht")
+    painter.drawText(8, height - 8, caption)
     painter.end()
     return pixmap

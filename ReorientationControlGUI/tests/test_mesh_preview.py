@@ -35,6 +35,14 @@ def test_binary_stl_is_rendered(qtbot, tmp_path: Path) -> None:
     preview = render_mesh_preview(source, 180, 120)
     assert preview.width() == 180
     assert preview.height() == 120
+    rotated = render_mesh_preview(
+        source,
+        190,
+        130,
+        quaternion_xyzw=(0.0, 0.0, 1.0, 0.0),
+        caption="CAD · Pose 9",
+    )
+    assert rotated.size().width() == 190
 
 
 def test_obj_polygon_is_triangulated(tmp_path: Path) -> None:

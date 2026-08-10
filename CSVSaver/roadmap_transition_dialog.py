@@ -200,6 +200,7 @@ class RoadmapTransitionDialog(QDialog):
         self._transitions_by_id = {
             transition.edge_id: transition for transition in document.transitions
         }
+        self._poses_by_id = {pose.pose_id: pose for pose in document.poses}
         self.setWindowTitle(f"Posenroadmap auswählen · {document.part_name}")
         self.setModal(True)
         self.resize(1120, 760)
@@ -267,7 +268,27 @@ class RoadmapTransitionDialog(QDialog):
         self.transition_table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.Stretch
         )
-        for transition in self.document.transitions:
+        transition_hint = QLabel(
+            "<b>Blau hervorgehoben:</b> direkte Übergänge zwischen zwei stabilen "
+            "Posen. Übergänge mit mindestens einer metastabilen Pose folgen darunter."
+        )
+        transition_hint.setWordWrap(True)
+        transition_hint.setStyleSheet(
+            "background: #edf7ff; border-left: 4px solid #1677c8; "
+            "padding: 6px 9px; color: #1f3b53;"
+        )
+        transition_layout.addWidget(transition_hint)
+        ordered_transitions = sorted(
+            self.document.transitions,
+            key=lambda transition: (
+                not self._connects_stable_poses(transition),
+                not transition.calibratable,
+                transition.source_pose_id,
+                transition.target_pose_id,
+                transition.edge_id,
+            ),
+        )
+        for transition in ordered_transitions:
             self._add_transition_row(transition)
         self.transition_table.itemSelectionChanged.connect(
             self._on_transition_selection_changed
@@ -329,9 +350,16 @@ class RoadmapTransitionDialog(QDialog):
         )
         return card
 
+    def _connects_stable_poses(self, transition: RoadmapTransition) -> bool:
+        source = self._poses_by_id[transition.source_pose_id]
+        target = self._poses_by_id[transition.target_pose_id]
+        return source.stability == "robust" and target.stability == "robust"
+
     def _add_transition_row(self, transition: RoadmapTransition) -> None:
         row = self.transition_table.rowCount()
         self.transition_table.insertRow(row)
+        stable_pair = self._connects_stable_poses(transition)
+        self.transition_table.setRowHeight(row, 34 if stable_pair else 27)
         values = (
             transition.display_name,
             str(transition.source_pose_id),
@@ -351,11 +379,23 @@ class RoadmapTransitionDialog(QDialog):
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
+            font = item.font()
             if column == 0:
                 item.setData(Qt.ItemDataRole.UserRole, transition.edge_id)
                 item.setToolTip(f"Interne Kanten-ID: {transition.edge_id}")
+            if stable_pair:
+                font.setBold(True)
+                item.setFont(font)
+                item.setForeground(QColor("#123a58"))
+                item.setBackground(QColor("#dcefff"))
+                item.setToolTip(
+                    f"Stabil → stabil · interne Kanten-ID: {transition.edge_id}"
+                )
+            else:
+                item.setForeground(QColor("#737b84"))
+                item.setBackground(QColor("#f3f4f6"))
             if not transition.calibratable:
-                item.setForeground(QColor("#7f7f7f"))
+                item.setForeground(QColor("#92979d"))
                 item.setToolTip("Passiver Übergang: sichtbar, aber nicht kalibrierbar")
             self.transition_table.setItem(row, column, item)
 

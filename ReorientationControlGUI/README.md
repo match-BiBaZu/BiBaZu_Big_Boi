@@ -28,9 +28,12 @@ The first start uses camera IP `169.254.117.70`, ADS target
 Device settings are stored with `QSettings` under
 `LeibnizUniversitaetHannover/BiBaZuReorientationControl`.
 
-Use **Konfiguration → Neue Bauteilkonfiguration …** to select a part name, `.pt`
-model, target pose, 3D model, and Pressure JSON.
-The generated YAML uses paths relative to its own location whenever possible.
+Use **Konfiguration → Neue Bauteilkonfiguration …** to select a pose roadmap first.
+The dialog accepts the handover YAML (`part`, `poses`, `transitions`) and the
+internal JSON export (`source`, `nodes`, `edges`). It derives the part/CAD data,
+robust poses and directed transitions, then asks for the `.pt` model, explicit
+model-class mapping, target-pose card, and optional Pressure JSON per eligible
+edge. The generated schema-v2 YAML stores all paths relative to its own location.
 Legacy pressure profiles resolve omitted machine values only after the first PLC
 baseline read. Selecting a YAML or profile never writes to the PLC.
 
@@ -39,20 +42,23 @@ baseline read. Selecting a YAML or profile never writes to the PLC.
 In der Anwendung gibt es dafür zwei gleichwertige Wege: die Schaltflächen oberhalb
 des Kamerabildes oder das Menü **Konfiguration**.
 
-1. **Neue Bauteilkonfiguration (Modell + Profil) …** fragt Bauteilname,
-   YOLO-`.pt`, STL-/OBJ-Modell, Zielpose und Pressure-`.json` ab.
-2. Für Zielpose 1 wird das Profil `Pose 2 → Pose 1` verlangt; für Zielpose 2 das
-   Profil `Pose 1 → Pose 2`.
-3. Anschließend wird eine kleine `.yaml` gespeichert. Sie hält alle Angaben
-   zusammen und kann später über **Bauteilkonfiguration öffnen …** erneut geladen
-   werden.
-4. Das Profil liefert Impuls-, Druck-, Düsen-, Delay-, Förderband- und
-   Kalibrierwerte. Das reine Auswählen schreibt nichts auf die SPS und startet
-   weder Band noch Düsen.
-5. Das 3D-Modell wird links oben in seiner gespeicherten Orientierung dargestellt.
-   Der Dateidialog startet in `bibazu_geometry_to_pose/Werkstücke_STL_grob`.
-   Bestehende YAML-Dateien ohne `mesh_path` bleiben gültig und zeigen einen
-   Platzhalter.
+1. **Neue Bauteilkonfiguration …** beginnt mit einer Roadmap in YAML oder JSON.
+2. Name und CAD-Pfad werden übernommen, bleiben aber editierbar. Nur robuste
+   Posen erhalten eine explizite, eindeutige YOLO-Klassen-ID und sind als Ziel
+   auswählbar.
+3. Für jede aktuierte Robust-zu-Robust-Kante kann optional ein Pressure-Profil
+   ausgewählt werden. Passive/metastabile Kanten bleiben sichtbar, aber
+   schreibgeschützt. Df1a erzeugt sechs Profilzeilen.
+4. Fehlende Profile sind als Entwurf erlaubt. Die Readiness-Anzeige nennt fehlende
+   Profile, erreichbare Startposen, Mapping- und Hashstatus sowie Abweichungen bei
+   Name/CAD-Pfad.
+5. Beim Laden wird der SHA-256 der Roadmap geprüft. Nach einer Änderung muss
+   **Roadmap neu übernehmen** bestätigt werden; nur identische Pose- und Kanten-IDs
+   behalten ihre Zuordnungen.
+6. Schema-v1-Zwei-Posen-Dateien bleiben unverändert ladbar und ausführbar. Neue
+   Roadmap-Dateien verwenden Schema v2 und sind absichtlich nur Konfiguration:
+   **Zyklus starten** bleibt mit „Mehrposen-Ausführung noch nicht freigegeben“
+   gesperrt, und es erfolgen keine PLC-Schreibzugriffe.
 
 Mit **Konfiguration bearbeiten** wird die aktuell geladene YAML vollständig
 vorausgefüllt geöffnet. Sie kann am bisherigen Ort überschrieben oder im

@@ -54,6 +54,71 @@ def test_target_pose_two_and_mesh_path(tmp_path: Path) -> None:
     assert TransitionResolver(saved).plan(1)[0].pressure_profile == profile
 
 
+def test_stable_roadmap_target_roundtrip(tmp_path: Path) -> None:
+    model = tmp_path / "best.pt"
+    profile = tmp_path / "2-to-1.json"
+    roadmap = tmp_path / "Df1a_roadmap.json"
+    model.write_bytes(b"model")
+    profile.write_text("{}", encoding="utf-8")
+    roadmap.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source": "Df1a.STL",
+                "geometry_status": "provisional",
+                "nodes": [
+                    {"node_id": 15, "pose_ids": [15, 63, 154], "kind": "robust"},
+                    {"node_id": 48, "pose_ids": [48], "kind": "metastable"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    saved = save_part_definition(
+        tmp_path / "part.yaml",
+        part_name="Df1a",
+        model_path=model,
+        pressure_profile=profile,
+        roadmap_path=roadmap,
+        target_roadmap_pose_id=15,
+    )
+
+    assert saved.roadmap_path == roadmap
+    assert saved.target_roadmap_pose_id == 15
+    assert "target_roadmap_pose_id: 15" in (tmp_path / "part.yaml").read_text(encoding="utf-8")
+
+
+def test_rejects_metastable_roadmap_target(tmp_path: Path) -> None:
+    model = tmp_path / "best.pt"
+    profile = tmp_path / "2-to-1.json"
+    roadmap = tmp_path / "roadmap.json"
+    model.write_bytes(b"model")
+    profile.write_text("{}", encoding="utf-8")
+    roadmap.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "nodes": [
+                    {"node_id": 15, "pose_ids": [15], "kind": "robust"},
+                    {"node_id": 48, "pose_ids": [48], "kind": "metastable"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="nicht als stabil"):
+        save_part_definition(
+            tmp_path / "part.yaml",
+            part_name="Df1a",
+            model_path=model,
+            pressure_profile=profile,
+            roadmap_path=roadmap,
+            target_roadmap_pose_id=48,
+        )
+
+
 def test_rejects_wrong_pose_mapping(tmp_path: Path) -> None:
     (tmp_path / "best.pt").write_bytes(b"x")
     (tmp_path / "p.json").write_text("{}", encoding="utf-8")

@@ -181,37 +181,25 @@ class _AdsWorker(QObject):
                         bool(r(f"LightBarrierStable{i}", pyads.PLCTYPE_BOOL, False))
                         for i in range(1, 7)
                     ),
-                    reorientation_state=int(
-                        required_r("ReorientationState", pyads.PLCTYPE_UINT)
-                    ),
+                    reorientation_state=int(required_r("ReorientationState", pyads.PLCTYPE_UINT)),
                     reorientation_fault_code=int(
                         required_r("ReorientationFaultCode", pyads.PLCTYPE_UINT)
                     ),
                     heartbeat_alive=bool(
                         required_r("ReorientationHeartbeatAlive", pyads.PLCTYPE_BOOL)
                     ),
-                    heartbeat_ack=int(
-                        required_r("ReorientationHeartbeatAck", pyads.PLCTYPE_UDINT)
-                    ),
+                    heartbeat_ack=int(required_r("ReorientationHeartbeatAck", pyads.PLCTYPE_UDINT)),
                     busy=bool(required_r("ReorientationBusy", pyads.PLCTYPE_BOOL)),
-                    exit_seen=bool(
-                        required_r("ReorientationExitSeen", pyads.PLCTYPE_BOOL)
-                    ),
-                    arrays_idle=bool(
-                        required_r("ReorientationArraysIdle", pyads.PLCTYPE_BOOL)
-                    ),
+                    exit_seen=bool(required_r("ReorientationExitSeen", pyads.PLCTYPE_BOOL)),
+                    arrays_idle=bool(required_r("ReorientationArraysIdle", pyads.PLCTYPE_BOOL)),
                     expected_array_mask=int(
                         required_r("ReorientationExpectedArrayMask", pyads.PLCTYPE_BYTE)
                     ),
                     triggered_array_mask=int(
                         required_r("ReorientationTriggeredArrayMask", pyads.PLCTYPE_BYTE)
                     ),
-                    complete=bool(
-                        required_r("ReorientationComplete", pyads.PLCTYPE_BOOL)
-                    ),
-                    cycle_counter=int(
-                        required_r("ReorientationCycleCounter", pyads.PLCTYPE_UDINT)
-                    ),
+                    complete=bool(required_r("ReorientationComplete", pyads.PLCTYPE_BOOL)),
+                    cycle_counter=int(required_r("ReorientationCycleCounter", pyads.PLCTYPE_UDINT)),
                 )
             )
         except Exception as exc:

@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -943,6 +944,27 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
             self.assertEqual(
                 selection.profile_name_stem,
                 "Df1a_Uebergang_1-2_free_y",
+            )
+        finally:
+            directory.cleanup()
+
+    def test_stable_to_stable_transitions_are_sorted_first_and_highlighted(self):
+        directory, document = self.load_document()
+        try:
+            reversed_document = replace(
+                document,
+                transitions=tuple(reversed(document.transitions)),
+            )
+            dialog = gui.RoadmapTransitionDialog(reversed_document)
+            self.assertEqual(dialog.transition_table.item(0, 0).text(), "Übergang 1-2")
+            self.assertEqual(
+                dialog.transition_table.item(0, 0).background().color().name(),
+                "#dcefff",
+            )
+            self.assertEqual(dialog.transition_table.item(1, 0).text(), "Übergang 3-2")
+            self.assertEqual(
+                dialog.transition_table.item(1, 0).background().color().name(),
+                "#f3f4f6",
             )
         finally:
             directory.cleanup()

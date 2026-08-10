@@ -25,7 +25,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bibazu_reorientation.config import load_part_definition
+from bibazu_reorientation.config import (
+    RoadmapHashMismatchError,
+    load_part_definition,
+    roadmap_readiness,
+)
 from bibazu_reorientation.controller import ReorientationController
 from bibazu_reorientation.hardware.camera import CameraAdapter
 from bibazu_reorientation.hardware.light import LightAdapter
@@ -37,6 +41,7 @@ from bibazu_reorientation.models import CameraFrame, CycleState, InferenceFrame,
 from bibazu_reorientation.profiles import load_pressure_profile
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
+from bibazu_reorientation.ui.roadmap_setup_dialog import RoadmapSetupDialog
 from bibazu_reorientation.ui.setup_dialog import SetupDialog
 
 LOGGER = logging.getLogger(__name__)
@@ -107,6 +112,7 @@ class MainWindow(QMainWindow):
         self.ur_worker: UrAngleWorker | None = None
         self._last_camera_frame = 0.0
         self._preflight_ok = False
+        self._roadmap_config_only = False
         self._light_connect_task: asyncio.Task[None] | None = None
         self._build_ui()
         self._wire()
@@ -119,9 +125,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         menu = self.menuBar().addMenu("Konfiguration")
-        self.new_config_action = QAction(
-            "Neue Bauteilkonfiguration (Modell + Profil) …", self
-        )
+        self.new_config_action = QAction("Neue Bauteilkonfiguration (Roadmap) …", self)
         self.new_config_action.triggered.connect(self.new_configuration)
         menu.addAction(self.new_config_action)
         self.open_config_action = QAction("Bauteilkonfiguration öffnen …", self)
@@ -267,7 +271,7 @@ class MainWindow(QMainWindow):
 
     def new_configuration(self) -> None:
         try:
-            part = SetupDialog(self).create()
+            part = RoadmapSetupDialog(self).create()
             if part:
                 self._load(part)
         except Exception as exc:
@@ -279,6 +283,22 @@ class MainWindow(QMainWindow):
             return
         try:
             self._load(load_part_definition(Path(path)))
+        except RoadmapHashMismatchError as exc:
+            answer = QMessageBox.question(
+                self,
+                "Roadmap geändert",
+                f"{exc}\n\nSoll die geänderte Roadmap jetzt bewusst neu übernommen und "
+                "die Konfiguration zur Prüfung geöffnet werden?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                try:
+                    draft = load_part_definition(Path(path), accept_roadmap_change=True)
+                    part = RoadmapSetupDialog(self, draft).create()
+                    if part:
+                        self._load(part)
+                except Exception as reimport_error:
+                    QMessageBox.critical(self, "Roadmap neu übernehmen", str(reimport_error))
         except Exception as exc:
             QMessageBox.critical(self, "Konfiguration", str(exc))
 
@@ -289,7 +309,12 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            part = SetupDialog(self, self.part).create()
+            dialog = (
+                RoadmapSetupDialog(self, self.part)
+                if self.part.schema_version == 2
+                else SetupDialog(self, self.part)
+            )
+            part = dialog.create()
             if part:
                 self._load(part)
         except Exception as exc:
@@ -299,6 +324,11 @@ class MainWindow(QMainWindow):
         self.part = part
         self.edit_config_action.setEnabled(True)
         self.edit_config_button.setEnabled(True)
+        self._roadmap_config_only = part.schema_version == 2
+        if self._roadmap_config_only:
+            self._load_roadmap_configuration(part)
+            return
+        self.stop_button.setEnabled(True)
         self.profile = load_pressure_profile(
             part.transitions[0].pressure_profile, require_transition=False
         )
@@ -314,6 +344,11 @@ class MainWindow(QMainWindow):
             f"Bauteil: {part.part_name}\n"
             f"YOLO: {part.model_path.name}\n"
             f"Zielpose: Pose {part.target_pose}"
+            + (
+                f" · physisch Roadmap-Pose {part.target_roadmap_pose_id}"
+                if part.target_roadmap_pose_id is not None
+                else ""
+            )
         )
         transition = part.transitions[0]
         self.transition_label.setText(
@@ -340,8 +375,57 @@ class MainWindow(QMainWindow):
         self.inference.error.connect(lambda error: QMessageBox.critical(self, "YOLO", error))
         self.inference.start()
 
+    def _load_roadmap_configuration(self, part) -> None:
+        """Display schema v2 without configuring the v1 controller or writing ADS."""
+        if self.inference:
+            self.inference.stop()
+            self.inference = None
+        self.profile = None
+        readiness = roadmap_readiness(part)
+        self.part_label.setText(
+            f"Bauteil: {part.part_name}\n"
+            f"Roadmap: {part.roadmap_path.name if part.roadmap_path else '–'}\n"
+            f"YOLO: {part.model_path.name}\n"
+            f"Zielpose: Roadmap-Pose {part.target_pose}"
+        )
+        self.transition_label.setText(
+            f"Roadmap-Entwurf: {len(part.transitions)} profilierbare Übergänge, "
+            f"{len(readiness.missing_profile_edge_ids)} Profile fehlen. "
+            f"Erreichbar: {', '.join(map(str, readiness.reachable_pose_ids))}."
+        )
+        if part.mesh_path is not None:
+            try:
+                self.model_label.setText("")
+                self.model_label.setPixmap(render_mesh_preview(part.mesh_path))
+                self.model_label.setToolTip(str(part.mesh_path))
+            except Exception as exc:
+                self.model_label.setPixmap(QPixmap())
+                self.model_label.setText(f"3D-Vorschau nicht möglich:\n{exc}")
+        self.pose_label.setText(
+            f"Zielpose: Roadmap-Pose {part.target_pose} · "
+            "Mehrposen-Erkennung/Ausführung noch nicht freigegeben"
+        )
+        while self.preflight.count():
+            item = self.preflight.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        details = (
+            "Mehrposen-Ausführung noch nicht freigegeben",
+            f"Roadmap-Hash: {'gültig' if readiness.roadmap_hash_matches else 'geändert'}",
+            f"Fehlende Profile: {len(readiness.missing_profile_edge_ids)}",
+            f"Unvollständige YOLO-Zuordnungen: {len(readiness.unmapped_pose_ids)}",
+        )
+        for detail in details:
+            text = f"✗ {detail}" if detail == details[0] else f"• {detail}"
+            self.preflight.addWidget(QLabel(text))
+        self.cycle_status.setText("Konfigurationsentwurf – keinerlei SPS-Freigabe")
+        self.start_button.setEnabled(False)
+        self.start_button.setText("Mehrposen-Ausführung noch nicht freigegeben")
+        self.stop_button.setEnabled(False)
+        self.ur_button.setEnabled(False)
+
     def _baseline_ready(self, baseline: PressureBaseline) -> None:
-        if self.part is None:
+        if self.part is None or self._roadmap_config_only:
             return
         try:
             self.profile = load_pressure_profile(
@@ -441,6 +525,9 @@ class MainWindow(QMainWindow):
         self.ur_worker.start()
 
     def _preflight(self, checks: dict[str, bool]) -> None:
+        if self._roadmap_config_only:
+            self.start_button.setEnabled(False)
+            return
         while self.preflight.count():
             item = self.preflight.takeAt(0)
             if item.widget():
@@ -468,9 +555,25 @@ class MainWindow(QMainWindow):
         self.edit_config_button.setEnabled(configuration_editable and self.part is not None)
         terminal = state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
         self.start_button.setText("Neuen Zyklus vorbereiten" if terminal else "Zyklus starten")
-        self.start_button.setEnabled(terminal or (state is CycleState.READY and self._preflight_ok))
+        self.start_button.setEnabled(
+            not self._roadmap_config_only
+            and (terminal or (state is CycleState.READY and self._preflight_ok))
+        )
+        if self._roadmap_config_only:
+            self.start_button.setText("Mehrposen-Ausführung noch nicht freigegeben")
+            self.stop_button.setEnabled(False)
+        else:
+            self.stop_button.setEnabled(True)
 
     def _start(self) -> None:
+        if self._roadmap_config_only:
+            QMessageBox.information(
+                self,
+                "Roadmap-Konfiguration",
+                "Mehrposen-Ausführung noch nicht freigegeben. "
+                "Es wurden keine SPS-Werte geschrieben.",
+            )
+            return
         try:
             if self.controller.state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}:
                 self.controller.prepare_next_cycle()

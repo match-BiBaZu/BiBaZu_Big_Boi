@@ -41,9 +41,7 @@ def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.
         raise ValueError(f"Gepacktes Pixelformat wird nicht unterstützt: {pixel_format}")
     if fmt.startswith("mono"):
         if image.size != width * height:
-            raise ValueError(
-                f"Unerwartete Datenmenge für {original_format}: {image.size}"
-            )
+            raise ValueError(f"Unerwartete Datenmenge für {original_format}: {image.size}")
         mono = _uint8(image.reshape(height, width), pixel_format)
         return np.ascontiguousarray(cv2.cvtColor(mono, cv2.COLOR_GRAY2RGB))
 
@@ -56,9 +54,7 @@ def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.
     for prefix, code in bayer_codes.items():
         if fmt.startswith(prefix):
             if image.size != width * height:
-                raise ValueError(
-                    f"Unerwartete Datenmenge für {original_format}: {image.size}"
-                )
+                raise ValueError(f"Unerwartete Datenmenge für {original_format}: {image.size}")
             mosaic = _uint8(image.reshape(height, width), pixel_format)
             return np.ascontiguousarray(cv2.cvtColor(mosaic, code))
 
@@ -133,9 +129,7 @@ class _CameraWorker(QObject):
                         str(component.data_format),
                     )
                     self.frame.emit(CameraFrame(image, str(component.data_format), time.time()))
-                    next_preview = advance_frame_deadline(
-                        next_preview, preview_interval, now
-                    )
+                    next_preview = advance_frame_deadline(next_preview, preview_interval, now)
         except Exception as exc:
             self.error.emit(str(exc) or type(exc).__name__)
         finally:
