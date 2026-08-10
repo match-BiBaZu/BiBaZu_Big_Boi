@@ -10,28 +10,28 @@ import numpy as np
 
 
 class ConnectionState(StrEnum):
-    DISCONNECTED = "Getrennt"
-    DISCOVERING = "Suche"
-    CONNECTING = "Verbinde"
-    CONNECTED = "Verbunden"
-    DEGRADED = "Eingeschränkt"
-    ERROR = "Fehler"
+    DISCONNECTED = "Disconnected"
+    DISCOVERING = "Discovering"
+    CONNECTING = "Connecting"
+    CONNECTED = "Connected"
+    DEGRADED = "Degraded"
+    ERROR = "Error"
 
 
 class CycleState(StrEnum):
-    NO_CONFIG = "Keine Konfiguration"
+    NO_CONFIG = "No configuration"
     OFFLINE = "Offline"
-    READY = "Bereit"
-    DETECTING = "Pose wird erkannt"
-    DECIDED = "Pose entschieden"
-    STAGING = "Profil wird geschrieben"
-    ARMED = "SPS armiert"
-    RUNNING = "Bauteil unterwegs"
-    DRAINING = "Düsen laufen aus"
-    COMPLETE = "Abgeschlossen"
-    ABORTING = "Wird abgebrochen"
-    ABORTED = "Abgebrochen"
-    FAULT = "Fehler"
+    READY = "Ready"
+    DETECTING = "Detecting pose"
+    DECIDED = "Pose decided"
+    STAGING = "Staging profile"
+    ARMED = "PLC armed"
+    RUNNING = "Part in transit"
+    DRAINING = "Draining nozzle arrays"
+    COMPLETE = "Complete"
+    ABORTING = "Aborting"
+    ABORTED = "Aborted"
+    FAULT = "Fault"
 
 
 @dataclass(slots=True, frozen=True)

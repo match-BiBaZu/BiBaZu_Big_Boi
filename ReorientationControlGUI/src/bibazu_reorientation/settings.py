@@ -29,18 +29,16 @@ class AppSettings:
         if len(parts) != 6 or any(
             not part.isdigit() or not 0 <= int(part) <= 255 for part in parts
         ):
-            raise ValueError("Die AMS-Net-ID muss aus sechs Zahlen zwischen 0 und 255 bestehen")
+            raise ValueError("The AMS Net ID must contain six numbers between 0 and 255")
         if not 1 <= self.plc_port <= 65535:
-            raise ValueError("Der ADS-Port muss zwischen 1 und 65535 liegen")
+            raise ValueError("The ADS port must be between 1 and 65535")
         if not 1.0 <= float(self.preview_fps) <= 60.0:
-            raise ValueError("Die Kamera-Vorschau muss zwischen 1 und 60 FPS liegen")
+            raise ValueError("Camera preview must be between 1 and 60 FPS")
         cti = Path(self.cti_path.strip()).expanduser()
         if not cti.is_file():
-            raise ValueError(f"Baumer-CTI nicht gefunden: {cti}")
+            raise ValueError(f"Baumer CTI not found: {cti}")
         if self.light_1_address and self.light_1_address == self.light_2_address:
-            raise ValueError(
-                "Für die beiden Leuchten müssen unterschiedliche Adressen gewählt werden"
-            )
+            raise ValueError("The two lights must use different addresses")
         return replace(
             self,
             camera_ip=self.camera_ip.strip(),

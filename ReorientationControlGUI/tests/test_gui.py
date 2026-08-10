@@ -13,8 +13,8 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
     assert window.windowTitle() == "BiBaZu Reorientation Control"
-    assert window.start_button.text() == "Zyklus starten"
-    assert window.stop_button.text() == "STOPP"
+    assert window.start_button.text() == "Start cycle"
+    assert window.stop_button.text() == "STOP"
     roadmap_path = (
         Path(__file__).resolve().parents[3]
         / "bibazu_geometry_to_pose"
@@ -40,7 +40,7 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     window._load(definition)
     assert called == []
     assert not window.start_button.isEnabled()
-    assert "Mehrposen-Ausführung" in window.start_button.text()
+    assert "Multi-pose execution" in window.start_button.text()
     assert window.inference is None
     window.camera.shutdown()
     window.pressure.shutdown()

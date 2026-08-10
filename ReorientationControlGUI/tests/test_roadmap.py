@@ -51,13 +51,13 @@ def _mutated_json(tmp_path: Path, mutate) -> Path:
 @pytest.mark.parametrize(
     "mutate,match",
     [
-        (lambda p: p.update(schema_version=99), "Schemaversion"),
-        (lambda p: p["nodes"].append(dict(p["nodes"][0])), "doppelte Pose"),
-        (lambda p: p["edges"][0].update(target=123456), "unbekannte Pose"),
-        (lambda p: p["edges"][0].update(directed=False), "nicht gerichtet"),
-        (lambda p: p["edges"][0].update(transition_kind="magic"), "unbekannten Typ"),
-        (lambda p: p["nodes"][0].update(representative_quaternion_xyzw=[0, 0, 0, 0]), "Quaternion"),
-        (lambda p: p.update(source="missing.stl"), "CAD-Datei nicht gefunden"),
+        (lambda p: p.update(schema_version=99), "schema version"),
+        (lambda p: p["nodes"].append(dict(p["nodes"][0])), "duplicate pose"),
+        (lambda p: p["edges"][0].update(target=123456), "unknown pose"),
+        (lambda p: p["edges"][0].update(directed=False), "not directed"),
+        (lambda p: p["edges"][0].update(transition_kind="magic"), "unknown type"),
+        (lambda p: p["nodes"][0].update(representative_quaternion_xyzw=[0, 0, 0, 0]), "quaternion"),
+        (lambda p: p.update(source="missing.stl"), "CAD file not found"),
     ],
 )
 def test_rejects_invalid_roadmaps(tmp_path: Path, mutate, match: str) -> None:

@@ -38,10 +38,10 @@ def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.
     original_format = str(pixel_format)
     fmt = original_format.lower()
     if "packed" in fmt or fmt.endswith("p"):
-        raise ValueError(f"Gepacktes Pixelformat wird nicht unterstützt: {pixel_format}")
+        raise ValueError(f"Packed pixel format is not supported: {pixel_format}")
     if fmt.startswith("mono"):
         if image.size != width * height:
-            raise ValueError(f"Unerwartete Datenmenge für {original_format}: {image.size}")
+            raise ValueError(f"Unexpected data size for {original_format}: {image.size}")
         mono = _uint8(image.reshape(height, width), pixel_format)
         return np.ascontiguousarray(cv2.cvtColor(mono, cv2.COLOR_GRAY2RGB))
 
@@ -54,7 +54,7 @@ def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.
     for prefix, code in bayer_codes.items():
         if fmt.startswith(prefix):
             if image.size != width * height:
-                raise ValueError(f"Unerwartete Datenmenge für {original_format}: {image.size}")
+                raise ValueError(f"Unexpected data size for {original_format}: {image.size}")
             mosaic = _uint8(image.reshape(height, width), pixel_format)
             return np.ascontiguousarray(cv2.cvtColor(mosaic, code))
 
@@ -63,7 +63,7 @@ def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.
     if fmt.startswith("bgr8"):
         bgr = image.reshape(height, width, 3).astype(np.uint8)
         return np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-    raise ValueError(f"Nicht unterstütztes Pixelformat: {original_format}")
+    raise ValueError(f"Unsupported pixel format: {original_format}")
 
 
 class _CameraWorker(QObject):
@@ -101,7 +101,7 @@ class _CameraWorker(QObject):
             if selected is None and len(harvester.device_info_list) == 1:
                 selected = harvester.device_info_list[0]
             if selected is None:
-                raise RuntimeError("Baumer-Kamera nicht eindeutig gefunden")
+                raise RuntimeError("Baumer camera could not be identified uniquely")
             acquisition = harvester.create({"serial_number": selected.serial_number})
             acquisition.start()
             self.connected.emit(
@@ -151,7 +151,7 @@ class CameraAdapter(DeviceAdapter):
     _stop_requested = pyqtSignal()
 
     def __init__(self, settings: AppSettings) -> None:
-        super().__init__("Baumer-Kamera")
+        super().__init__("Baumer camera")
         self.settings = settings
         self.thread: QThread | None = None
         self.worker: _CameraWorker | None = None

@@ -40,27 +40,27 @@ class RoadmapSetupDialog(QDialog):
         self.class_inputs: dict[int, QSpinBox] = {}
         self.profile_inputs: dict[str, QLineEdit] = {}
         self.setWindowTitle(
-            "Roadmap-Konfiguration bearbeiten" if definition else "Neue Roadmap-Konfiguration"
+            "Edit roadmap configuration" if definition else "New roadmap configuration"
         )
         self.resize(1280, 850)
 
         self.roadmap_path = QLineEdit()
         self.roadmap_path.setReadOnly(True)
-        choose = QPushButton("Roadmap auswählen …")
+        choose = QPushButton("Select roadmap …")
         choose.clicked.connect(self._choose_roadmap)
         roadmap_row = QHBoxLayout()
         roadmap_row.addWidget(self.roadmap_path, 1)
         roadmap_row.addWidget(choose)
 
-        self.summary = QLabel("Bitte zuerst eine Roadmap (.yaml, .yml oder .json) auswählen.")
+        self.summary = QLabel("Please select a roadmap (.yaml, .yml, or .json) first.")
         self.summary.setWordWrap(True)
         self.warning = QLabel()
         self.warning.setWordWrap(True)
         self.name = QLineEdit()
         self.mesh = QLineEdit()
         self.model = QLineEdit()
-        self.target = QLabel("Noch nicht ausgewählt")
-        target_button = QPushButton("Zielpose anhand der Bildkarten auswählen …")
+        self.target = QLabel("Not selected yet")
+        target_button = QPushButton("Select target pose from image cards …")
         target_button.clicked.connect(self._choose_target)
         target_row = QHBoxLayout()
         target_row.addWidget(self.target, 1)
@@ -68,14 +68,14 @@ class RoadmapSetupDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("1. Roadmap", roadmap_row)
-        form.addRow("Bauteilname", self.name)
-        form.addRow("CAD-Modell", self._path_row(self.mesh, "3D-Modell (*.stl *.STL *.obj *.OBJ)"))
-        form.addRow("YOLO-Modell", self._path_row(self.model, "YOLO-Modell (*.pt)"))
-        form.addRow("Zielpose", target_row)
+        form.addRow("Part name", self.name)
+        form.addRow("CAD model", self._path_row(self.mesh, "3D model (*.stl *.STL *.obj *.OBJ)"))
+        form.addRow("YOLO model", self._path_row(self.model, "YOLO model (*.pt)"))
+        form.addRow("Target pose", target_row)
 
         self.mapping_table = QTableWidget(0, 4)
         self.mapping_table.setHorizontalHeaderLabels(
-            ("Roadmap-Pose", "Stabilität", "Kontakte", "YOLO-Klassen-ID")
+            ("Roadmap pose", "Stability", "Contacts", "YOLO class ID")
         )
         self.mapping_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.mapping_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -83,14 +83,14 @@ class RoadmapSetupDialog(QDialog):
         self.profile_table = QTableWidget(0, 8)
         self.profile_table.setHorizontalHeaderLabels(
             (
-                "Richtung",
-                "Aktion",
-                "Sollwinkel",
-                "Geometrischer Score",
+                "Direction",
+                "Action",
+                "Target angle",
+                "Geometric score",
                 "Experiment",
-                "Pressure-Profil",
+                "Pressure profile",
                 "Status",
-                "Auswahl",
+                "Selection",
             )
         )
         self.profile_table.horizontalHeader().setSectionResizeMode(
@@ -102,10 +102,10 @@ class RoadmapSetupDialog(QDialog):
         self.profile_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
         self.info_table = QTableWidget(0, 4)
-        self.info_table.setHorizontalHeaderLabels(("Richtung", "Typ", "Aktion", "Hinweis"))
+        self.info_table.setHorizontalHeaderLabels(("Direction", "Type", "Action", "Note"))
         self.info_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.info_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.readiness = QLabel("Entwurf noch nicht vollständig")
+        self.readiness = QLabel("Draft is not complete yet")
         self.readiness.setWordWrap(True)
 
         buttons = QDialogButtonBox(
@@ -118,17 +118,18 @@ class RoadmapSetupDialog(QDialog):
         layout.addWidget(self.summary)
         layout.addWidget(self.warning)
         layout.addWidget(
-            self._group("Explizite YOLO-Klassen-Zuordnung (nur robuste Posen)", self.mapping_table),
+            self._group("Explicit YOLO class mapping (robust poses only)", self.mapping_table),
             1,
         )
         layout.addWidget(
             self._group(
-                "Aktuierte Robust-zu-Robust-Übergänge (Profile optional)", self.profile_table
+                "Actuated robust-to-robust transitions (profiles optional)", self.profile_table
             ),
             2,
         )
         layout.addWidget(
-            self._group("Passive und metastabile Übergänge (nur Information)", self.info_table), 1
+            self._group("Passive and metastable transitions (information only)", self.info_table),
+            1,
         )
         layout.addWidget(self._group("Readiness", self.readiness))
         layout.addWidget(buttons)
@@ -154,7 +155,7 @@ class RoadmapSetupDialog(QDialog):
         return row
 
     def _browse(self, edit: QLineEdit, file_filter: str) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Datei auswählen", edit.text(), file_filter)
+        path, _ = QFileDialog.getOpenFileName(self, "Select file", edit.text(), file_filter)
         if path:
             edit.setText(path)
 
@@ -167,7 +168,7 @@ class RoadmapSetupDialog(QDialog):
     def _choose_roadmap(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Pose-Roadmap auswählen",
+            "Select pose roadmap",
             self._roadmap_directory(),
             "Pose-Roadmap (*.yaml *.yml *.json)",
         )
@@ -176,7 +177,7 @@ class RoadmapSetupDialog(QDialog):
         try:
             self._load_roadmap(Path(path))
         except (OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Pose-Roadmap", str(exc))
+            QMessageBox.critical(self, "Pose roadmap", str(exc))
 
     def _load_roadmap(self, path: Path, definition: PartDefinition | None = None) -> None:
         roadmap = load_pose_roadmap(path)
@@ -202,26 +203,26 @@ class RoadmapSetupDialog(QDialog):
         self._populate_information()
         self._update_target_text()
         self.summary.setText(
-            f"<b>{roadmap.part_name}</b> · {len(roadmap.poses)} Posen "
+            f"<b>{roadmap.part_name}</b> · {len(roadmap.poses)} poses "
             f"({len(roadmap.robust_poses)} robust) · {len(roadmap.transitions)} "
-            f"gerichtete Kanten · {len(roadmap.profile_transitions)} profilierbare Kanten"
+            f"directed edges · {len(roadmap.profile_transitions)} profile-eligible edges"
         )
         warnings: list[str] = []
         if roadmap.cad_status == "provisional":
-            warnings.append("CAD-Status: provisional")
+            warnings.append("CAD status: provisional")
         if any(edge.experimental_status == "untested" for edge in roadmap.transitions):
-            warnings.append("Experimentstatus: untested")
-        warnings.append("Geometrische Scores sind keine Erfolgswahrscheinlichkeiten.")
+            warnings.append("Experimental status: untested")
+        warnings.append("Geometric scores are not success probabilities.")
         if definition is not None and definition.roadmap_changed:
             warnings.insert(
                 0,
-                "Roadmap neu übernommen: nur weiterhin vorhandene Pose-/Kanten-IDs wurden bewahrt.",
+                "Roadmap re-imported: only pose/edge IDs that still exist were preserved.",
             )
             changes = (
-                ("neue Posen", definition.roadmap_added_pose_ids),
-                ("entfernte Posen", definition.roadmap_removed_pose_ids),
-                ("neue Kanten", definition.roadmap_added_edge_ids),
-                ("entfernte Kanten", definition.roadmap_removed_edge_ids),
+                ("new poses", definition.roadmap_added_pose_ids),
+                ("removed poses", definition.roadmap_removed_pose_ids),
+                ("new edges", definition.roadmap_added_edge_ids),
+                ("removed edges", definition.roadmap_removed_edge_ids),
             )
             warnings.extend(
                 f"{label}: {', '.join(map(str, values))}" for label, values in changes if values
@@ -242,11 +243,11 @@ class RoadmapSetupDialog(QDialog):
             self.mapping_table.setItem(row, 0, QTableWidgetItem(str(pose.pose_id)))
             self.mapping_table.setItem(row, 1, QTableWidgetItem(pose.stability))
             self.mapping_table.setItem(
-                row, 2, QTableWidgetItem(f"Boden: {pose.floor_contact}; Wand: {pose.wall_contact}")
+                row, 2, QTableWidgetItem(f"Floor: {pose.floor_contact}; wall: {pose.wall_contact}")
             )
             spin = QSpinBox()
             spin.setRange(-1, 9999)
-            spin.setSpecialValueText("nicht zugeordnet")
+            spin.setSpecialValueText("unassigned")
             if pose.pose_id in previous:
                 spin.setValue(previous[pose.pose_id])
             elif definition is not None:
@@ -296,10 +297,10 @@ class RoadmapSetupDialog(QDialog):
                 lambda _=None, e=edge, widget=edit, row=row: self._validate_profile(e, widget, row)
             )
             self.profile_table.setCellWidget(row, 5, edit)
-            self.profile_table.setItem(row, 6, QTableWidgetItem("optional / fehlt"))
+            self.profile_table.setItem(row, 6, QTableWidgetItem("optional / missing"))
             choose = QPushButton("JSON …")
             choose.clicked.connect(
-                lambda _=False, widget=edit: self._browse(widget, "Pressure-Profil (*.json)")
+                lambda _=False, widget=edit: self._browse(widget, "Pressure profile (*.json)")
             )
             self.profile_table.setCellWidget(row, 7, choose)
             self.profile_inputs[edge.edge_id] = edit
@@ -307,17 +308,17 @@ class RoadmapSetupDialog(QDialog):
 
     def _validate_profile(self, edge: RoadmapTransition, edit: QLineEdit, row: int) -> None:
         value = edit.text().strip()
-        status = "optional / fehlt"
+        status = "optional / missing"
         if value:
             try:
                 profile = load_pressure_profile(Path(value), require_transition=False)
                 status = (
-                    "gültig (Legacy; PLC-Baseline ggf. erforderlich)"
+                    "valid (legacy; PLC baseline may be required)"
                     if profile.source_version < 8
-                    else "gültig"
+                    else "valid"
                 )
             except Exception as exc:
-                status = f"ungültig: {exc}"
+                status = f"invalid: {exc}"
         item = self.profile_table.item(row, 6)
         if item is not None:
             item.setText(status)
@@ -333,12 +334,12 @@ class RoadmapSetupDialog(QDialog):
             self.info_table.setItem(row, 1, QTableWidgetItem(edge.transition_kind))
             self.info_table.setItem(row, 2, QTableWidgetItem(edge.actuation))
             self.info_table.setItem(
-                row, 3, QTableWidgetItem("Nur Information; kein Pressure-Profil")
+                row, 3, QTableWidgetItem("Information only; no pressure profile")
             )
 
     def _choose_target(self) -> None:
         if self.roadmap is None:
-            QMessageBox.information(self, "Zielpose", "Bitte zuerst eine Roadmap auswählen.")
+            QMessageBox.information(self, "Target pose", "Please select a roadmap first.")
             return
         dialog = RoadmapPoseDialog(self.roadmap, self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_pose is not None:
@@ -348,14 +349,14 @@ class RoadmapSetupDialog(QDialog):
 
     def _update_target_text(self) -> None:
         self.target.setText(
-            "Noch nicht ausgewählt"
+            "Not selected yet"
             if self.target_pose_id is None
-            else f"Roadmap-Pose {self.target_pose_id}"
+            else f"Roadmap pose {self.target_pose_id}"
         )
 
     def _update_readiness(self, *_args) -> None:
         if self.roadmap is None:
-            self.readiness.setText("Roadmap fehlt")
+            self.readiness.setText("Roadmap missing")
             return
         missing_mapping = [
             pose_id for pose_id, spin in self.class_inputs.items() if spin.value() < 0
@@ -370,24 +371,24 @@ class RoadmapSetupDialog(QDialog):
         }
         reachable = self._reachable_starts(available)
         parts = [
-            f"Fehlende Profile: {len(missing_profiles)}",
-            "Ziel über belegte Kanten erreichbar aus: "
-            f"{', '.join(map(str, reachable)) or 'nur Zielpose'}",
+            f"Missing profiles: {len(missing_profiles)}",
+            "Target reachable via assigned edges from: "
+            f"{', '.join(map(str, reachable)) or 'target pose only'}",
         ]
         parts.append(
-            "Klassenmapping vollständig"
+            "Class mapping complete"
             if not missing_mapping and not duplicates
-            else f"Klassenmapping unvollständig/mehrdeutig: {missing_mapping}"
+            else f"Class mapping incomplete/ambiguous: {missing_mapping}"
         )
-        parts.append("Roadmap-Hash wird beim Speichern neu festgehalten")
+        parts.append("Roadmap hash will be recorded again when saving")
         if self.name.text().strip() != self.roadmap.part_name:
-            parts.append("Bauteilname weicht bewusst von der Roadmap ab")
+            parts.append("Part name intentionally differs from the roadmap")
         if (
             self.mesh.text().strip()
             and Path(self.mesh.text()).expanduser().resolve() != self.roadmap.mesh_path
         ):
-            parts.append("CAD-Pfad weicht bewusst von der Roadmap ab")
-        parts.append("Entwurf speicherbar; Mehrposen-Ausführung noch nicht freigegeben")
+            parts.append("CAD path intentionally differs from the roadmap")
+        parts.append("Draft can be saved; multi-pose execution is not enabled yet")
         self.readiness.setText("<br>".join(f"• {part}" for part in parts))
 
     def _reachable_starts(self, available_edge_ids: set[str]) -> list[int]:
@@ -409,16 +410,16 @@ class RoadmapSetupDialog(QDialog):
 
     def accept(self) -> None:
         if self.roadmap is None:
-            QMessageBox.warning(self, "Konfiguration", "Bitte zuerst eine Roadmap auswählen.")
+            QMessageBox.warning(self, "Configuration", "Please select a roadmap first.")
             return
         values = [spin.value() for spin in self.class_inputs.values()]
         if any(value < 0 for value in values) or len(set(values)) != len(values):
             QMessageBox.warning(
-                self, "Konfiguration", "Jede robuste Pose benötigt eine eindeutige Modellklasse."
+                self, "Configuration", "Every robust pose requires a unique model class."
             )
             return
         if self.target_pose_id is None:
-            QMessageBox.warning(self, "Konfiguration", "Bitte eine robuste Zielpose auswählen.")
+            QMessageBox.warning(self, "Configuration", "Please select a robust target pose.")
             return
         super().accept()
 
@@ -431,7 +432,7 @@ class RoadmapSetupDialog(QDialog):
             else f"{self.name.text().strip() or self.roadmap.part_name}.yaml"
         )
         target, _ = QFileDialog.getSaveFileName(
-            self, "Roadmap-Konfiguration speichern", suggested, "YAML (*.yaml *.yml)"
+            self, "Save roadmap configuration", suggested, "YAML (*.yaml *.yml)"
         )
         if not target:
             return None

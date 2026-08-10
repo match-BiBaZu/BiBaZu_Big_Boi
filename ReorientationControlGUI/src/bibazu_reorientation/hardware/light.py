@@ -52,7 +52,7 @@ class LightAdapter(DeviceAdapter):
             self.status.values_are_confirmed_commands = False
             self.status_changed.emit(self.status)
             self._light = None
-            self._emit_error("Bluetooth-Verbindung zum Panel wurde unterbrochen")
+            self._emit_error("Bluetooth connection to the panel was interrupted")
 
     def connect_device(self) -> None:
         if self._task and not self._task.done():
@@ -65,7 +65,7 @@ class LightAdapter(DeviceAdapter):
         await self._connect()
 
     async def _connect(self) -> None:
-        self._set_state(ConnectionState.CONNECTING, "Bluetooth-Verbindung")
+        self._set_state(ConnectionState.CONNECTING, "Bluetooth connection")
         try:
             from neewerlite import NeewerLight, NeewerScanner
 
@@ -83,8 +83,8 @@ class LightAdapter(DeviceAdapter):
             ]
             if not candidates:
                 raise RuntimeError(
-                    "Keine passende RGB660/NEEWER-Leuchte gefunden. Panel einschalten, "
-                    "Bluetooth-Symbol aktivieren und die Smartphone-App trennen."
+                    "No matching RGB660/NEEWER light found. Turn on the panel, enable "
+                    "its Bluetooth icon, and disconnect the smartphone app."
                 )
             device = sorted(
                 candidates,
@@ -94,8 +94,8 @@ class LightAdapter(DeviceAdapter):
             self.address = str(device.address)
             device_name = str(_attribute(device, "name", ""))
             profile_name = "RGB660" if "660" in device_name.upper() else self.name
-            # Unter Windows muss das beim Scan erhaltene BLEDevice weitergegeben werden.
-            # Nur die Adresse reicht bei zufälligen WinRT-Adressen häufig nicht aus.
+            # On Windows the BLEDevice returned by discovery must be passed through.
+            # The address alone is often insufficient with randomized WinRT addresses.
             self._light = NeewerLight(device, name=profile_name)
             await self._light.connect()
             self.status.address = self.address
@@ -121,7 +121,7 @@ class LightAdapter(DeviceAdapter):
 
     async def _command(self, command: str, *args: Any) -> None:
         if self._light is None:
-            self._emit_error("Leuchte ist nicht verbunden")
+            self._emit_error("Light is not connected")
             return
         try:
             if command == "CCT":

@@ -3,6 +3,8 @@
 Supervised v1 control for one part per cycle. A Baumer image is evaluated by a
 two-class YOLO Detect or OBB model. Pose 1 or Pose 2 can be selected as target;
 the other pose applies the configured directed PressureControl transition profile.
+All operator-facing labels, dialogs, status messages, and validation errors in the
+application are in English.
 
 ## Installation and start
 
@@ -28,7 +30,7 @@ The first start uses camera IP `169.254.117.70`, ADS target
 Device settings are stored with `QSettings` under
 `LeibnizUniversitaetHannover/BiBaZuReorientationControl`.
 
-Use **Konfiguration → Neue Bauteilkonfiguration …** to select a pose roadmap first.
+Use **Configuration → New part configuration (roadmap) …** to select a pose roadmap first.
 The dialog accepts the handover YAML (`part`, `poses`, `transitions`) and the
 internal JSON export (`source`, `nodes`, `edges`). It derives the part/CAD data,
 robust poses and directed transitions, then asks for the `.pt` model, explicit
@@ -40,9 +42,9 @@ baseline read. Selecting a YAML or profile never writes to the PLC.
 ### Bauteil, YOLO-Modell und Pressure-Profil auswählen
 
 In der Anwendung gibt es dafür zwei gleichwertige Wege: die Schaltflächen oberhalb
-des Kamerabildes oder das Menü **Konfiguration**.
+des Kamerabildes oder das Menü **Configuration**.
 
-1. **Neue Bauteilkonfiguration …** beginnt mit einer Roadmap in YAML oder JSON.
+1. **New part configuration (roadmap) …** beginnt mit einer Roadmap in YAML oder JSON.
 2. Name und CAD-Pfad werden übernommen, bleiben aber editierbar. Nur robuste
    Posen erhalten eine explizite, eindeutige YOLO-Klassen-ID und sind als Ziel
    auswählbar.
@@ -53,21 +55,21 @@ des Kamerabildes oder das Menü **Konfiguration**.
    Profile, erreichbare Startposen, Mapping- und Hashstatus sowie Abweichungen bei
    Name/CAD-Pfad.
 5. Beim Laden wird der SHA-256 der Roadmap geprüft. Nach einer Änderung muss
-   **Roadmap neu übernehmen** bestätigt werden; nur identische Pose- und Kanten-IDs
+   **Re-import roadmap** bestätigt werden; nur identische Pose- und Kanten-IDs
    behalten ihre Zuordnungen.
 6. Schema-v1-Zwei-Posen-Dateien bleiben unverändert ladbar und ausführbar. Neue
    Roadmap-Dateien verwenden Schema v2 und sind absichtlich nur Konfiguration:
-   **Zyklus starten** bleibt mit „Mehrposen-Ausführung noch nicht freigegeben“
+   **Start cycle** bleibt mit „Multi-pose execution not enabled yet“
    gesperrt, und es erfolgen keine PLC-Schreibzugriffe.
 
-Mit **Konfiguration bearbeiten** wird die aktuell geladene YAML vollständig
+Mit **Edit configuration** wird die aktuell geladene YAML vollständig
 vorausgefüllt geöffnet. Sie kann am bisherigen Ort überschrieben oder im
 Speicherdialog unter einem neuen Namen abgelegt werden. Während eines laufenden
 Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
 
 ### Hardware einstellen
 
-Unter **Konfiguration → Hardware-Einstellungen …** können Kamera-IP/-Seriennummer,
+Unter **Configuration → Hardware settings …** können Kamera-IP/-Seriennummer,
 Baumer-CTI, SPS-IP/AMS-Net-ID/ADS-Port und beide Neewer-BLE-Adressen geändert werden.
 Die Kamera-Vorschau ist dort auf 1–60 FPS begrenzbar (Standard: 15 FPS); niedrigere
 Werte reduzieren die GUI-Last bei hochauflösenden Kamerabildern.

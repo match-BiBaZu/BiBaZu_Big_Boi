@@ -28,7 +28,7 @@ def load_mesh_triangles(path: Path) -> np.ndarray:
                 vertices.append([float(value) for value in fields[1:]])
         if len(vertices) and len(vertices) % 3 == 0:
             return np.asarray(vertices, dtype=np.float64).reshape(-1, 3, 3)
-        raise ValueError(f"STL enthält keine lesbaren Dreiecke: {source}")
+        raise ValueError(f"STL does not contain readable triangles: {source}")
 
     if source.suffix.lower() == ".obj":
         vertices = []
@@ -43,9 +43,9 @@ def load_mesh_triangles(path: Path) -> np.ndarray:
                     faces.append((indices[0], indices[index], indices[index + 1]))
         if vertices and faces:
             return np.asarray(vertices, dtype=np.float64)[np.asarray(faces)]
-        raise ValueError(f"OBJ enthält keine lesbaren Dreiecke: {source}")
+        raise ValueError(f"OBJ does not contain readable triangles: {source}")
 
-    raise ValueError(f"Nicht unterstütztes 3D-Format: {source.suffix}")
+    raise ValueError(f"Unsupported 3D format: {source.suffix}")
 
 
 def _quaternion_matrix(
@@ -67,7 +67,7 @@ def render_mesh_preview(
     width: int = 250,
     height: int = 175,
     quaternion_xyzw: tuple[float, float, float, float] | None = None,
-    caption: str = "Zielorientierung · Modellansicht",
+    caption: str = "Target orientation · model view",
 ) -> QPixmap:
     triangles = load_mesh_triangles(path)
     points = triangles.reshape(-1, 3)

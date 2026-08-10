@@ -23,26 +23,26 @@ def _boolean(value: Any, field: str, fallback: bool) -> bool:
     if value is None:
         return fallback
     if not isinstance(value, bool):
-        raise ValueError(f"{field} muss boolesch sein")
+        raise ValueError(f"{field} must be boolean")
     return value
 
 
 def _number(value: Any, field: str, minimum: float, maximum: float) -> float:
     if isinstance(value, bool):
-        raise ValueError(f"{field} muss eine Zahl sein")
+        raise ValueError(f"{field} must be a number")
     try:
         result = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} muss eine Zahl sein") from exc
+        raise ValueError(f"{field} must be a number") from exc
     if not math.isfinite(result) or not minimum <= result <= maximum:
-        raise ValueError(f"{field} muss zwischen {minimum:g} und {maximum:g} liegen")
+        raise ValueError(f"{field} must be between {minimum:g} and {maximum:g}")
     return result
 
 
 def _integer(value: Any, field: str, minimum: int, maximum: int) -> int:
     result = _number(value, field, minimum, maximum)
     if result != int(result):
-        raise ValueError(f"{field} muss ganzzahlig sein")
+        raise ValueError(f"{field} must be an integer")
     return int(result)
 
 
@@ -54,7 +54,7 @@ def _bool_list(value: Any, field: str, length: int, fallback: tuple[bool, ...]) 
         or len(value) != length
         or not all(isinstance(item, bool) for item in value)
     ):
-        raise ValueError(f"{field} muss {length} boolesche Werte enthalten")
+        raise ValueError(f"{field} must contain {length} boolean values")
     return tuple(value)
 
 
@@ -67,7 +67,7 @@ def _float_list(
     if value is None:
         return tuple(fallback)
     if not isinstance(value, list) or len(value) != length:
-        raise ValueError(f"{field} muss {length} Werte enthalten")
+        raise ValueError(f"{field} must contain {length} values")
     return tuple(
         _number(item, f"{field}[{index}]", 0.0, 1000.0) for index, item in enumerate(value)
     )
@@ -81,21 +81,21 @@ def _array_from_item(item: dict[str, Any], index_override: int | None = None) ->
     index = index_override or _integer(item.get("index"), "array.index", 1, ARRAY_COUNT)
     enabled = item.get("enabled", False)
     if not isinstance(enabled, bool):
-        raise ValueError(f"Array {index}: enabled muss boolesch sein")
+        raise ValueError(f"Array {index}: enabled must be boolean")
     nozzles_raw = item.get("nozzles_enabled")
     if nozzles_raw is not None:
         if not isinstance(nozzles_raw, list) or not all(
             isinstance(value, bool) for value in nozzles_raw
         ):
-            raise ValueError(f"Array {index}: nozzles_enabled muss eine boolesche Liste sein")
+            raise ValueError(f"Array {index}: nozzles_enabled must be a boolean list")
         if len(nozzles_raw) > NOZZLES_PER_ARRAY:
-            raise ValueError(f"Array {index}: höchstens sechs Düsen sind erlaubt")
+            raise ValueError(f"Array {index}: no more than six nozzles are allowed")
         nozzles = tuple([*nozzles_raw, *([False] * (NOZZLES_PER_ARRAY - len(nozzles_raw)))])
     else:
         specific = [item.get(f"nozzle_{number}_enabled") for number in range(1, 7)]
         present = [value for value in specific if value is not None]
         if present and not all(isinstance(value, bool) for value in present):
-            raise ValueError(f"Array {index}: Düsenflags müssen boolesch sein")
+            raise ValueError(f"Array {index}: nozzle flags must be boolean")
         nozzles = tuple(bool(value) if value is not None else False for value in specific)
         if not present:
             nozzles = (enabled, enabled, False, False, False, False)
@@ -114,13 +114,13 @@ def _array_from_item(item: dict[str, Any], index_override: int | None = None) ->
 
 def _normalize_arrays(value: Any) -> tuple[ArrayProfile, ArrayProfile, ArrayProfile, ArrayProfile]:
     if not isinstance(value, list):
-        raise ValueError("arrays muss eine Liste sein")
+        raise ValueError("arrays must be a list")
     normalized: dict[int, ArrayProfile] = {}
     if len(value) > ARRAY_COUNT:
         legacy: dict[int, dict[str, Any]] = {}
         for item in value:
             if not isinstance(item, dict):
-                raise ValueError("Jeder Array-Eintrag muss ein Objekt sein")
+                raise ValueError("Every array entry must be an object")
             legacy[_integer(item.get("index"), "legacy array.index", 1, 100)] = item
         for row_index in range(1, ARRAY_COUNT + 1):
             first = (row_index - 1) * 2 + 1
@@ -141,10 +141,10 @@ def _normalize_arrays(value: Any) -> tuple[ArrayProfile, ArrayProfile, ArrayProf
     else:
         for item in value:
             if not isinstance(item, dict):
-                raise ValueError("Jeder Array-Eintrag muss ein Objekt sein")
+                raise ValueError("Every array entry must be an object")
             array = _array_from_item(item)
             if array.index in normalized:
-                raise ValueError(f"Doppelter Array-Index: {array.index}")
+                raise ValueError(f"Duplicate array index: {array.index}")
             normalized[array.index] = array
     return tuple(normalized.get(index, _default_array(index)) for index in range(1, 5))  # type: ignore[return-value]
 
@@ -160,9 +160,9 @@ def load_pressure_profile(
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Ungültiges Profil-JSON: {exc}") from exc
+        raise ValueError(f"Invalid profile JSON: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("Das Pressure-Profil muss ein JSON-Objekt enthalten")
+        raise ValueError("The pressure profile must contain a JSON object")
     version = _integer(payload.get("version", 1), "version", 1, PROFILE_VERSION_MAX)
     baseline = baseline or PressureBaseline()
 
@@ -170,7 +170,7 @@ def load_pressure_profile(
     if calibration_raw is None:
         calibration = baseline.conveyor_calibration
     elif not isinstance(calibration_raw, dict):
-        raise ValueError("conveyor_calibration muss ein Objekt sein")
+        raise ValueError("conveyor_calibration must be an object")
     else:
         calibration = ConveyorCalibration(
             marker_distance_mm=_number(
@@ -252,15 +252,15 @@ def load_pressure_profile(
     )
     if require_transition:
         if not profile.conveyor_enabled:
-            raise ValueError("Das Übergangsprofil muss das Förderband aktivieren")
+            raise ValueError("The transition profile must enable the conveyor")
         if profile.conveyor_reverse:
-            raise ValueError("V1 unterstützt keine Rückwärtsfahrt")
+            raise ValueError("V1 does not support reverse conveyor motion")
         if profile.conveyor_speed_mm_per_sec <= 0:
-            raise ValueError("Das Übergangsprofil benötigt eine positive Förderbandgeschwindigkeit")
+            raise ValueError("The transition profile requires a positive conveyor speed")
         if not profile.conveyor_calibration.valid:
-            raise ValueError("Eine gültige Förderbandkalibrierung ist erforderlich")
+            raise ValueError("A valid conveyor calibration is required")
         if profile.active_array_mask == 0:
-            raise ValueError("Das Profil 2 → 1 muss mindestens ein Düsenarray aktivieren")
+            raise ValueError("The transition profile must activate at least one nozzle array")
     return profile
 
 

@@ -108,7 +108,7 @@ def test_rejects_metastable_roadmap_target(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="nicht als stabil"):
+    with pytest.raises(ValueError, match="not catalogued as stable"):
         save_part_definition(
             tmp_path / "part.yaml",
             part_name="Df1a",
@@ -136,5 +136,5 @@ transitions:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="Klasse 0"):
+    with pytest.raises(ValueError, match="Class 0"):
         load_part_definition(source)

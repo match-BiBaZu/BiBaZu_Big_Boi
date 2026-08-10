@@ -72,7 +72,7 @@ class ReorientationController(QObject):
 
     def set_configuration(self, part: PartDefinition, profile: PressureProfile) -> None:
         if self.state not in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
-            raise RuntimeError("Konfiguration kann während eines Zyklus nicht gewechselt werden")
+            raise RuntimeError("The configuration cannot be changed during a cycle")
         self.part, self.profile = part, profile
         TransitionResolver(part).plan(3 - part.target_pose, part.target_pose)
         self._refresh_preflight()
@@ -120,19 +120,19 @@ class ReorientationController(QObject):
         p = self.profile
         s = self.snapshot
         return {
-            "Konfiguration und Profil gültig": self.part is not None and p is not None,
-            "YOLO-Modell aufgewärmt": self.model_ready,
-            "Frisches Kamerabild": self.camera_fresh,
-            "SPS verbunden": s.connected,
-            "Förderband steht": s.conveyor_motion_state == 0 and not s.stepper_busy,
-            "Kalibrierung gültig": s.calibration_valid,
-            "Arrays idle / Ventile geschlossen": s.array_states == (2, 2, 2, 2)
+            "Configuration and profile valid": self.part is not None and p is not None,
+            "YOLO model warmed up": self.model_ready,
+            "Fresh camera frame": self.camera_fresh,
+            "PLC connected": s.connected,
+            "Conveyor stopped": s.conveyor_motion_state == 0 and not s.stepper_busy,
+            "Calibration valid": s.calibration_valid,
+            "Arrays idle / valves closed": s.array_states == (2, 2, 2, 2)
             and s.pending_mask == 0
             and s.open_valve_mask == 0,
-            "Antrieb und VTEM fehlerfrei": not s.stepper_error and s.vtem_error_codes == (0, 0),
-            "Lichtschranken frei": self._barriers_clear_long_enough(),
-            "Beide Leuchten bestätigt": all(self.lights_ready),
-            "UR-Winkel quittiert": p is None
+            "Drive and VTEM fault-free": not s.stepper_error and s.vtem_error_codes == (0, 0),
+            "Light barriers clear": self._barriers_clear_long_enough(),
+            "Both lights confirmed": all(self.lights_ready),
+            "UR angle acknowledged": p is None
             or p.ur_ry_angle_deg is None
             or self.ur_applied == p.ur_ry_angle_deg,
         }
@@ -145,7 +145,7 @@ class ReorientationController(QObject):
 
     def start_cycle(self) -> None:
         if self.state != CycleState.READY:
-            raise RuntimeError("Preflight ist nicht vollständig")
+            raise RuntimeError("Preflight is incomplete")
         self._cycle_id = f"{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
         self._started_at = datetime.now(UTC)
         self._finalizing = False
@@ -158,7 +158,7 @@ class ReorientationController(QObject):
 
     def prepare_next_cycle(self) -> None:
         if self.state not in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}:
-            raise RuntimeError("Der aktuelle Zyklus ist noch nicht beendet")
+            raise RuntimeError("The current cycle has not finished yet")
         self._started_at = None
         self._cycle_id = ""
         self._session = None
@@ -188,9 +188,7 @@ class ReorientationController(QObject):
             self._session = self.journal.begin(self._cycle_id, self.part, self.profile)
             self.journal.save_decision_image(self._session, frame.image)
         except Exception as exc:
-            self._fault(
-                "fault_logging", f"Entscheidungsbild konnte nicht gespeichert werden: {exc}"
-            )
+            self._fault("fault_logging", f"Decision image could not be saved: {exc}")
             return
         self._plan = build_write_plan(
             self.profile, actuate=decision.pose_id != self.part.target_pose
@@ -252,7 +250,7 @@ class ReorientationController(QObject):
             self._refresh_preflight()
             return
         if snapshot.reorientation_fault_code:
-            self._fault(f"plc_{snapshot.reorientation_fault_code}", "SPS-Reorientierungsfehler")
+            self._fault(f"plc_{snapshot.reorientation_fault_code}", "PLC reorientation fault")
         elif self.state == CycleState.RUNNING and snapshot.exit_seen:
             self._exit_at = datetime.now(UTC)
             self._set_state(CycleState.DRAINING)
@@ -277,7 +275,7 @@ class ReorientationController(QObject):
             CycleState.ABORTED,
             CycleState.FAULT,
         }:
-            self._fault("ads_disconnect", detail or "ADS-Verbindung verloren")
+            self._fault("ads_disconnect", detail or "ADS connection lost")
 
     def _send_heartbeat(self) -> None:
         self._heartbeat = (self._heartbeat + 1) & 0xFFFFFFFF
@@ -287,7 +285,7 @@ class ReorientationController(QObject):
         if self.state not in {CycleState.READY, CycleState.OFFLINE, CycleState.NO_CONFIG}:
             if self.state == CycleState.DETECTING:
                 self._terminal_state = CycleState.ABORTED
-                self._finish(CycleState.ABORTED, "manual_stop", "Vor Aktuierung abgebrochen")
+                self._finish(CycleState.ABORTED, "manual_stop", "Aborted before actuation")
                 return
             if self._finalizing:
                 return

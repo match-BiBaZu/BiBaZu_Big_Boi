@@ -98,31 +98,31 @@ StablePoseRoadmap = PoseRoadmap
 
 def _required_mapping(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ValueError(f"{label} muss ein Objekt sein")
+        raise ValueError(f"{label} must be an object")
     return value
 
 
 def _required_list(value: Any, label: str) -> list[Any]:
     if not isinstance(value, list):
-        raise ValueError(f"{label} muss eine Liste sein")
+        raise ValueError(f"{label} must be a list")
     return value
 
 
 def _finite(value: Any, label: str) -> float:
     result = float(value)
     if not math.isfinite(result):
-        raise ValueError(f"{label} muss endlich sein")
+        raise ValueError(f"{label} must be finite")
     return result
 
 
 def _quaternion(value: Any, label: str) -> tuple[float, float, float, float]:
     values = _required_list(value, label)
     if len(values) != 4:
-        raise ValueError(f"{label} muss genau vier Werte enthalten")
+        raise ValueError(f"{label} must contain exactly four values")
     quaternion = tuple(_finite(item, label) for item in values)
     norm = math.sqrt(sum(item * item for item in quaternion))
     if norm < 1e-9 or abs(norm - 1.0) > 1e-3:
-        raise ValueError(f"{label} ist kein normiertes Quaternion")
+        raise ValueError(f"{label} is not a normalized quaternion")
     return quaternion  # type: ignore[return-value]
 
 
@@ -146,15 +146,15 @@ def _mesh_path(source: Path, value: Any) -> Path | None:
 
 def _normalize_json(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
     if int(payload.get("schema_version", 0)) != 1:
-        raise ValueError("Unbekannte Roadmap-Schemaversion")
+        raise ValueError("Unknown roadmap schema version")
     raw_nodes = _required_list(payload.get("nodes"), "nodes")
     poses: list[RoadmapPose] = []
     for raw in raw_nodes:
-        node = _required_mapping(raw, "Roadmap-Knoten")
+        node = _required_mapping(raw, "Roadmap node")
         pose_id = int(node["node_id"])
         stability = str(node.get("kind", ""))
         if stability not in ALLOWED_STABILITIES:
-            raise ValueError(f"Pose {pose_id} hat unbekannte Stabilität '{stability}'")
+            raise ValueError(f"Pose {pose_id} has unknown stability '{stability}'")
         equivalents = tuple(
             int(item)
             for item in _required_list(node.get("pose_ids", [pose_id]), f"Pose {pose_id}.pose_ids")
@@ -167,14 +167,14 @@ def _normalize_json(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
                 quaternion_xyzw=_quaternion(
                     node.get("representative_quaternion_xyzw"), f"Pose {pose_id}.quaternion"
                 ),
-                floor_contact=str(node.get("floor_contact_topology", "unbekannt")),
-                wall_contact=str(node.get("wall_contact_topology", "unbekannt")),
+                floor_contact=str(node.get("floor_contact_topology", "unknown")),
+                wall_contact=str(node.get("wall_contact_topology", "unknown")),
                 rocking_barrier_mm=(
                     None
                     if node.get("rocking_barrier_mm") is None
                     else _finite(node["rocking_barrier_mm"], f"Pose {pose_id}.rocking_barrier_mm")
                 ),
-                cad_status=str(node.get("cad_status", payload.get("geometry_status", "unbekannt"))),
+                cad_status=str(node.get("cad_status", payload.get("geometry_status", "unknown"))),
                 thumbnail_png=_decode_thumbnail(node.get("thumbnail_png_base64")),
             )
         )
@@ -187,14 +187,14 @@ def _normalize_json(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
         "internal_json",
         part_name,
         mesh,
-        str(payload.get("geometry_status", "unbekannt")),
+        str(payload.get("geometry_status", "unknown")),
         poses,
         transitions,
     )
 
 
 def _json_edge(raw: Any) -> RoadmapTransition:
-    edge = _required_mapping(raw, "Roadmap-Kante")
+    edge = _required_mapping(raw, "Roadmap edge")
     return RoadmapTransition(
         edge_id=str(edge.get("edge_id", "")).strip(),
         from_pose=int(edge["source"]),
@@ -214,17 +214,17 @@ def _json_edge(raw: Any) -> RoadmapTransition:
 
 def _normalize_handover(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
     if payload.get("format") != "bibazu_pose_roadmap_handover":
-        raise ValueError("Unbekanntes Roadmap-Format")
+        raise ValueError("Unknown roadmap format")
     if int(payload.get("schema_version", 0)) != 1:
-        raise ValueError("Unbekannte Roadmap-Schemaversion")
+        raise ValueError("Unknown roadmap schema version")
     part = _required_mapping(payload.get("part"), "part")
     poses: list[RoadmapPose] = []
     for raw in _required_list(payload.get("poses"), "poses"):
-        item = _required_mapping(raw, "Roadmap-Pose")
+        item = _required_mapping(raw, "Roadmap pose")
         pose_id = int(item["id"])
         stability = str(item.get("stability", ""))
         if stability not in ALLOWED_STABILITIES:
-            raise ValueError(f"Pose {pose_id} hat unbekannte Stabilität '{stability}'")
+            raise ValueError(f"Pose {pose_id} has unknown stability '{stability}'")
         contacts = item.get("contacts", {})
         contacts = contacts if isinstance(contacts, dict) else {}
         poses.append(
@@ -241,12 +241,12 @@ def _normalize_handover(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
                 quaternion_xyzw=_quaternion(
                     item.get("orientation_quaternion_xyzw"), f"Pose {pose_id}.quaternion"
                 ),
-                floor_contact=str(contacts.get("floor", "unbekannt")),
-                wall_contact=str(contacts.get("wall", "unbekannt")),
+                floor_contact=str(contacts.get("floor", "unknown")),
+                wall_contact=str(contacts.get("wall", "unknown")),
                 rocking_barrier_mm=None
                 if item.get("rocking_barrier_mm") is None
                 else _finite(item["rocking_barrier_mm"], f"Pose {pose_id}.rocking_barrier_mm"),
-                cad_status=str(item.get("cad_status", part.get("cad_status", "unbekannt"))),
+                cad_status=str(item.get("cad_status", part.get("cad_status", "unknown"))),
             )
         )
     transitions = tuple(
@@ -257,7 +257,7 @@ def _normalize_handover(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
         str(payload["format"]),
         str(part.get("name", "")).strip(),
         _mesh_path(source, part.get("mesh_source")),
-        str(part.get("cad_status", "unbekannt")),
+        str(part.get("cad_status", "unknown")),
         poses,
         transitions,
     )
@@ -265,7 +265,7 @@ def _normalize_handover(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
 
 
 def _handover_edge(raw: Any) -> RoadmapTransition:
-    edge = _required_mapping(raw, "Roadmap-Kante")
+    edge = _required_mapping(raw, "Roadmap edge")
     action = edge.get("action", {})
     action = action if isinstance(action, dict) else {}
     geometry = edge.get("geometry", {})
@@ -299,25 +299,25 @@ def _build(
     transitions: tuple[RoadmapTransition, ...],
 ) -> PoseRoadmap:
     if not part_name:
-        raise ValueError("Die Roadmap enthält keinen Bauteilnamen")
+        raise ValueError("The roadmap does not contain a part name")
     pose_ids = [pose.pose_id for pose in poses]
     if len(set(pose_ids)) != len(pose_ids):
-        raise ValueError("Die Roadmap enthält doppelte Pose-IDs")
+        raise ValueError("The roadmap contains duplicate pose IDs")
     if not any(pose.is_robust for pose in poses):
-        raise ValueError("Die Roadmap enthält keine robusten Posen")
+        raise ValueError("The roadmap does not contain any robust poses")
     edge_ids = [edge.edge_id for edge in transitions]
     if any(not edge_id for edge_id in edge_ids) or len(set(edge_ids)) != len(edge_ids):
-        raise ValueError("Die Roadmap enthält leere oder doppelte Kanten-IDs")
+        raise ValueError("The roadmap contains empty or duplicate edge IDs")
     known = set(pose_ids)
     for edge in transitions:
         if edge.from_pose not in known or edge.to_pose not in known:
-            raise ValueError(f"Kante {edge.edge_id} verweist auf eine unbekannte Pose")
+            raise ValueError(f"Edge {edge.edge_id} references an unknown pose")
         if not edge.directed:
-            raise ValueError(f"Kante {edge.edge_id} ist nicht gerichtet")
+            raise ValueError(f"Edge {edge.edge_id} is not directed")
         if edge.transition_kind not in ALLOWED_TRANSITION_KINDS:
-            raise ValueError(f"Kante {edge.edge_id} hat unbekannten Typ '{edge.transition_kind}'")
+            raise ValueError(f"Edge {edge.edge_id} has unknown type '{edge.transition_kind}'")
     if mesh is not None and not mesh.is_file():
-        raise ValueError(f"CAD-Datei nicht gefunden: {mesh}")
+        raise ValueError(f"CAD file not found: {mesh}")
     return PoseRoadmap(
         path=source,
         sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -355,9 +355,9 @@ def _enrich_thumbnails(roadmap: PoseRoadmap) -> PoseRoadmap:
 def load_pose_roadmap(path: str | Path, *, enrich_thumbnails: bool = True) -> PoseRoadmap:
     source = Path(path).expanduser().resolve()
     if source.suffix.lower() not in {".yaml", ".yml", ".json"}:
-        raise ValueError("Roadmap muss eine .yaml-, .yml- oder .json-Datei sein")
+        raise ValueError("Roadmap must be a .yaml, .yml, or .json file")
     if not source.is_file():
-        raise ValueError(f"Posenroadmap nicht gefunden: {source}")
+        raise ValueError(f"Pose roadmap not found: {source}")
     try:
         payload = (
             json.loads(source.read_text(encoding="utf-8"))
@@ -365,7 +365,7 @@ def load_pose_roadmap(path: str | Path, *, enrich_thumbnails: bool = True) -> Po
             else yaml.safe_load(source.read_text(encoding="utf-8"))
         )
     except (json.JSONDecodeError, yaml.YAMLError) as exc:
-        raise ValueError(f"Ungültige Roadmap: {exc}") from exc
+        raise ValueError(f"Invalid roadmap: {exc}") from exc
     payload = _required_mapping(payload, "Roadmap")
     if "nodes" in payload or "edges" in payload:
         return _normalize_json(source, payload)
@@ -415,11 +415,11 @@ def load_stable_pose_roadmap(path: str | Path) -> PoseRoadmap:
                     equivalent_pose_ids=tuple(int(value) for value in equivalents),
                     stability="robust",
                     quaternion_xyzw=(0.0, 0.0, 0.0, 1.0),
-                    floor_contact=str(raw.get("floor_contact_topology", "unbekannt")),
-                    wall_contact=str(raw.get("wall_contact_topology", "unbekannt")),
+                    floor_contact=str(raw.get("floor_contact_topology", "unknown")),
+                    wall_contact=str(raw.get("wall_contact_topology", "unknown")),
                     rocking_barrier_mm=None,
                     cad_status=str(
-                        raw.get("cad_status", payload.get("geometry_status", "unbekannt"))
+                        raw.get("cad_status", payload.get("geometry_status", "unknown"))
                     ),
                     thumbnail_png=_decode_thumbnail(raw.get("thumbnail_png_base64")),
                 )
@@ -435,7 +435,7 @@ def load_stable_pose_roadmap(path: str | Path) -> PoseRoadmap:
             schema_version=1,
             part_name=Path(str(mesh_value or source.stem.replace("_roadmap", ""))).stem,
             mesh_path=mesh,
-            cad_status=str(payload.get("geometry_status", "unbekannt")),
+            cad_status=str(payload.get("geometry_status", "unknown")),
             poses=tuple(sorted(poses, key=lambda pose: pose.pose_id)),
             transitions=(),
         )

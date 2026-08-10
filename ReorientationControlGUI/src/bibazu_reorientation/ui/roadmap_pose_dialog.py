@@ -25,7 +25,7 @@ class RoadmapPoseDialog(QDialog):
         super().__init__(parent)
         self.roadmap = roadmap
         self.selected_pose: StableRoadmapPose | None = None
-        self.setWindowTitle(f"Stabile Zielpose auswählen · {roadmap.part_name}")
+        self.setWindowTitle(f"Select stable target pose · {roadmap.part_name}")
         self.setModal(True)
         self.resize(920, 650)
         self._build_ui()
@@ -33,16 +33,16 @@ class RoadmapPoseDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         title = QLabel(
-            f"<b>{self.roadmap.part_name}</b> · stabile Roadmap-Posen · "
-            f"CAD-Status: {self.roadmap.cad_status}"
+            f"<b>{self.roadmap.part_name}</b> · stable roadmap poses · "
+            f"CAD status: {self.roadmap.cad_status}"
         )
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 17px; padding: 8px;")
         layout.addWidget(title)
 
         hint = QLabel(
-            "Eine Pose anklicken, um sie als physische Zielpose der aktuell "
-            "gewählten YOLO-Zielklasse zu übernehmen."
+            "Click a pose to use it as the physical target pose for the currently "
+            "selected YOLO target class."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(
@@ -62,7 +62,7 @@ class RoadmapPoseDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch(1)
-        close_button = QPushButton("Schließen")
+        close_button = QPushButton("Close")
         close_button.clicked.connect(self.reject)
         footer.addWidget(close_button)
         layout.addLayout(footer)
@@ -99,10 +99,10 @@ class RoadmapPoseDialog(QDialog):
                 )
             )
         equivalent_ids = "/".join(str(value) for value in pose.equivalent_pose_ids)
-        preview_note = "" if not pixmap.isNull() else "\n(kein Vorschaubild)"
+        preview_note = "" if not pixmap.isNull() else "\n(no preview image)"
         button.setText(f"Pose {pose.pose_id}\nIDs: {equivalent_ids}{preview_note}")
         button.setToolTip(
-            f"Boden: {pose.floor_contact}; Wand: {pose.wall_contact}\nKlicken zum Übernehmen"
+            f"Floor: {pose.floor_contact}; wall: {pose.wall_contact}\nClick to select"
         )
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setStyleSheet(

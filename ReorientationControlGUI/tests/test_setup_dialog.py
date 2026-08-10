@@ -29,7 +29,7 @@ def test_edit_dialog_is_prefilled_and_updates_transition(qtbot, tmp_path: Path) 
 
     dialog = SetupDialog(definition=definition)
     qtbot.addWidget(dialog)
-    assert dialog.windowTitle() == "Bauteilkonfiguration bearbeiten"
+    assert dialog.windowTitle() == "Edit part configuration"
     assert dialog.name.text() == "Teil A"
     assert dialog.model.text() == str(model)
     assert dialog.mesh.text() == str(mesh)
@@ -69,5 +69,5 @@ def test_roadmap_pose_picker_updates_physical_target(qtbot, tmp_path: Path) -> N
 
     assert dialog._roadmap_path == roadmap_path
     assert dialog._target_roadmap_pose_id == 15
-    assert "Roadmap-Pose 15" in dialog.roadmap_pose_label.text()
-    assert "YOLO-Zielklasse Pose 1" in dialog.roadmap_pose_label.text()
+    assert "Roadmap pose 15" in dialog.roadmap_pose_label.text()
+    assert "YOLO target class Pose 1" in dialog.roadmap_pose_label.text()

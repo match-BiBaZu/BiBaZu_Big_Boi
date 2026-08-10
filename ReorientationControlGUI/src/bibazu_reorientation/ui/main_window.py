@@ -51,8 +51,8 @@ class LightPanel(QGroupBox):
     def __init__(self, adapter: LightAdapter) -> None:
         super().__init__(adapter.name)
         self.adapter = adapter
-        self.status = QLabel("Getrennt")
-        self.confirm = QCheckBox("Einstellungen für diesen Zyklus bestätigt")
+        self.status = QLabel("Disconnected")
+        self.confirm = QCheckBox("Settings confirmed for this cycle")
         self.brightness = QSlider(Qt.Orientation.Horizontal)
         self.brightness.setRange(0, 100)
         self.brightness.setValue(50)
@@ -64,13 +64,13 @@ class LightPanel(QGroupBox):
         self.saturation = QSlider(Qt.Orientation.Horizontal)
         self.saturation.setRange(0, 100)
         self.saturation.setValue(100)
-        apply = QPushButton("CCT anwenden")
+        apply = QPushButton("Apply CCT")
         apply.clicked.connect(lambda: adapter.set_cct(self.brightness.value(), self.cct.value()))
-        power_on = QPushButton("Licht an")
+        power_on = QPushButton("Light on")
         power_on.clicked.connect(lambda: adapter.set_power(True))
-        power_off = QPushButton("Licht aus")
+        power_off = QPushButton("Light off")
         power_off.clicked.connect(lambda: adapter.set_power(False))
-        hsi = QPushButton("HSI anwenden")
+        hsi = QPushButton("Apply HSI")
         hsi.clicked.connect(
             lambda: adapter.set_hsi(
                 self.brightness.value(), self.hue.value(), self.saturation.value()
@@ -78,10 +78,10 @@ class LightPanel(QGroupBox):
         )
         form = QFormLayout(self)
         form.addRow("Status", self.status)
-        form.addRow("Helligkeit", self.brightness)
+        form.addRow("Brightness", self.brightness)
         form.addRow("CCT", self.cct)
-        form.addRow("Farbton", self.hue)
-        form.addRow("Sättigung", self.saturation)
+        form.addRow("Hue", self.hue)
+        form.addRow("Saturation", self.saturation)
         form.addRow(apply, power_on)
         form.addRow(power_off)
         form.addRow(hsi)
@@ -99,9 +99,9 @@ class MainWindow(QMainWindow):
         self.resize(1450, 900)
         self.pressure = PressureAdapter(settings)
         self.camera = CameraAdapter(settings)
-        self.light1 = LightAdapter("Neewer-Leuchte 1", settings.light_1_address)
+        self.light1 = LightAdapter("Neewer light 1", settings.light_1_address)
         self.light2 = LightAdapter(
-            "Neewer-Leuchte 2",
+            "Neewer light 2",
             settings.light_2_address,
             excluded_addresses=lambda: {self.light1.address},
         )
@@ -124,45 +124,45 @@ class MainWindow(QMainWindow):
         self.freshness_timer.start()
 
     def _build_ui(self) -> None:
-        menu = self.menuBar().addMenu("Konfiguration")
-        self.new_config_action = QAction("Neue Bauteilkonfiguration (Roadmap) …", self)
+        menu = self.menuBar().addMenu("Configuration")
+        self.new_config_action = QAction("New part configuration (roadmap) …", self)
         self.new_config_action.triggered.connect(self.new_configuration)
         menu.addAction(self.new_config_action)
-        self.open_config_action = QAction("Bauteilkonfiguration öffnen …", self)
+        self.open_config_action = QAction("Open part configuration …", self)
         self.open_config_action.triggered.connect(self.open_configuration)
         menu.addAction(self.open_config_action)
-        self.edit_config_action = QAction("Geladene Bauteilkonfiguration bearbeiten …", self)
+        self.edit_config_action = QAction("Edit loaded part configuration …", self)
         self.edit_config_action.triggered.connect(self.edit_configuration)
         self.edit_config_action.setEnabled(False)
         menu.addAction(self.edit_config_action)
         menu.addSeparator()
-        hardware_settings = QAction("Hardware-Einstellungen …", self)
+        hardware_settings = QAction("Hardware settings …", self)
         hardware_settings.triggered.connect(self.open_hardware_settings)
         menu.addAction(hardware_settings)
-        self.part_label = QLabel("Keine Konfiguration")
-        self.transition_label = QLabel("Aktuierungsprofil: –")
-        self.model_label = QLabel("Kein 3D-Modell gewählt")
+        self.part_label = QLabel("No configuration")
+        self.transition_label = QLabel("Actuation profile: –")
+        self.model_label = QLabel("No 3D model selected")
         self.model_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.model_label.setFixedSize(250, 175)
         self.model_label.setStyleSheet(
             "background:#111827;color:#94a3b8;border:1px solid #334155;border-radius:8px"
         )
         config_buttons = QVBoxLayout()
-        self.new_config_button = QPushButton("Neue Konfiguration")
+        self.new_config_button = QPushButton("New configuration")
         self.new_config_button.clicked.connect(self.new_configuration)
-        self.open_config_button = QPushButton("Konfiguration öffnen")
+        self.open_config_button = QPushButton("Open configuration")
         self.open_config_button.clicked.connect(self.open_configuration)
-        self.edit_config_button = QPushButton("Konfiguration bearbeiten")
+        self.edit_config_button = QPushButton("Edit configuration")
         self.edit_config_button.clicked.connect(self.edit_configuration)
         self.edit_config_button.setEnabled(False)
         config_buttons.addWidget(self.new_config_button)
         config_buttons.addWidget(self.open_config_button)
         config_buttons.addWidget(self.edit_config_button)
-        self.video = QLabel("Kamera nicht verbunden")
+        self.video = QLabel("Camera not connected")
         self.video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video.setMinimumSize(760, 520)
         self.video.setStyleSheet("background:#111827;color:#94a3b8;border-radius:8px")
-        self.pose_label = QLabel("Erkannte Pose: –    Zielpose: 1    Konfidenz: –")
+        self.pose_label = QLabel("Detected pose: –    Target pose: 1    Confidence: –")
         left = QWidget()
         left_layout = QVBoxLayout(left)
         configuration_details = QVBoxLayout()
@@ -176,9 +176,9 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(configuration_header)
         left_layout.addWidget(self.video, 1)
         left_layout.addWidget(self.pose_label)
-        self.plc_status = QLabel("SPS: getrennt")
-        self.camera_status = QLabel("Kamera: getrennt")
-        connect = QPushButton("Alle Komponenten verbinden")
+        self.plc_status = QLabel("PLC: disconnected")
+        self.camera_status = QLabel("Camera: disconnected")
+        connect = QPushButton("Connect all components")
         connect.clicked.connect(self.connect_all)
         hardware = QGroupBox("Hardware")
         hardware_layout = QVBoxLayout(hardware)
@@ -187,21 +187,21 @@ class MainWindow(QMainWindow):
         hardware_layout.addWidget(connect)
         self.light_panel1 = LightPanel(self.light1)
         self.light_panel2 = LightPanel(self.light2)
-        self.ur_button = QPushButton("UR-Winkel anwenden")
+        self.ur_button = QPushButton("Apply UR angle")
         self.ur_button.clicked.connect(self.apply_ur)
         self.ur_button.setEnabled(False)
         self.preflight = QVBoxLayout()
         preflight_box = QGroupBox("Preflight")
         preflight_box.setLayout(self.preflight)
-        self.start_button = QPushButton("Zyklus starten")
+        self.start_button = QPushButton("Start cycle")
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self._start)
-        self.stop_button = QPushButton("STOPP")
+        self.stop_button = QPushButton("STOP")
         self.stop_button.setStyleSheet(
             "font-weight:bold;background:#dc2626;color:white;padding:12px"
         )
         self.stop_button.clicked.connect(self.controller.stop)
-        self.cycle_status = QLabel("Keine Konfiguration")
+        self.cycle_status = QLabel("No configuration")
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(hardware)
@@ -224,21 +224,21 @@ class MainWindow(QMainWindow):
         self.pressure.connection_changed.connect(self._plc_connection_changed)
         self.pressure.baseline_ready.connect(self._baseline_ready)
         self.camera.state_changed.connect(
-            lambda state, detail: self.camera_status.setText(f"Kamera: {state} {detail}")
+            lambda state, detail: self.camera_status.setText(f"Camera: {state} {detail}")
         )
         self.camera.frame_ready.connect(self._camera_frame)
-        self.camera.error.connect(lambda detail: self._hardware_error("Kamera", detail))
+        self.camera.error.connect(lambda detail: self._hardware_error("Camera", detail))
         self.controller.preflight_changed.connect(self._preflight)
         self.controller.state_changed.connect(self._cycle_state_changed)
         self.light_panel1.confirm.toggled.connect(self._lights_changed)
         self.light_panel2.confirm.toggled.connect(self._lights_changed)
         self.light1.status_changed.connect(lambda _: self._lights_changed())
         self.light2.status_changed.connect(lambda _: self._lights_changed())
-        self.light1.error.connect(lambda detail: self._hardware_error("Leuchte 1", detail))
-        self.light2.error.connect(lambda detail: self._hardware_error("Leuchte 2", detail))
+        self.light1.error.connect(lambda detail: self._hardware_error("Light 1", detail))
+        self.light2.error.connect(lambda detail: self._hardware_error("Light 2", detail))
 
     def _plc_connection_changed(self, connected: bool, detail: str) -> None:
-        self.plc_status.setText(f"SPS: {'verbunden' if connected else 'getrennt'} – {detail}")
+        self.plc_status.setText(f"PLC: {'connected' if connected else 'disconnected'} – {detail}")
         if connected:
             LOGGER.info(
                 "ADS connected: %s / %s", self.settings.plc_ams_net_id, self.settings.plc_ip
@@ -259,14 +259,13 @@ class MainWindow(QMainWindow):
             selected.save()
             self.settings = selected
         except Exception as exc:
-            QMessageBox.critical(self, "Hardware-Einstellungen", str(exc))
+            QMessageBox.critical(self, "Hardware settings", str(exc))
             return
         QMessageBox.information(
             self,
-            "Hardware-Einstellungen gespeichert",
-            "Die Einstellungen wurden gespeichert. Bitte die Anwendung einmal schließen "
-            "und über das Desktop-Symbol neu öffnen, damit alle Hardware-Adapter mit den "
-            "neuen Werten erzeugt werden.",
+            "Hardware settings saved",
+            "The settings were saved. Please close the application and reopen it from "
+            "the desktop shortcut so all hardware adapters use the new values.",
         )
 
     def new_configuration(self) -> None:
@@ -275,10 +274,10 @@ class MainWindow(QMainWindow):
             if part:
                 self._load(part)
         except Exception as exc:
-            QMessageBox.critical(self, "Konfiguration", str(exc))
+            QMessageBox.critical(self, "Configuration", str(exc))
 
     def open_configuration(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Konfiguration", "", "YAML (*.yaml *.yml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Configuration", "", "YAML (*.yaml *.yml)")
         if not path:
             return
         try:
@@ -286,9 +285,9 @@ class MainWindow(QMainWindow):
         except RoadmapHashMismatchError as exc:
             answer = QMessageBox.question(
                 self,
-                "Roadmap geändert",
-                f"{exc}\n\nSoll die geänderte Roadmap jetzt bewusst neu übernommen und "
-                "die Konfiguration zur Prüfung geöffnet werden?",
+                "Roadmap changed",
+                f"{exc}\n\nDo you want to explicitly re-import the changed roadmap and "
+                "open the configuration for review?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if answer == QMessageBox.StandardButton.Yes:
@@ -298,14 +297,14 @@ class MainWindow(QMainWindow):
                     if part:
                         self._load(part)
                 except Exception as reimport_error:
-                    QMessageBox.critical(self, "Roadmap neu übernehmen", str(reimport_error))
+                    QMessageBox.critical(self, "Re-import roadmap", str(reimport_error))
         except Exception as exc:
-            QMessageBox.critical(self, "Konfiguration", str(exc))
+            QMessageBox.critical(self, "Configuration", str(exc))
 
     def edit_configuration(self) -> None:
         if self.part is None:
             QMessageBox.information(
-                self, "Konfiguration bearbeiten", "Bitte zuerst eine Konfiguration laden."
+                self, "Edit configuration", "Please load a configuration first."
             )
             return
         try:
@@ -318,7 +317,7 @@ class MainWindow(QMainWindow):
             if part:
                 self._load(part)
         except Exception as exc:
-            QMessageBox.critical(self, "Konfiguration", str(exc))
+            QMessageBox.critical(self, "Configuration", str(exc))
 
     def _load(self, part) -> None:
         self.part = part
@@ -341,23 +340,23 @@ class MainWindow(QMainWindow):
             # after the first successful ADS connection.
             pass
         self.part_label.setText(
-            f"Bauteil: {part.part_name}\n"
+            f"Part: {part.part_name}\n"
             f"YOLO: {part.model_path.name}\n"
-            f"Zielpose: Pose {part.target_pose}"
+            f"Target pose: Pose {part.target_pose}"
             + (
-                f" · physisch Roadmap-Pose {part.target_roadmap_pose_id}"
+                f" · physical roadmap pose {part.target_roadmap_pose_id}"
                 if part.target_roadmap_pose_id is not None
                 else ""
             )
         )
         transition = part.transitions[0]
         self.transition_label.setText(
-            f"Aktuierungsprofil Pose {transition.from_pose} → Pose {transition.to_pose}: "
+            f"Actuation profile Pose {transition.from_pose} → Pose {transition.to_pose}: "
             f"{self.profile.source_path.name}"
         )
         if part.mesh_path is None:
             self.model_label.setPixmap(QPixmap())
-            self.model_label.setText("Kein 3D-Modell in dieser YAML")
+            self.model_label.setText("No 3D model in this YAML")
         else:
             try:
                 self.model_label.setText("")
@@ -365,7 +364,7 @@ class MainWindow(QMainWindow):
                 self.model_label.setToolTip(str(part.mesh_path))
             except Exception as exc:
                 self.model_label.setPixmap(QPixmap())
-                self.model_label.setText(f"3D-Vorschau nicht möglich:\n{exc}")
+                self.model_label.setText(f"3D preview unavailable:\n{exc}")
         self.ur_button.setEnabled(self.profile.ur_ry_angle_deg is not None)
         if self.inference:
             self.inference.stop()
@@ -383,15 +382,15 @@ class MainWindow(QMainWindow):
         self.profile = None
         readiness = roadmap_readiness(part)
         self.part_label.setText(
-            f"Bauteil: {part.part_name}\n"
+            f"Part: {part.part_name}\n"
             f"Roadmap: {part.roadmap_path.name if part.roadmap_path else '–'}\n"
             f"YOLO: {part.model_path.name}\n"
-            f"Zielpose: Roadmap-Pose {part.target_pose}"
+            f"Target pose: Roadmap pose {part.target_pose}"
         )
         self.transition_label.setText(
-            f"Roadmap-Entwurf: {len(part.transitions)} profilierbare Übergänge, "
-            f"{len(readiness.missing_profile_edge_ids)} Profile fehlen. "
-            f"Erreichbar: {', '.join(map(str, readiness.reachable_pose_ids))}."
+            f"Roadmap draft: {len(part.transitions)} profile-eligible transitions, "
+            f"{len(readiness.missing_profile_edge_ids)} profiles missing. "
+            f"Reachable: {', '.join(map(str, readiness.reachable_pose_ids))}."
         )
         if part.mesh_path is not None:
             try:
@@ -400,27 +399,27 @@ class MainWindow(QMainWindow):
                 self.model_label.setToolTip(str(part.mesh_path))
             except Exception as exc:
                 self.model_label.setPixmap(QPixmap())
-                self.model_label.setText(f"3D-Vorschau nicht möglich:\n{exc}")
+                self.model_label.setText(f"3D preview unavailable:\n{exc}")
         self.pose_label.setText(
-            f"Zielpose: Roadmap-Pose {part.target_pose} · "
-            "Mehrposen-Erkennung/Ausführung noch nicht freigegeben"
+            f"Target pose: Roadmap pose {part.target_pose} · "
+            "Multi-pose detection/execution not enabled yet"
         )
         while self.preflight.count():
             item = self.preflight.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         details = (
-            "Mehrposen-Ausführung noch nicht freigegeben",
-            f"Roadmap-Hash: {'gültig' if readiness.roadmap_hash_matches else 'geändert'}",
-            f"Fehlende Profile: {len(readiness.missing_profile_edge_ids)}",
-            f"Unvollständige YOLO-Zuordnungen: {len(readiness.unmapped_pose_ids)}",
+            "Multi-pose execution not enabled yet",
+            f"Roadmap hash: {'valid' if readiness.roadmap_hash_matches else 'changed'}",
+            f"Missing profiles: {len(readiness.missing_profile_edge_ids)}",
+            f"Incomplete YOLO mappings: {len(readiness.unmapped_pose_ids)}",
         )
         for detail in details:
             text = f"✗ {detail}" if detail == details[0] else f"• {detail}"
             self.preflight.addWidget(QLabel(text))
-        self.cycle_status.setText("Konfigurationsentwurf – keinerlei SPS-Freigabe")
+        self.cycle_status.setText("Configuration draft – no PLC enable issued")
         self.start_button.setEnabled(False)
-        self.start_button.setText("Mehrposen-Ausführung noch nicht freigegeben")
+        self.start_button.setText("Multi-pose execution not enabled yet")
         self.stop_button.setEnabled(False)
         self.ur_button.setEnabled(False)
 
@@ -433,7 +432,7 @@ class MainWindow(QMainWindow):
             )
             self.controller.set_configuration(self.part, self.profile)
         except Exception as exc:
-            QMessageBox.critical(self, "Pressure-Profil", str(exc))
+            QMessageBox.critical(self, "Pressure profile", str(exc))
 
     def connect_all(self) -> None:
         self.pressure.connect_device()
@@ -469,9 +468,9 @@ class MainWindow(QMainWindow):
         if len(frame.detections) == 1:
             detection = frame.detections[0]
             self.pose_label.setText(
-                f"Erkannte Pose: {detection.class_id + 1}    "
-                f"Zielpose: {self.part.target_pose if self.part else '–'}    "
-                f"Konfidenz: {detection.confidence:.1%}"
+                f"Detected pose: {detection.class_id + 1}    "
+                f"Target pose: {self.part.target_pose if self.part else '–'}    "
+                f"Confidence: {detection.confidence:.1%}"
             )
         self.controller.accept_inference(frame)
 
@@ -554,13 +553,13 @@ class MainWindow(QMainWindow):
         self.open_config_button.setEnabled(configuration_editable)
         self.edit_config_button.setEnabled(configuration_editable and self.part is not None)
         terminal = state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
-        self.start_button.setText("Neuen Zyklus vorbereiten" if terminal else "Zyklus starten")
+        self.start_button.setText("Prepare next cycle" if terminal else "Start cycle")
         self.start_button.setEnabled(
             not self._roadmap_config_only
             and (terminal or (state is CycleState.READY and self._preflight_ok))
         )
         if self._roadmap_config_only:
-            self.start_button.setText("Mehrposen-Ausführung noch nicht freigegeben")
+            self.start_button.setText("Multi-pose execution not enabled yet")
             self.stop_button.setEnabled(False)
         else:
             self.stop_button.setEnabled(True)
@@ -569,9 +568,8 @@ class MainWindow(QMainWindow):
         if self._roadmap_config_only:
             QMessageBox.information(
                 self,
-                "Roadmap-Konfiguration",
-                "Mehrposen-Ausführung noch nicht freigegeben. "
-                "Es wurden keine SPS-Werte geschrieben.",
+                "Roadmap configuration",
+                "Multi-pose execution is not enabled yet. No PLC values were written.",
             )
             return
         try:
@@ -580,7 +578,7 @@ class MainWindow(QMainWindow):
                 return
             self.controller.start_cycle()
         except Exception as exc:
-            QMessageBox.warning(self, "Zyklus", str(exc))
+            QMessageBox.warning(self, "Cycle", str(exc))
 
     async def shutdown_async(self) -> None:
         if self._light_connect_task and not self._light_connect_task.done():

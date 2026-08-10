@@ -570,6 +570,10 @@ Paket/CLI: `bibazu_reorientation` / `bibazu-reorientation`
 
 Produktname: **BiBaZu Reorientation Control**
 
+Die komplette bedienerseitige Oberfläche dieser Anwendung ist Englisch. Dazu
+gehören Hauptfenster, Setup-/Roadmap-/Hardwaredialoge, Preflight, Statuswerte und
+alle in der GUI angezeigten Validierungs- und Hardwarefehlermeldungen.
+
 Die neue Anwendung fuehrt die Ergebnisse von PressureControl, Kameraaufnahme und
 YOLO fuer genau ein ueberwachtes Bauteil pro Zyklus zusammen. V1 kennt genau zwei
 Posen. YOLO-Klasse 0 muss `Pose 1`, Klasse 1 muss `Pose 2` heissen. Als Ziel kann
@@ -589,9 +593,9 @@ erreichte Endorientierung. Eine kamerabasierte Nachkontrolle kommt erst spaeter.
 
 Die drei Schaltflaechen links oben stehen vertikal untereinander:
 
-- `Neue Konfiguration`
-- `Konfiguration oeffnen`
-- `Konfiguration bearbeiten`
+- `New configuration`
+- `Open configuration`
+- `Edit configuration`
 
 Neue Konfigurationen beginnen jetzt mit einer Roadmap (`.yaml`, `.yml` oder
 `.json`). Unterstuetzt werden das Handover-Format mit `part/poses/transitions` und
@@ -611,12 +615,12 @@ Parallele Kanten werden ausschliesslich ueber `edge_id` unterschieden.
 Schema-v2-Dateien duerfen ohne Profile als Entwurf gespeichert werden. Die
 Readiness zeigt fehlende Profile, Erreichbarkeit zum Ziel, Klassenmapping,
 Roadmap-Hash und bewusst abweichende Stammdaten. Beim Laden wird SHA-256 geprueft;
-eine Aenderung verlangt `Roadmap neu uebernehmen`. Dabei bleiben nur Zuordnungen
+eine Aenderung verlangt `Re-import roadmap`. Dabei bleiben nur Zuordnungen
 mit weiterhin identischen Pose-/Kanten-IDs erhalten.
 
 Wichtig: Schema v2 ist aktuell nur Import und Konfiguration. Die Hauptansicht
-zeigt Roadmap/Ziel/Vollstaendigkeit, sperrt aber `Zyklus starten` mit
-`Mehrposen-Ausfuehrung noch nicht freigegeben`. Das Laden konfiguriert weder den
+zeigt Roadmap/Ziel/Vollstaendigkeit, sperrt aber `Start cycle` mit
+`Multi-pose execution not enabled yet`. Das Laden konfiguriert weder den
 v1-Controller noch YOLO und erzeugt keine SPS-Schreibzugriffe. Schema v1 bleibt
 unveraendert ladbar, bearbeitbar und ausfuehrbar.
 
@@ -683,7 +687,7 @@ ist in V1 nicht zulaessig.
 
 ### Kamera, YOLO und Beleuchtung
 
-Unter `Konfiguration -> Hardware-Einstellungen` werden Kamera-IP/-Seriennummer,
+Unter `Configuration -> Hardware settings` werden Kamera-IP/-Seriennummer,
 Baumer-CTI, Vorschau-FPS, SPS-IP/AMS-Net-ID/Port und beide BLE-Adressen gespeichert.
 Backend ist `QSettings` unter
 `LeibnizUniversitaetHannover/BiBaZuReorientationControl`. Defaults:
@@ -977,7 +981,7 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `53` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `54` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
@@ -1097,7 +1101,7 @@ Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
 Legacy-Tests:       python -m unittest test_pressure_control_gui.py (47)
-Reorientation-Test: uv run pytest (53), uv run ruff check src tests
+Reorientation-Test: uv run pytest (54), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004

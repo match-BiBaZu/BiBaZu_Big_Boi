@@ -46,7 +46,7 @@ class RunJournal:
         temporary = session / ".decision.png.tmp"
         ok, encoded = cv2.imencode(".png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         if not ok:
-            raise OSError("PNG konnte nicht kodiert werden")
+            raise OSError("PNG could not be encoded")
         with temporary.open("wb") as handle:
             handle.write(encoded.tobytes())
             handle.flush()

@@ -31,23 +31,23 @@ class RoadmapHashMismatchError(ValueError):
         self.expected = expected
         self.actual = actual
         super().__init__(
-            "Die Roadmap wurde seit dem Speichern der Konfiguration geändert. "
-            "Bitte 'Roadmap neu übernehmen' verwenden."
+            "The roadmap has changed since the configuration was saved. "
+            "Please use 'Re-import roadmap'."
         )
 
 
 def _resolve(base: Path, value: Any, field: str, suffixes: set[str]) -> Path:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field} darf nicht leer sein")
+        raise ValueError(f"{field} must not be empty")
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = base / path
     path = path.resolve()
     if path.suffix.lower() not in suffixes:
         expected = "/".join(sorted(suffixes))
-        raise ValueError(f"{field} muss auf eine {expected}-Datei zeigen")
+        raise ValueError(f"{field} must point to a {expected} file")
     if not path.is_file():
-        raise ValueError(f"Datei nicht gefunden: {path}")
+        raise ValueError(f"File not found: {path}")
     return path
 
 
@@ -69,9 +69,9 @@ def _read_config(source: Path) -> dict[str, Any]:
     try:
         payload = yaml.safe_load(source.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise ValueError(f"Ungültiges YAML: {exc}") from exc
+        raise ValueError(f"Invalid YAML: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("Die Bauteildatei muss ein YAML-Objekt enthalten")
+        raise ValueError("The part file must contain a YAML object")
     return payload
 
 
@@ -83,16 +83,16 @@ def load_part_definition(path: Path, *, accept_roadmap_change: bool = False) -> 
         return _load_v1(source, payload)
     if version == ROADMAP_SCHEMA_VERSION:
         return _load_v2(source, payload, accept_roadmap_change=accept_roadmap_change)
-    raise ValueError(f"Unbekannte Bauteil-Schemaversion: {version}")
+    raise ValueError(f"Unknown part schema version: {version}")
 
 
 def _load_v1(source: Path, payload: dict[str, Any]) -> PartDefinition:
     part_name = str(payload.get("part_name", "")).strip()
     if not part_name:
-        raise ValueError("part_name darf nicht leer sein")
+        raise ValueError("part_name must not be empty")
     poses_raw = payload.get("poses")
     if not isinstance(poses_raw, list) or len(poses_raw) != 2:
-        raise ValueError("V1 benötigt genau zwei Posen")
+        raise ValueError("V1 requires exactly two poses")
     poses = tuple(
         PoseDefinition(
             id=int(item["id"]), label=str(item["label"]), model_class_id=int(item["model_class_id"])
@@ -100,22 +100,22 @@ def _load_v1(source: Path, payload: dict[str, Any]) -> PartDefinition:
         for item in poses_raw
     )
     if {pose.id for pose in poses} != {1, 2}:
-        raise ValueError("V1 benötigt die Pose-IDs 1 und 2")
+        raise ValueError("V1 requires pose IDs 1 and 2")
     if {pose.model_class_id for pose in poses} != {0, 1}:
-        raise ValueError("V1 benötigt die YOLO-Klassen 0 und 1")
+        raise ValueError("V1 requires YOLO classes 0 and 1")
     expected_labels = {0: "pose1", 1: "pose2"}
     for pose in poses:
         normalized = "".join(
             character for character in pose.label.casefold() if character.isalnum()
         )
         if normalized != expected_labels[pose.model_class_id]:
-            raise ValueError("Klasse 0 muss 'Pose 1' und Klasse 1 muss 'Pose 2' heißen")
+            raise ValueError("Class 0 must be named 'Pose 1' and class 1 must be named 'Pose 2'")
     target_pose = int(payload.get("target_pose", 0))
     if target_pose not in {1, 2}:
-        raise ValueError("V1 unterstützt Pose 1 oder Pose 2 als Ziel")
+        raise ValueError("V1 supports Pose 1 or Pose 2 as the target")
     transitions_raw = payload.get("transitions")
     if not isinstance(transitions_raw, list) or len(transitions_raw) != 1:
-        raise ValueError("V1 benötigt genau einen Übergang")
+        raise ValueError("V1 requires exactly one transition")
     raw = transitions_raw[0]
     transition = TransitionSpec(
         from_pose=int(raw["from_pose"]),
@@ -127,24 +127,22 @@ def _load_v1(source: Path, payload: dict[str, Any]) -> PartDefinition:
     expected_transition = (3 - target_pose, target_pose)
     if (transition.from_pose, transition.to_pose) != expected_transition:
         raise ValueError(
-            f"V1 benötigt für Zielpose {target_pose} genau den Übergang Pose "
-            f"{expected_transition[0]} nach Pose {target_pose}"
+            f"For target pose {target_pose}, V1 requires exactly the transition from Pose "
+            f"{expected_transition[0]} to Pose {target_pose}"
         )
     roadmap = _resolve_optional(
         source.parent, payload.get("roadmap_path"), "roadmap_path", {".yaml", ".yml", ".json"}
     )
     roadmap_pose = payload.get("target_roadmap_pose_id")
     if (roadmap is None) != (roadmap_pose is None):
-        raise ValueError(
-            "roadmap_path und target_roadmap_pose_id müssen gemeinsam angegeben werden"
-        )
+        raise ValueError("roadmap_path and target_roadmap_pose_id must be provided together")
     if roadmap is not None:
         try:
             pose = load_stable_pose_roadmap(roadmap).pose(int(roadmap_pose))
         except KeyError as exc:
-            raise ValueError(f"Roadmap-Pose {roadmap_pose} ist unbekannt") from exc
+            raise ValueError(f"Roadmap pose {roadmap_pose} is unknown") from exc
         if not pose.is_robust:
-            raise ValueError(f"Roadmap-Pose {roadmap_pose} ist nicht robust")
+            raise ValueError(f"Roadmap pose {roadmap_pose} is not robust")
     return PartDefinition(
         schema_version=1,
         part_name=part_name,
@@ -170,29 +168,29 @@ def _load_v2(
     roadmap = load_pose_roadmap(roadmap_path)
     expected_hash = str(payload.get("roadmap_sha256", "")).lower()
     if len(expected_hash) != 64:
-        raise ValueError("roadmap_sha256 fehlt oder ist ungültig")
+        raise ValueError("roadmap_sha256 is missing or invalid")
     changed = expected_hash != roadmap.sha256
     if changed and not accept_roadmap_change:
         raise RoadmapHashMismatchError(roadmap_path, expected_hash, roadmap.sha256)
     part_name = str(payload.get("part_name", "")).strip()
     if not part_name:
-        raise ValueError("part_name darf nicht leer sein")
+        raise ValueError("part_name must not be empty")
     model_path = _resolve(source.parent, payload.get("model_path"), "model_path", {".pt"})
     mesh_path = _resolve(source.parent, payload.get("mesh_path"), "mesh_path", {".stl", ".obj"})
     raw_poses = payload.get("poses")
     if not isinstance(raw_poses, list):
-        raise ValueError("poses muss eine Liste sein")
+        raise ValueError("poses must be a list")
     mappings: dict[int, PoseDefinition] = {}
     class_ids: set[int] = set()
     for raw in raw_poses:
         if not isinstance(raw, dict):
-            raise ValueError("Jede Pose-Zuordnung muss ein Objekt sein")
+            raise ValueError("Each pose mapping must be an object")
         pose_id = int(raw["id"])
         if pose_id in mappings:
-            raise ValueError(f"Doppelte Pose-Zuordnung: {pose_id}")
+            raise ValueError(f"Duplicate pose mapping: {pose_id}")
         class_id = int(raw["model_class_id"])
         if class_id < 0 or class_id in class_ids:
-            raise ValueError("YOLO-Modellklassen müssen eindeutig und nichtnegativ sein")
+            raise ValueError("YOLO model classes must be unique and non-negative")
         mappings[pose_id] = PoseDefinition(
             pose_id, str(raw.get("label", f"Pose {pose_id}")), class_id
         )
@@ -203,20 +201,20 @@ def _load_v2(
     previous_pose_ids = set(mappings)
     unknown = previous_pose_ids - robust_ids
     if unknown and not changed:
-        raise ValueError(f"Zuordnung enthält unbekannte robuste Posen: {sorted(unknown)}")
+        raise ValueError(f"Mapping contains unknown robust poses: {sorted(unknown)}")
     mappings = {pose_id: mapping for pose_id, mapping in mappings.items() if pose_id in robust_ids}
     if not changed and set(mappings) != robust_ids:
-        raise ValueError("Jede robuste Roadmap-Pose benötigt genau eine YOLO-Modellklasse")
+        raise ValueError("Every robust roadmap pose requires exactly one YOLO model class")
     target_pose = int(payload.get("target_pose", 0))
     if target_pose not in robust_ids and not changed:
-        raise ValueError("target_pose muss eine robuste Roadmap-Pose sein")
+        raise ValueError("target_pose must be a robust roadmap pose")
     raw_profiles = payload.get("transition_profiles")
     if not isinstance(raw_profiles, dict):
-        raise ValueError("transition_profiles muss ein Mapping edge_id → Pfad/null sein")
+        raise ValueError("transition_profiles must map edge_id to a path or null")
     valid_edges = {edge.edge_id: edge for edge in roadmap.profile_transitions}
     previous_edge_ids = set(raw_profiles)
     if not changed and set(raw_profiles) != set(valid_edges):
-        raise ValueError("transition_profiles muss jede aktuierte Robust-zu-Robust-Kante enthalten")
+        raise ValueError("transition_profiles must contain every actuated robust-to-robust edge")
     transitions: list[TransitionSpec] = []
     for edge_id, edge in valid_edges.items():
         raw_profile = raw_profiles.get(edge_id)
@@ -278,9 +276,9 @@ def save_part_definition(
     model = _resolve(destination.parent, str(model_path), "model_path", {".pt"})
     profile = _resolve(destination.parent, str(pressure_profile), "pressure_profile", {".json"})
     if not part_name.strip():
-        raise ValueError("Der Bauteilname darf nicht leer sein")
+        raise ValueError("The part name must not be empty")
     if target_pose not in {1, 2}:
-        raise ValueError("Die Zielpose muss Pose 1 oder Pose 2 sein")
+        raise ValueError("The target pose must be Pose 1 or Pose 2")
     mesh = (
         None
         if mesh_path is None or not str(mesh_path).strip()
@@ -294,7 +292,7 @@ def save_part_definition(
         )
     )
     if (roadmap is None) != (target_roadmap_pose_id is None):
-        raise ValueError("Roadmap und physische Zielpose müssen gemeinsam ausgewählt werden")
+        raise ValueError("The roadmap and physical target pose must be selected together")
     if roadmap is not None:
         try:
             selected_roadmap_pose = load_stable_pose_roadmap(roadmap).pose(
@@ -302,10 +300,10 @@ def save_part_definition(
             )
         except KeyError as exc:
             raise ValueError(
-                f"Roadmap-Pose {target_roadmap_pose_id} ist nicht als stabil katalogisiert"
+                f"Roadmap pose {target_roadmap_pose_id} is not catalogued as stable"
             ) from exc
         if not selected_roadmap_pose.is_robust:
-            raise ValueError(f"Roadmap-Pose {target_roadmap_pose_id} ist nicht robust")
+            raise ValueError(f"Roadmap pose {target_roadmap_pose_id} is not robust")
     payload: dict[str, Any] = {
         "schema_version": 1,
         "part_name": part_name.strip(),
@@ -348,27 +346,25 @@ def save_roadmap_part_definition(
     mesh = _resolve(destination.parent, str(mesh_path), "mesh_path", {".stl", ".obj"})
     model = _resolve(destination.parent, str(model_path), "model_path", {".pt"})
     if not part_name.strip():
-        raise ValueError("Der Bauteilname darf nicht leer sein")
+        raise ValueError("The part name must not be empty")
     robust_ids = {pose.pose_id for pose in roadmap.robust_poses}
     if set(pose_class_mapping) != robust_ids:
-        raise ValueError("Jede robuste Roadmap-Pose benötigt eine explizite Modellklasse")
+        raise ValueError("Every robust roadmap pose requires an explicit model class")
     class_ids = [int(value) for value in pose_class_mapping.values()]
     if any(value < 0 for value in class_ids) or len(set(class_ids)) != len(class_ids):
-        raise ValueError("Modellklassen müssen eindeutig und nichtnegativ sein")
+        raise ValueError("Model classes must be unique and non-negative")
     if target_pose not in robust_ids:
-        raise ValueError("Die Zielpose muss robust sein")
+        raise ValueError("The target pose must be robust")
     edge_ids = {edge.edge_id for edge in roadmap.profile_transitions}
     if set(transition_profiles) != edge_ids:
-        raise ValueError(
-            "Für jede aktuierte Robust-zu-Robust-Kante muss eine Tabellenzeile vorliegen"
-        )
+        raise ValueError("A table row is required for every actuated robust-to-robust edge")
     serialized_profiles: dict[str, str | None] = {}
     for edge_id in sorted(edge_ids):
         profile = transition_profiles[edge_id]
         if profile is None or not str(profile).strip():
             serialized_profiles[edge_id] = None
             continue
-        resolved = _resolve(destination.parent, str(profile), f"Profil {edge_id}", {".json"})
+        resolved = _resolve(destination.parent, str(profile), f"Profile {edge_id}", {".json"})
         load_pressure_profile(resolved, require_transition=False)
         serialized_profiles[edge_id] = _portable_path(resolved, destination)
     payload = {
@@ -406,7 +402,7 @@ def roadmap_readiness(
     definition: PartDefinition, roadmap: PoseRoadmap | None = None
 ) -> RoadmapReadiness:
     if definition.schema_version != 2 or definition.roadmap_path is None:
-        raise ValueError("Readiness ist nur für Roadmap-Konfigurationen verfügbar")
+        raise ValueError("Readiness is only available for roadmap configurations")
     roadmap = roadmap or load_pose_roadmap(definition.roadmap_path)
     mapped = {pose.id for pose in definition.poses}
     robust = {pose.pose_id for pose in roadmap.robust_poses}
@@ -449,5 +445,5 @@ class TransitionResolver:
             if transition.from_pose == start_pose and transition.to_pose == target
         )
         if len(direct) != 1:
-            raise ValueError(f"Kein eindeutiger Übergang {start_pose} → {target} konfiguriert")
+            raise ValueError(f"No unique transition {start_pose} → {target} is configured")
         return direct

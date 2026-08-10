@@ -54,7 +54,7 @@ class _AdsWorker(QObject):
             self.plc.read_by_name("MAIN.ReorientationState", pyads.PLCTYPE_UINT)
             self.connection.emit(
                 True,
-                f"ADS verbunden (AMS {ads_state}, Gerät {device_state}; Vertrag v1)",
+                f"ADS connected (AMS {ads_state}, device {device_state}; contract v1)",
             )
             self.baseline.emit(self._read_baseline())
             self.poller = QTimer(self)
@@ -111,7 +111,7 @@ class _AdsWorker(QObject):
     @pyqtSlot(object)
     def execute(self, command: _Command) -> None:
         if self.plc is None:
-            self.failed.emit(command.name, "ADS ist nicht verbunden")
+            self.failed.emit(command.name, "ADS is not connected")
             return
         try:
             values = command.values or {}
@@ -120,7 +120,7 @@ class _AdsWorker(QObject):
                 name: error for name, error in errors.items() if error and error != "no error"
             }
             if failed:
-                raise RuntimeError(f"ADS Sum-Write fehlgeschlagen: {failed}")
+                raise RuntimeError(f"ADS Sum Write failed: {failed}")
             if command.verify:
                 readback = self.plc.read_list_by_name(list(values), cache_symbol_info=True)
                 for name, expected in values.items():
@@ -132,7 +132,7 @@ class _AdsWorker(QObject):
                     )
                     if not equal:
                         raise RuntimeError(
-                            f"Readback {name}: erwartet {expected!r}, gelesen {actual!r}"
+                            f"Readback {name}: expected {expected!r}, read {actual!r}"
                         )
             self.completed.emit(command.name)
         except Exception as exc:
@@ -207,7 +207,7 @@ class _AdsWorker(QObject):
                 self.poller.stop()
             self.connection.emit(
                 False,
-                "ADS-/PLC-Vertrag nicht mehr lesbar: " + (str(exc) or type(exc).__name__),
+                "ADS/PLC contract is no longer readable: " + (str(exc) or type(exc).__name__),
             )
 
     @pyqtSlot()

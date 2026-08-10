@@ -16,7 +16,7 @@ ROADMAP = (
 def test_df1a_is_first_step_and_builds_six_profile_rows(qtbot) -> None:
     dialog = RoadmapSetupDialog()
     qtbot.addWidget(dialog)
-    assert "zuerst" in dialog.summary.text()
+    assert "first" in dialog.summary.text()
     dialog._load_roadmap(ROADMAP)
     assert dialog.name.text() == "Df1a"
     assert dialog.mapping_table.rowCount() == 4
@@ -30,4 +30,4 @@ def test_df1a_is_first_step_and_builds_six_profile_rows(qtbot) -> None:
         "a4:35->24:free_y",
         "a15:60->9:free_z",
     }
-    assert "Mehrposen-Ausführung noch nicht freigegeben" in dialog.readiness.text()
+    assert "multi-pose execution is not enabled yet" in dialog.readiness.text()

@@ -31,13 +31,13 @@ class InferenceConfig:
     def validated(self, *, require_model: bool = True) -> InferenceConfig:
         model_path = Path(self.model_path).expanduser().resolve()
         if require_model and (not model_path.is_file() or model_path.suffix.lower() != ".pt"):
-            raise ValueError(f"YOLO-Modell nicht gefunden: {model_path}")
+            raise ValueError(f"YOLO model not found: {model_path}")
         if not 0.01 <= self.confidence <= 1.0:
-            raise ValueError("Die Konfidenz muss zwischen 0,01 und 1,00 liegen")
+            raise ValueError("Confidence must be between 0.01 and 1.00")
         if self.image_size < 32 or self.image_size % 32:
-            raise ValueError("Die Bildgröße muss ein Vielfaches von 32 sein")
+            raise ValueError("Image size must be a multiple of 32")
         if not 0.2 <= self.max_fps <= 60:
-            raise ValueError("Die Inferenzrate muss zwischen 0,2 und 60 FPS liegen")
+            raise ValueError("Inference rate must be between 0.2 and 60 FPS")
         return replace(self, model_path=model_path)
 
 
@@ -53,11 +53,11 @@ def _as_numpy(value: Any) -> np.ndarray:
 
 def _name(names: Any, class_id: int) -> str:
     if isinstance(names, dict):
-        return str(names.get(class_id, f"Klasse {class_id}"))
+        return str(names.get(class_id, f"Class {class_id}"))
     try:
         return str(names[class_id])
     except (IndexError, KeyError, TypeError):
-        return f"Klasse {class_id}"
+        return f"Class {class_id}"
 
 
 def validate_model_classes(names: Any) -> dict[int, str]:
@@ -66,13 +66,13 @@ def validate_model_classes(names: Any) -> dict[int, str]:
     else:
         mapping = {index: str(value) for index, value in enumerate(names)}
     if set(mapping) != {0, 1}:
-        raise ValueError("V1 benötigt ein YOLO-Modell mit genau den Klassen 0 und 1")
+        raise ValueError("V1 requires a YOLO model with exactly classes 0 and 1")
     for class_id, expected in ((0, "pose1"), (1, "pose2")):
         normalized = re.sub(r"[^a-z0-9]", "", mapping[class_id].casefold())
         if normalized != expected:
             raise ValueError(
-                f"YOLO-Klasse {class_id} heißt {mapping[class_id]!r}; "
-                f"erwartet wird 'Pose {class_id + 1}'"
+                f"YOLO class {class_id} is named {mapping[class_id]!r}; "
+                f"expected 'Pose {class_id + 1}'"
             )
     return mapping
 
@@ -157,7 +157,7 @@ def draw_overlay(image: np.ndarray, detections: tuple[Detection, ...]) -> np.nda
 class PoseConsensus:
     def __init__(self, required: int = 3, max_age_seconds: float = 1.0) -> None:
         if required != 3:
-            raise ValueError("V1 verwendet genau drei Beobachtungen")
+            raise ValueError("V1 uses exactly three observations")
         self.required = required
         self.max_age_seconds = max_age_seconds
         self._observations: list[PoseObservation] = []
@@ -249,7 +249,7 @@ class InferenceWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.status_changed.emit("Modell wird geladen …")
+            self.status_changed.emit("Loading model …")
             model = self._model()
             names = validate_model_classes(getattr(model, "names", {}))
             device = self._config.device
@@ -268,7 +268,7 @@ class InferenceWorker(QThread):
             self.model_ready.emit(
                 {"names": names, "device": device, "task": getattr(model, "task", "")}
             )
-            self.status_changed.emit(f"Bereit · {self._config.model_path.name}")
+            self.status_changed.emit(f"Ready · {self._config.model_path.name}")
             next_allowed = 0.0
             while True:
                 with self._condition:
@@ -300,5 +300,5 @@ class InferenceWorker(QThread):
                 )
                 next_allowed = started + 1.0 / self._config.max_fps
         except Exception as exc:
-            self.status_changed.emit("Fehler")
-            self.error.emit(f"YOLO-Inferenz fehlgeschlagen: {exc}")
+            self.status_changed.emit("Error")
+            self.error.emit(f"YOLO inference failed: {exc}")

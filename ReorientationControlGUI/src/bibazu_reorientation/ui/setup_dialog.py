@@ -32,9 +32,7 @@ class SetupDialog(QDialog):
             definition.target_roadmap_pose_id if definition is not None else None
         )
         self.setWindowTitle(
-            "Bauteilkonfiguration bearbeiten"
-            if definition is not None
-            else "Neue Bauteilkonfiguration"
+            "Edit part configuration" if definition is not None else "New part configuration"
         )
         self.name = QLineEdit()
         self.model = QLineEdit()
@@ -44,10 +42,10 @@ class SetupDialog(QDialog):
         self.target_pose.addItem("Pose 1", 1)
         self.target_pose.addItem("Pose 2", 2)
         self.target_pose.currentIndexChanged.connect(self._update_transition_label)
-        self.profile_label = QLabel("Aktuierungsprofil Pose 2 → Pose 1")
+        self.profile_label = QLabel("Actuation profile Pose 2 → Pose 1")
         self.roadmap_pose_label = QLabel()
         self.roadmap_pose_label.setWordWrap(True)
-        self.roadmap_pose_button = QPushButton("Stabile Pose auswählen …")
+        self.roadmap_pose_button = QPushButton("Select stable pose …")
         self.roadmap_pose_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.roadmap_pose_button.setStyleSheet(
             "QPushButton {background:#1677c8;color:white;font-weight:600;"
@@ -55,28 +53,28 @@ class SetupDialog(QDialog):
             "QPushButton:hover {background:#075b9b;}"
         )
         self.roadmap_pose_button.clicked.connect(self._open_or_choose_roadmap)
-        self.change_roadmap_button = QPushButton("Andere Roadmap …")
+        self.change_roadmap_button = QPushButton("Choose another roadmap …")
         self.change_roadmap_button.clicked.connect(self._choose_roadmap_file)
         form = QFormLayout()
-        form.addRow("Bauteilname", self.name)
-        form.addRow("YOLO-Modell (.pt)", self._path_row(self.model, "YOLO-Modell (*.pt)"))
+        form.addRow("Part name", self.name)
+        form.addRow("YOLO model (.pt)", self._path_row(self.model, "YOLO model (*.pt)"))
         form.addRow(
-            "3D-Modell in Zielorientierung",
+            "3D model in target orientation",
             self._path_row(
                 self.mesh,
-                "3D-Modell (*.stl *.STL *.obj *.OBJ)",
+                "3D model (*.stl *.STL *.obj *.OBJ)",
                 self._workpiece_directory(),
             ),
         )
         target_row = QHBoxLayout()
         target_row.addWidget(self.target_pose)
         target_row.addWidget(self.roadmap_pose_button)
-        form.addRow("Zielpose", target_row)
+        form.addRow("Target pose", target_row)
         roadmap_row = QHBoxLayout()
         roadmap_row.addWidget(self.roadmap_pose_label, 1)
         roadmap_row.addWidget(self.change_roadmap_button)
-        form.addRow("Physische Roadmap-Pose", roadmap_row)
-        self.profile_row = self._path_row(self.profile, "Pressure-Profil (*.json)")
+        form.addRow("Physical roadmap pose", roadmap_row)
+        self.profile_row = self._path_row(self.profile, "Pressure profile (*.json)")
         form.addRow(self.profile_label, self.profile_row)
         self.form = form
         buttons = QDialogButtonBox(
@@ -122,13 +120,13 @@ class SetupDialog(QDialog):
         return row
 
     def _browse(self, edit: QLineEdit, file_filter: str, start: str = "") -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Datei auswählen", start, file_filter)
+        path, _ = QFileDialog.getOpenFileName(self, "Select file", start, file_filter)
         if path:
             edit.setText(path)
 
     def _update_transition_label(self) -> None:
         target = int(self.target_pose.currentData())
-        self.profile_label.setText(f"Aktuierungsprofil Pose {3 - target} → Pose {target}")
+        self.profile_label.setText(f"Actuation profile Pose {3 - target} → Pose {target}")
         self._update_roadmap_pose_label()
 
     def _open_or_choose_roadmap(self) -> None:
@@ -145,9 +143,9 @@ class SetupDialog(QDialog):
         )
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Posenroadmap auswählen",
+            "Select pose roadmap",
             start,
-            "Posenroadmap (*_roadmap.json *.json)",
+            "Pose roadmap (*_roadmap.json *.json)",
         )
         if path:
             self._show_roadmap_pose_dialog(Path(path))
@@ -156,7 +154,7 @@ class SetupDialog(QDialog):
         try:
             roadmap = load_stable_pose_roadmap(path)
         except (OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Posenroadmap", str(exc))
+            QMessageBox.critical(self, "Pose roadmap", str(exc))
             return
         dialog = RoadmapPoseDialog(roadmap, self)
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.selected_pose is None:
@@ -169,12 +167,12 @@ class SetupDialog(QDialog):
         selected = self._target_roadmap_pose_id
         self.change_roadmap_button.setVisible(self._roadmap_path is not None)
         if selected is None:
-            self.roadmap_pose_label.setText("Noch keine physische Zielpose ausgewählt")
+            self.roadmap_pose_label.setText("No physical target pose selected yet")
             self.roadmap_pose_label.setStyleSheet("color:#6b7280;")
             return
         target_class = int(self.target_pose.currentData())
         self.roadmap_pose_label.setText(
-            f"<b>Roadmap-Pose {selected}</b> · zugeordnet zu YOLO-Zielklasse Pose {target_class}"
+            f"<b>Roadmap pose {selected}</b> · assigned to YOLO target class Pose {target_class}"
         )
         self.roadmap_pose_label.setStyleSheet(
             "background:#e7f5ff;color:#0b4f7a;border-left:4px solid #1677c8;padding:5px;"
@@ -189,7 +187,7 @@ class SetupDialog(QDialog):
             else f"{self.name.text().strip()}.yaml"
         )
         target, _ = QFileDialog.getSaveFileName(
-            self, "Konfiguration speichern", suggested_path, "YAML (*.yaml *.yml)"
+            self, "Save configuration", suggested_path, "YAML (*.yaml *.yml)"
         )
         if not target:
             return None

@@ -82,5 +82,5 @@ def test_reverse_and_empty_profile_are_rejected(tmp_path: Path) -> None:
     data["conveyor_reverse"] = True
     source = tmp_path / "bad.json"
     source.write_text(json.dumps(data), encoding="utf-8")
-    with pytest.raises(ValueError, match="Rückwärtsfahrt"):
+    with pytest.raises(ValueError, match="reverse conveyor motion"):
         load_pressure_profile(source)
