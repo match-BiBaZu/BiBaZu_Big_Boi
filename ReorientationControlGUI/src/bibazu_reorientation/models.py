@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,24 @@ class CycleState(StrEnum):
     ABORTING = "Aborting"
     ABORTED = "Aborted"
     FAULT = "Fault"
+
+
+class BatchState(StrEnum):
+    NO_CONFIG = "No configuration"
+    OFFLINE = "Offline"
+    READY = "Ready"
+    STARTING = "Starting production run"
+    RUNNING = "Production run active"
+    FINISHING = "Finishing visible parts"
+    DRAINING = "Draining PLC queue"
+    COMPLETE = "Run complete"
+    FAULT = "Fault"
+
+
+class PartDecisionCode(IntEnum):
+    TARGET = 0
+    ACTUATE = 1
+    BYPASS_UNCERTAIN = 2
 
 
 @dataclass(slots=True, frozen=True)
@@ -193,7 +211,70 @@ class PoseObservation:
 @dataclass(slots=True, frozen=True)
 class ConsensusDecision:
     pose_id: int
-    observations: tuple[PoseObservation, PoseObservation, PoseObservation]
+    observations: tuple[PoseObservation, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class TrackedPart:
+    track_id: int
+    bbox: tuple[float, float, float, float]
+    center: tuple[float, float]
+    confidence: float
+    pose_streak: int
+    confirmed_pose_id: int | None
+    missed_frames: int
+    handed_off: bool
+    leftmost: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class PartDecision:
+    track_id: int
+    pose_id: int | None
+    confidence: float
+    observations: tuple[PoseObservation, ...]
+    bbox: tuple[float, float, float, float]
+    timestamp: float
+    reason: str
+
+
+@dataclass(slots=True, frozen=True)
+class QueuedArrayProfile:
+    index: int
+    enabled: bool
+    nozzle_mask: int
+    pressure_mbar: int
+    delay_ms: int
+    pulse_duration_ms: int
+    offset_mm: float
+    force_response_delay_ms: float
+    force_single_nozzle_response_delay_ms: float
+
+
+@dataclass(slots=True, frozen=True)
+class QueuedPartProfile:
+    sequence_id: int
+    track_id: int
+    pose_id: int | None
+    target_pose: int
+    decision_code: PartDecisionCode
+    reason: str
+    expected_array_mask: int
+    arrays: tuple[
+        QueuedArrayProfile,
+        QueuedArrayProfile,
+        QueuedArrayProfile,
+        QueuedArrayProfile,
+    ]
+    transition_edge_ids: tuple[str, ...]
+    timestamp: float
+
+
+@dataclass(slots=True, frozen=True)
+class PartResult:
+    sequence_id: int
+    triggered_array_mask: int
+    fault_code: int = 0
 
 
 @dataclass(slots=True)
@@ -285,6 +366,17 @@ class PlcSnapshot:
     delays: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
     avg_pressure_n1: float = 0.0
     avg_pressure_n2: float = 0.0
+    batch_queue_depth: int = 0
+    batch_queue_capacity: int = 128
+    batch_enqueue_ack: int = 0
+    batch_entered_count: int = 0
+    batch_completed_count: int = 0
+    batch_bypass_count: int = 0
+    batch_sensor_sequences: tuple[int, ...] = (0,) * 8
+    batch_result_available: bool = False
+    batch_result_sequence: int = 0
+    batch_result_triggered_mask: int = 0
+    batch_result_fault_code: int = 0
 
 
 @dataclass(slots=True, frozen=True)

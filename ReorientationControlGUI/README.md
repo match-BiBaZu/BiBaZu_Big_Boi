@@ -1,9 +1,11 @@
 # BiBaZu Reorientation Control
 
-Supervised control for one part per cycle. A Baumer image is evaluated by a YOLO
-Detect or OBB model. Legacy schema-v1 projects support Pose 1/2; schema-v2 roadmap
-projects resolve either a direct transition or one unique path with one intermediate
-pose and combine its active PressureControl arrays into one physical conveyor pass.
+Continuous supervised control for any number of queued parts. Baumer images are
+evaluated by a latest-only YOLO Detect or OBB worker and every visible part is
+tracked independently from right to left. Legacy schema-v1 projects support Pose
+1/2; schema-v2 roadmap projects resolve either a direct transition or one unique
+path with one intermediate pose and combine its active PressureControl arrays into
+one immutable PLC queue record per part.
 All operator-facing labels, dialogs, status messages, and validation errors in the
 application are in English.
 
@@ -77,9 +79,9 @@ des Kamerabildes oder das Menü **Configuration**.
 Mit **Edit configuration** wird die aktuell geladene YAML vollständig
 vorausgefüllt geöffnet. Sie kann am bisherigen Ort überschrieben oder im
 Speicherdialog unter einem neuen Namen abgelegt werden. Während eines laufenden
-Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
+Produktionslaufs sind Neu, Öffnen und Bearbeiten gesperrt.
 
-### Roadmap-Zyklus starten
+### Kontinuierlichen Produktionslauf starten
 
 1. Konfiguration öffnen. Das YOLO-Modell wird automatisch in einem Worker geladen;
    **Load YOLO model** erlaubt einen manuellen Reload. Bei einer gemappten Klasse
@@ -93,17 +95,24 @@ Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
    eingestellt werden; Verbindungsstatus und Zyklus-Checkboxen dienen nur noch als
    Bedienhinweis und blockieren den Start nicht. Falls UR aktiv ist, **Apply UR angle**
    drücken.
-4. Sobald alle Preflight-Zeilen grün sind, **Start cycle** drücken. Erst jetzt wird
-   der Drei-Frame-Konsens gesammelt. Die erkannte Pose bestimmt den eindeutigen
-   direkten oder zweistufigen Pfad.
-5. Nur die aktiven Arrays der Pfadprofile werden zusammengeführt. Jedes physische
-   Array darf im Pfad höchstens einmal belegt sein. Das SPS-Profil wird zunächst bei
-   gestopptem Band geschrieben und zurückgelesen; Freigaben und Band folgen zuletzt.
+4. Die vertikale **PLC handoff line** zwischen den Läufen positionieren (Standard
+   30 % der Bildbreite). Danach **Start production run** drücken. Kamera, Tracking,
+   SPS-Queue und Förderband bleiben bis zum Laufende aktiv.
+5. Jedes sichtbare Teil braucht fünf aufeinanderfolgende identische, vollständig
+   sichtbare und gemappte Erkennungen. Danach ist seine Pose gesperrt. Beim ersten
+   Überqueren der Linie entsteht genau ein Queue-Datensatz. Zielpose, unbekannte
+   Klasse, unvollständiger Konsens oder nicht eindeutiger Pfad werden mit Maske null
+   eingereiht und passieren ohne Düsen.
+6. **Finish run (drain queue)** beendet nicht abrupt: Sichtbare Teile werden noch
+   übernommen. Nach einer Sekunde ohne Track sendet die GUI `Finish` und wartet,
+   bis alle angenommenen Teile LB8 passiert haben, alle Array-FIFOs leer und alle
+   Ergebnisse protokolliert sind.
 
-Eine erkannte Zielpose fährt mit Arraymaske null durch. Dieser Fall erzwingt
-unabhängig von zuvor ausgewählten Übergängen zusätzlich alle vier Array-Enables
-auf `false`. Eine nicht erreichbare oder mehrdeutige Pose endet vor jedem
-Aktuierungswrite als sichtbarer Fehler.
+Die SPS friert Düsenmaske, Druck, Delay, Puls und Offset je Teil ein. Ein später
+erkannter anderer Zustand kann einen wartenden oder laufenden Impuls deshalb nicht
+mehr verändern. Ein Verlust eines echten Tracks vor der Übergabe, Überholen bzw.
+uneindeutige Reihenfolge oder Kamera-/YOLO-Ausfall stoppt den Lauf, weil die
+physische Reihenfolge dann nicht zuverlässig zur SPS-Warteschlange passt.
 
 ### Hardware einstellen
 
@@ -145,16 +154,16 @@ anonymous Python callbacks.
 
 **Start conveyor** and **Stop conveyor** provide manual transport independently of
 YOLO, lights, and part configuration. The speed comes from the existing Conveyor
-speed field. Manual start requires only ADS, an idle automatic cycle, and a positive
+speed field. Manual start requires only ADS, an idle production run, and a positive
 speed; it explicitly selects forward travel and writes all four array enables false.
-A latched fault from the previous automatic cycle is reset automatically before the
-manual start. During an automatic cycle, manual start is locked and Stop conveyor
-requests the normal coordinated abort.
+A latched fault from the previous automatic run is reset automatically before the
+manual start. During production, manual start is locked and Stop conveyor requests
+the normal finish-and-drain path.
 
 Reloading a YOLO model now retires the previous inference worker asynchronously and
 starts the requested model automatically after that worker has exited. Model readiness
-is cleared immediately during this handover, so a cycle cannot enter Detecting with a
-stopped worker.
+is cleared immediately during this handover, so a run cannot start with a stopped
+worker.
 
 The Baumer preview has explicit backpressure: at most one converted frame may be
 waiting for Qt, and large sensor images are reduced in the camera worker before
@@ -168,7 +177,8 @@ panels together; the preview ran at 15 FPS without an application hang.
 - Schema v1 requires exactly the model classes `0 = Pose 1`, `1 = Pose 2`.
   Schema v2 uses the explicit class mapping from YAML; extra model classes are
   permitted, but any detection of an unmapped class blocks consensus.
-- A decision requires one fully visible object in three fresh consecutive frames.
+- Every track requires one fully visible object in five fresh consecutive frames
+  with the same mapped class. A differing/missing class resets the unlocked streak.
 - Light connection, last confirmed commands, and the two operator checkboxes remain
   visible and are logged, but they no longer participate in start preflight.
 - A profile with an explicit `ur_ry_angle_deg` remains blocked until the separate
@@ -182,28 +192,33 @@ panels together; the preview ran at 15 FPS without an application hang.
   verified before ownership is released.
 
 Run exports are written below
-`%LOCALAPPDATA%\BiBaZuReorientationControl\runs`. Each attempt gets an atomic PNG,
-copies of YAML/profile, and a schema-versioned CSV result. Diagnostic logs rotate
-separately under the adjacent `logs` directory.
+`%LOCALAPPDATA%\BiBaZuReorientationControl\runs`. Each run gets copied
+configuration/roadmap/profiles and `run.json`; each handed-off part gets an atomic
+annotated PNG and one schema-v2 row in `parts.csv`. Diagnostic logs rotate separately
+under the adjacent `logs` directory.
 
 ## TwinCAT activation
 
-Activate the changed `MAIN.TcPOU` before using this GUI. The added PLC contract
-implements a 250 ms GUI heartbeat, 2 s watchdog, 60 s LB8 timeout, and 35 s drain
-timeout. LB8 falling is latched in the 1 ms task; completion additionally requires
-the exact expected trigger mask, all four array states idle, no pending trigger,
-and all 24 valves closed.
+Activate the changed `MAIN.TcPOU` before using this GUI. The batch contract provides
+a 128-part ring, a separate result ring, monotonically acknowledged commits, eight
+ordered sensor cursors and one 16-job FIFO per array. It retains the 250 ms GUI
+heartbeat and 2 s watchdog. Each even light barrier latches the matching part's
+nozzles, pressure, final delay and pulse; LB8 plus all finished array bits completes
+that record. A normal Finish has no short cycle timeout and drains every acknowledged
+part and result before stopping the conveyor.
 
 Before hardware acceptance, verify online that the PLC-normalized clear state of
 all six `LightBarrierStableN` signals is `TRUE`. Also resolve the documented UR
 fixed-orientation discrepancy (`Rz=-90°` versus the installation's possible
 `Rz=180°`).
 
-`PressureControlGUI` and `ConveyorSetupGUI` refuse their initial write while the
-reorientation owner is active. The shared process lease also prevents these three
-control applications from being started together. Close Pressure Control after
-creating/saving a profile and before starting Reorientation Control. Other ADS
-writers are prohibited during a cycle. The PLC watchdog and GUI stop are not
+`PressureControlGUI` and `ConveyorSetupGUI` refuse their initial write while a live
+reorientation owner is active. With the owner inactive, all original global profile
+and light-barrier behavior remains unchanged and no queue is required. If a crashed
+batch has already reached the PLC fail-stop latch, Pressure Control can explicitly
+return it to legacy mode before applying its normal safe stop. The shared process
+lease prevents the three local control applications from running together. Other ADS
+writers are prohibited during production. PLC watchdog and GUI finish are not
 safety-rated; physical emergency stop and pneumatic pressure relief remain mandatory.
 
 ## Tests
@@ -215,4 +230,5 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
-The current offscreen suite contains 95 tests.
+The current Reorientation offscreen suite contains 108 tests; the shared
+Pressure/Conveyor suite contains 54 tests.

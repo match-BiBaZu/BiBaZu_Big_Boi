@@ -27,13 +27,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bibazu_reorientation.batch_controller import BatchController
 from bibazu_reorientation.config import (
     RoadmapHashMismatchError,
     TransitionResolver,
     load_part_definition,
     roadmap_readiness,
 )
-from bibazu_reorientation.controller import ReorientationController
 from bibazu_reorientation.hardware.camera import CameraAdapter
 from bibazu_reorientation.hardware.light import LightAdapter
 from bibazu_reorientation.hardware.pressure import PressureAdapter
@@ -41,10 +41,10 @@ from bibazu_reorientation.hardware.robot import UrAngleWorker
 from bibazu_reorientation.inference import InferenceConfig, InferenceWorker
 from bibazu_reorientation.mesh_preview import render_mesh_preview
 from bibazu_reorientation.models import (
+    BatchState,
     CameraFrame,
     CameraStatus,
     ConnectionState,
-    CycleState,
     InferenceFrame,
     PressureBaseline,
     PressureProfile,
@@ -55,6 +55,7 @@ from bibazu_reorientation.profiles import (
     load_pressure_profile,
 )
 from bibazu_reorientation.settings import AppSettings
+from bibazu_reorientation.tracking import draw_tracking_overlay
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
 from bibazu_reorientation.ui.roadmap_setup_dialog import RoadmapSetupDialog
 from bibazu_reorientation.ui.setup_dialog import SetupDialog
@@ -129,7 +130,10 @@ class MainWindow(QMainWindow):
             excluded_addresses=lambda: {self.light1.address},
             auto_reconnect=False,
         )
-        self.controller = ReorientationController(self.pressure)
+        self.controller = BatchController(
+            self.pressure,
+            handoff_line_ratio=settings.handoff_line_percent / 100.0,
+        )
         self.inference: InferenceWorker | None = None
         self._yolo_reload_pending = False
         self._shutting_down = False
@@ -237,6 +241,18 @@ class MainWindow(QMainWindow):
         camera_controls.addWidget(self.exposure_slider, 1)
         camera_controls.addWidget(self.exposure_value)
         camera_controls.addWidget(self.camera_fps)
+        self.handoff_slider = QSlider(Qt.Orientation.Horizontal)
+        self.handoff_slider.setRange(5, 80)
+        self.handoff_slider.setValue(self.settings.handoff_line_percent)
+        self.handoff_slider.setToolTip(
+            "Vertical image line at which a tracked part is committed to the PLC queue."
+        )
+        self.handoff_value = QLabel(f"{self.settings.handoff_line_percent} %")
+        self.handoff_slider.valueChanged.connect(self._handoff_line_changed)
+        handoff_controls = QHBoxLayout()
+        handoff_controls.addWidget(QLabel("PLC handoff line"))
+        handoff_controls.addWidget(self.handoff_slider, 1)
+        handoff_controls.addWidget(self.handoff_value)
         self.connect_button = QPushButton("Connect all components")
         self.connect_button.clicked.connect(self.connect_all)
         self.disconnect_button = QPushButton("Disconnect all components")
@@ -246,6 +262,7 @@ class MainWindow(QMainWindow):
         hardware_layout.addWidget(self.plc_status)
         hardware_layout.addWidget(self.camera_status)
         hardware_layout.addLayout(camera_controls)
+        hardware_layout.addLayout(handoff_controls)
         self.yolo_status = QLabel("YOLO: no model loaded")
         self.yolo_status.setWordWrap(True)
         self.load_yolo_button = QPushButton("Load YOLO model")
@@ -295,7 +312,7 @@ class MainWindow(QMainWindow):
         self.manual_conveyor_start_button.clicked.connect(self._manual_conveyor_start)
         self.manual_conveyor_stop_button = QPushButton("Stop conveyor")
         self.manual_conveyor_stop_button.setToolTip(
-            "Stops manual transport; during a cycle this requests a coordinated abort."
+            "Stops manual transport; during a production run this requests controlled draining."
         )
         self.manual_conveyor_stop_button.setEnabled(False)
         self.manual_conveyor_stop_button.clicked.connect(self._manual_conveyor_stop)
@@ -313,14 +330,16 @@ class MainWindow(QMainWindow):
         self.preflight = QVBoxLayout()
         preflight_box = QGroupBox("Preflight")
         preflight_box.setLayout(self.preflight)
-        self.start_button = QPushButton("Start cycle")
+        self.batch_counters = QLabel(
+            "Visible 0 · confirmed 0 · queued 0 · LB1 0 · completed 0 · bypass 0 · PLC queue 0/128"
+        )
+        self.batch_counters.setWordWrap(True)
+        self.start_button = QPushButton("Start production run")
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self._start)
-        self.stop_button = QPushButton("STOP")
-        self.stop_button.setStyleSheet(
-            "font-weight:bold;background:#dc2626;color:white;padding:12px"
-        )
-        self.stop_button.clicked.connect(self.controller.stop)
+        self.stop_button = QPushButton("Finish run (drain queue)")
+        self.stop_button.setStyleSheet("font-weight:bold;background:#d97706;color:white;padding:12px")
+        self.stop_button.clicked.connect(self.controller.finish_run)
         self.cycle_status = QLabel("No configuration")
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -328,6 +347,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.light_panel1)
         right_layout.addWidget(self.light_panel2)
         right_layout.addWidget(preflight_box)
+        right_layout.addWidget(self.batch_counters)
         right_layout.addWidget(self.cycle_status)
         right_layout.addWidget(self.start_button)
         right_layout.addWidget(self.stop_button)
@@ -353,6 +373,7 @@ class MainWindow(QMainWindow):
         self.camera.error.connect(self._camera_error)
         self.controller.preflight_changed.connect(self._preflight)
         self.controller.state_changed.connect(self._cycle_state_changed)
+        self.controller.counters_changed.connect(self._batch_counters_changed)
         self.light_panel1.confirm.toggled.connect(self._lights_changed)
         self.light_panel2.confirm.toggled.connect(self._lights_changed)
         self.light1.status_changed.connect(self._light_status_changed)
@@ -377,14 +398,13 @@ class MainWindow(QMainWindow):
             LOGGER.error("ADS connection failed/lost: %s", detail)
 
     @staticmethod
-    def _manual_conveyor_idle_state(state: CycleState) -> bool:
+    def _manual_conveyor_idle_state(state: BatchState) -> bool:
         return state in {
-            CycleState.NO_CONFIG,
-            CycleState.OFFLINE,
-            CycleState.READY,
-            CycleState.COMPLETE,
-            CycleState.ABORTED,
-            CycleState.FAULT,
+            BatchState.NO_CONFIG,
+            BatchState.OFFLINE,
+            BatchState.READY,
+            BatchState.COMPLETE,
+            BatchState.FAULT,
         }
 
     def _manual_conveyor_can_start(self) -> bool:
@@ -469,7 +489,7 @@ class MainWindow(QMainWindow):
     def _manual_conveyor_stop(self) -> None:
         if not self._manual_conveyor_idle_state(self.controller.state):
             self.manual_conveyor_status.setText(
-                "Manual conveyor: coordinated cycle abort requested …"
+                "Manual conveyor: controlled production-run draining requested …"
             )
             self.controller.stop()
             return
@@ -700,7 +720,7 @@ class MainWindow(QMainWindow):
         self._roadmap_profiles = {}
         self._machine_parameters_confirmed = True
         self.apply_machine_parameters_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         self.profile = load_pressure_profile(
             part.transitions[0].pressure_profile, require_transition=False
         )
@@ -771,8 +791,8 @@ class MainWindow(QMainWindow):
             f"Detected pose: –    Target roadmap pose: {part.target_pose}    Confidence: –"
         )
         self.cycle_status.setText("Roadmap loaded – waiting for hardware preflight")
-        self.start_button.setText("Start classification and reorientation")
-        self.stop_button.setEnabled(True)
+        self.start_button.setText("Start production run")
+        self.stop_button.setEnabled(False)
         self.apply_machine_parameters_button.setEnabled(True)
         self._load_roadmap_profiles(self._pressure_baseline)
         self.load_yolo_model()
@@ -869,12 +889,11 @@ class MainWindow(QMainWindow):
         if self._updating_machine_parameters or not self._roadmap_mode:
             return
         if self.controller.state not in {
-            CycleState.NO_CONFIG,
-            CycleState.OFFLINE,
-            CycleState.READY,
-            CycleState.COMPLETE,
-            CycleState.ABORTED,
-            CycleState.FAULT,
+            BatchState.NO_CONFIG,
+            BatchState.OFFLINE,
+            BatchState.READY,
+            BatchState.COMPLETE,
+            BatchState.FAULT,
         }:
             return
         self._machine_parameters_confirmed = False
@@ -1024,41 +1043,35 @@ class MainWindow(QMainWindow):
     def _update_camera_freshness(self) -> None:
         self.controller.set_camera_fresh(time.time() - self._last_camera_frame <= 1.0)
 
+    def _handoff_line_changed(self, value: int) -> None:
+        self.handoff_value.setText(f"{value} %")
+        try:
+            self.controller.set_handoff_line_ratio(value / 100.0)
+        except RuntimeError:
+            return
+        self.settings.handoff_line_percent = value
+        try:
+            self.settings.save()
+        except ValueError as exc:
+            LOGGER.error("Handoff-line setting could not be saved: %s", exc)
+
     def _inference_frame(self, frame: InferenceFrame) -> None:
-        self._show_image(frame.image)
-        if len(frame.detections) == 1:
-            detection = frame.detections[0]
-            mapped_pose = next(
-                (
-                    pose
-                    for pose in self.part.poses
-                    if pose.model_class_id == detection.class_id
-                ),
-                None,
-            ) if self.part else None
-            detected = (
-                f"{mapped_pose.label} (roadmap {mapped_pose.id})"
-                if mapped_pose is not None and self._roadmap_mode
-                else mapped_pose.label
-                if mapped_pose is not None
-                else f"unmapped class {detection.class_id}"
-            )
-            self.pose_label.setText(
-                f"Detected pose: {detected}    "
-                f"Target pose: {self.part.target_pose if self.part else '–'}    "
-                f"Confidence: {detection.confidence:.1%}"
-            )
-        elif frame.detections:
-            self.pose_label.setText(
-                f"Detected pose: ambiguous ({len(frame.detections)} objects)    "
-                f"Target pose: {self.part.target_pose if self.part else '–'}"
-            )
+        update = self.controller.accept_inference(frame)
+        tracks = () if update is None else update.tracks
+        self._show_image(
+            draw_tracking_overlay(frame.image, tracks, self.controller.handoff_line_ratio)
+        )
+        leftmost = next((track for track in tracks if track.leftmost), None)
+        if leftmost is None:
+            detected = "none"
+        elif leftmost.confirmed_pose_id is not None:
+            detected = f"Track {leftmost.track_id}: Pose {leftmost.confirmed_pose_id} locked"
         else:
-            self.pose_label.setText(
-                f"Detected pose: none    Target pose: "
-                f"{self.part.target_pose if self.part else '–'}"
-            )
-        self.controller.accept_inference(frame)
+            detected = f"Track {leftmost.track_id}: consensus {leftmost.pose_streak}/5"
+        self.pose_label.setText(
+            f"Leftmost: {detected}    Target pose: "
+            f"{self.part.target_pose if self.part else '–'}"
+        )
 
     @pyqtSlot(object)
     def _inference_model_ready(self, details: object) -> None:
@@ -1145,6 +1158,7 @@ class MainWindow(QMainWindow):
         self.inference = InferenceWorker(
             InferenceConfig(
                 self.part.model_path,
+                max_fps=15.0,
                 expected_class_ids=expected,
                 class_to_pose=class_to_pose,
             )
@@ -1226,16 +1240,25 @@ class MainWindow(QMainWindow):
         self._preflight_ok = all(checks.values())
         self.start_button.setEnabled(
             self._preflight_ok
-            or self.controller.state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
+            or self.controller.state in {BatchState.COMPLETE, BatchState.FAULT}
+        )
+
+    def _batch_counters_changed(self, counters: dict[str, object]) -> None:
+        self.batch_counters.setText(
+            f"Visible {counters['visible']} · confirmed {counters['confirmed']} · "
+            f"queued {counters['queued']} · LB1 {counters['entered']} · "
+            f"completed {counters['completed']} · bypass {counters['bypass']} · "
+            f"PLC queue {counters['queue_depth']}/{counters['queue_capacity']} · "
+            f"next {counters['next']}"
         )
 
     def _cycle_state_changed(self, state, detail: str) -> None:
-        LOGGER.info("Cycle state: %s%s", state, f" – {detail}" if detail else "")
+        LOGGER.info("Batch state: %s%s", state, f" – {detail}" if detail else "")
         self.cycle_status.setText(f"{state}: {detail}")
         configuration_editable = state in {
-            CycleState.NO_CONFIG,
-            CycleState.OFFLINE,
-            CycleState.READY,
+            BatchState.NO_CONFIG,
+            BatchState.OFFLINE,
+            BatchState.READY,
         }
         self.new_config_action.setEnabled(configuration_editable)
         self.open_config_action.setEnabled(configuration_editable)
@@ -1248,22 +1271,25 @@ class MainWindow(QMainWindow):
         self.use_ur_angle.setEnabled(machine_editable)
         self.ur_angle_input.setEnabled(machine_editable and self.use_ur_angle.isChecked())
         self.conveyor_speed_input.setEnabled(configuration_editable)
+        self.handoff_slider.setEnabled(configuration_editable)
         self.apply_machine_parameters_button.setEnabled(machine_editable)
-        terminal = state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
-        self.start_button.setText("Prepare next cycle" if terminal else "Start cycle")
+        terminal = state in {BatchState.COMPLETE, BatchState.FAULT}
+        self.start_button.setText(
+            "Prepare next production run" if terminal else "Start production run"
+        )
         self.start_button.setEnabled(
             terminal
             or (
-                state is CycleState.READY
+                state is BatchState.READY
                 and self._preflight_ok
             )
         )
-        self.stop_button.setEnabled(True)
+        self.stop_button.setEnabled(state in {BatchState.STARTING, BatchState.RUNNING})
         self._update_manual_conveyor_buttons()
 
     def _start(self) -> None:
         try:
-            if self.controller.state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}:
+            if self.controller.state in {BatchState.COMPLETE, BatchState.FAULT}:
                 self.controller.prepare_next_cycle()
                 return
             if self._roadmap_mode and not self._machine_parameters_confirmed:
@@ -1272,9 +1298,9 @@ class MainWindow(QMainWindow):
                     raise RuntimeError(
                         "The currently entered conveyor/UR values could not be applied."
                     )
-            self.controller.start_cycle()
+            self.controller.start_run()
         except Exception as exc:
-            QMessageBox.warning(self, "Cycle", str(exc))
+            QMessageBox.warning(self, "Production run", str(exc))
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._shutting_down = True

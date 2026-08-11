@@ -22,6 +22,7 @@ class AppSettings:
     camera_serial: str = ""
     cti_path: str = r"C:\Program Files\Baumer Camera Explorer\bgapi2_gige.cti"
     preview_fps: float = 15.0
+    handoff_line_percent: int = 30
     light_1_address: str = ""
     light_2_address: str = ""
     plc_ip: str = DEFAULT_PLC_IP
@@ -42,6 +43,8 @@ class AppSettings:
             raise ValueError("The ADS port must be between 1 and 65535")
         if not 1.0 <= float(self.preview_fps) <= 60.0:
             raise ValueError("Camera preview must be between 1 and 60 FPS")
+        if not 5 <= int(self.handoff_line_percent) <= 80:
+            raise ValueError("Handoff line must be between 5 and 80 percent")
         cti = Path(self.cti_path.strip()).expanduser()
         if not cti.is_file():
             raise ValueError(f"Baumer CTI not found: {cti}")

@@ -53,6 +53,26 @@ class FakeClient:
         self.plc = None
 
 
+class FakeReorientationOwnerPlc:
+    def __init__(self, *, safe_latched):
+        self.owner = True
+        self.safe_latched = safe_latched
+        self.writes = []
+
+    def read_by_name(self, name, _plc_type):
+        if name == "MAIN.GuiReorientationControlActive":
+            return self.owner
+        if name == "MAIN.ReorientationSafeLatch":
+            return self.safe_latched
+        raise KeyError(name)
+
+    def write_by_name(self, name, value, _plc_type):
+        self.writes.append((name, value))
+        if name == "MAIN.GuiReorientationLegacyTakeover" and value and self.safe_latched:
+            self.owner = False
+            self.safe_latched = False
+
+
 class FakeUrRtdeConnection:
     def __init__(self, states):
         self.states = iter(states)
@@ -122,6 +142,32 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(gui.LIGHT_BARRIER_INVERT_DEFAULTS, (True,) * 8)
         self.assertEqual(gui.LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS, (False,) * 8)
 
+    def test_pressure_gui_reclaims_only_a_fail_stopped_batch_owner(self):
+        stopped = FakeReorientationOwnerPlc(safe_latched=True)
+        worker = gui.AdsWorker()
+        worker.client = FakeClient(stopped)
+        self.assertTrue(worker.reclaim_fail_stopped_reorientation_owner())
+        self.assertFalse(stopped.owner)
+        self.assertEqual(
+            stopped.writes,
+            [("MAIN.GuiReorientationLegacyTakeover", True)],
+        )
+
+        running = FakeReorientationOwnerPlc(safe_latched=False)
+        worker.client = FakeClient(running)
+        self.assertFalse(worker.reclaim_fail_stopped_reorientation_owner())
+        self.assertTrue(running.owner)
+        self.assertEqual(running.writes, [])
+
+        released_but_latched = FakeReorientationOwnerPlc(safe_latched=True)
+        released_but_latched.owner = False
+        worker.client = FakeClient(released_but_latched)
+        self.assertTrue(worker.reclaim_fail_stopped_reorientation_owner())
+        self.assertEqual(
+            released_but_latched.writes,
+            [("MAIN.GuiReorientationLegacyTakeover", True)],
+        )
+
     def test_twin_cat_maps_and_processes_light_barriers_7_and_8(self):
         project_root = Path(__file__).parent / "TwinCAT Projekt3 - Kopie" / "TwinCAT Projekt3"
         project = (project_root / "TwinCAT Projekt3.tsproj").read_text(encoding="utf-8")
@@ -140,7 +186,11 @@ class AdsThreadTests(unittest.TestCase):
         self.assertIn("GuiSensorSpacing78Mm\t: REAL := 40.0;", main)
         self.assertIn("IF LightBarrier7FallingEdge THEN", main)
         self.assertIn("IF LightBarrier8FallingEdge THEN", main)
-        self.assertIn("IF LightBarrier8FallingEdge AND Array4Active", main)
+        self.assertIn(
+            "IF NOT GuiReorientationControlActive AND LightBarrier8FallingEdge "
+            "AND Array4Active",
+            main,
+        )
 
     def test_pressure_inputs_use_ten_mbar_steps(self):
         row = gui.ArrayRow(1)

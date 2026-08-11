@@ -11,7 +11,7 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 from bibazu_reorientation.config import save_roadmap_part_definition
-from bibazu_reorientation.models import CameraStatus, ConnectionState, CycleState, PlcSnapshot
+from bibazu_reorientation.models import BatchState, CameraStatus, ConnectionState, PlcSnapshot
 from bibazu_reorientation.roadmap import load_pose_roadmap
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.main_window import MainWindow
@@ -54,8 +54,8 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
     assert window.windowTitle() == "BiBaZu Reorientation Control"
-    assert window.start_button.text() == "Start cycle"
-    assert window.stop_button.text() == "STOP"
+    assert window.start_button.text() == "Start production run"
+    assert window.stop_button.text() == "Finish run (drain queue)"
     assert window.connect_button.text() == "Connect all components"
     assert window.disconnect_button.text() == "Disconnect all components"
     assert not window.exposure_slider.isEnabled()
@@ -91,7 +91,7 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     assert called == []
     assert yolo_loads == [True]
     assert not window.start_button.isEnabled()
-    assert window.start_button.text() == "Start classification and reorientation"
+    assert window.start_button.text() == "Start production run"
     assert "No pressure profile" in window.machine_parameter_status.text()
     assert window.inference is None
     disconnected: list[str] = []
@@ -391,7 +391,7 @@ def test_manual_conveyor_start_is_independent_and_forces_arrays_off(
     window.pressure.operation_finished.emit("manual_conveyor_stop")
     coordinated_stops: list[bool] = []
     monkeypatch.setattr(window.controller, "stop", lambda: coordinated_stops.append(True))
-    window.controller.state = CycleState.RUNNING
+    window.controller.state = BatchState.RUNNING
     write_count = len(writes)
     window._manual_conveyor_stop()
     assert coordinated_stops == [True]

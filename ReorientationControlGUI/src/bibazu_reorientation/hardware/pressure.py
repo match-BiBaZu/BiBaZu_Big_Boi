@@ -50,14 +50,17 @@ class _AdsWorker(QObject):
             )
             self.plc.open()
             ads_state, device_state = self.plc.read_state()
-            # Unlike Automated Image Capture, this application requires the v1
+            # Unlike Automated Image Capture, this application requires the batch
             # reorientation PLC contract. Fail explicitly when an older PLC build is
             # active instead of silently replacing missing symbols with safe-looking
             # defaults.
             self.plc.read_by_name("MAIN.ReorientationState", pyads.PLCTYPE_UINT)
+            self.plc.read_by_name(
+                "MAIN.ReorientationQueueCapacity", pyads.PLCTYPE_UINT
+            )
             self.connection.emit(
                 True,
-                f"ADS connected (AMS {ads_state}, device {device_state}; contract v1)",
+                f"ADS connected (AMS {ads_state}, device {device_state}; batch contract v2)",
             )
             self.baseline.emit(self._read_baseline())
             self.poller = QTimer(self)
@@ -203,6 +206,44 @@ class _AdsWorker(QObject):
                     ),
                     complete=bool(required_r("ReorientationComplete", pyads.PLCTYPE_BOOL)),
                     cycle_counter=int(required_r("ReorientationCycleCounter", pyads.PLCTYPE_UDINT)),
+                    batch_queue_depth=int(
+                        required_r("ReorientationQueueDepth", pyads.PLCTYPE_UINT)
+                    ),
+                    batch_queue_capacity=int(
+                        required_r("ReorientationQueueCapacity", pyads.PLCTYPE_UINT)
+                    ),
+                    batch_enqueue_ack=int(
+                        required_r("ReorientationQueueEnqueueAck", pyads.PLCTYPE_UDINT)
+                    ),
+                    batch_entered_count=int(
+                        required_r("ReorientationQueueEnteredCount", pyads.PLCTYPE_UDINT)
+                    ),
+                    batch_completed_count=int(
+                        required_r("ReorientationQueueCompletedCount", pyads.PLCTYPE_UDINT)
+                    ),
+                    batch_bypass_count=int(
+                        required_r("ReorientationQueueBypassCount", pyads.PLCTYPE_UDINT)
+                    ),
+                    batch_sensor_sequences=tuple(
+                        int(
+                            required_r(
+                                f"ReorientationSensorSequence{i}", pyads.PLCTYPE_UDINT
+                            )
+                        )
+                        for i in range(1, 9)
+                    ),
+                    batch_result_available=bool(
+                        required_r("ReorientationResultAvailable", pyads.PLCTYPE_BOOL)
+                    ),
+                    batch_result_sequence=int(
+                        required_r("ReorientationResultSequence", pyads.PLCTYPE_UDINT)
+                    ),
+                    batch_result_triggered_mask=int(
+                        required_r("ReorientationResultTriggeredMask", pyads.PLCTYPE_BYTE)
+                    ),
+                    batch_result_fault_code=int(
+                        required_r("ReorientationResultFaultCode", pyads.PLCTYPE_UINT)
+                    ),
                 )
             )
         except Exception as exc:

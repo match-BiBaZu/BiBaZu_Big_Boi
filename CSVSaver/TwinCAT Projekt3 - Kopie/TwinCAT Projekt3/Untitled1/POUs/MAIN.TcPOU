@@ -139,7 +139,46 @@ VAR
 	GuiReorientationStart			: BOOL := FALSE;
 	GuiReorientationAbort			: BOOL := FALSE;
 	GuiReorientationReset			: BOOL := FALSE;
+	GuiReorientationLegacyTakeover	: BOOL := FALSE;
 	GuiReorientationExpectedArrayMask	: BYTE := 0;
+	// Continuous production-run staging area.  The GUI writes every field first
+	// and publishes it atomically by incrementing QueueCommit last.
+	GuiReorientationFinish			: BOOL := FALSE;
+	GuiReorientationResultAck		: UDINT := 0;
+	GuiReorientationQueueCommit		: UDINT := 0;
+	GuiReorientationQueueSequence	: UDINT := 0;
+	GuiReorientationQueueTrackId		: UDINT := 0;
+	GuiReorientationQueuePoseId		: UINT := 0;
+	GuiReorientationQueueDecisionCode	: UINT := 0;
+	GuiReorientationQueueArrayMask	: BYTE := 0;
+	GuiReorientationQueueNozzleMask1	: BYTE := 0;
+	GuiReorientationQueueNozzleMask2	: BYTE := 0;
+	GuiReorientationQueueNozzleMask3	: BYTE := 0;
+	GuiReorientationQueueNozzleMask4	: BYTE := 0;
+	GuiReorientationQueuePressureMbar1	: INT := 0;
+	GuiReorientationQueuePressureMbar2	: INT := 0;
+	GuiReorientationQueuePressureMbar3	: INT := 0;
+	GuiReorientationQueuePressureMbar4	: INT := 0;
+	GuiReorientationQueueDelayMs1	: UINT := 0;
+	GuiReorientationQueueDelayMs2	: UINT := 0;
+	GuiReorientationQueueDelayMs3	: UINT := 0;
+	GuiReorientationQueueDelayMs4	: UINT := 0;
+	GuiReorientationQueuePulseMs1	: UINT := 1;
+	GuiReorientationQueuePulseMs2	: UINT := 1;
+	GuiReorientationQueuePulseMs3	: UINT := 1;
+	GuiReorientationQueuePulseMs4	: UINT := 1;
+	GuiReorientationQueueOffsetMm1	: REAL := 0.0;
+	GuiReorientationQueueOffsetMm2	: REAL := 0.0;
+	GuiReorientationQueueOffsetMm3	: REAL := 0.0;
+	GuiReorientationQueueOffsetMm4	: REAL := 0.0;
+	GuiReorientationQueueForceResponseMs1	: REAL := 0.0;
+	GuiReorientationQueueForceResponseMs2	: REAL := 0.0;
+	GuiReorientationQueueForceResponseMs3	: REAL := 0.0;
+	GuiReorientationQueueForceResponseMs4	: REAL := 0.0;
+	GuiReorientationQueueForceSingleMs1	: REAL := 0.0;
+	GuiReorientationQueueForceSingleMs2	: REAL := 0.0;
+	GuiReorientationQueueForceSingleMs3	: REAL := 0.0;
+	GuiReorientationQueueForceSingleMs4	: REAL := 0.0;
 	ReorientationHeartbeatAck		: UDINT := 0;
 	ReorientationHeartbeatAlive	: BOOL := FALSE;
 	ReorientationState				: UINT := 0; //0 legacy,10 armed,20 running,30 drain,40 complete,90+ fault
@@ -156,6 +195,72 @@ VAR
 	ReorientationCycleAgeMs		: UDINT := 0;
 	ReorientationDrainAgeMs		: UDINT := 0;
 	ReorientationSafeLatch			: BOOL := FALSE;
+	// Public continuous-run queue/result diagnostics.
+	ReorientationQueueDepth			: UINT := 0;
+	ReorientationQueueCapacity		: UINT := 128;
+	ReorientationQueueEnqueueAck		: UDINT := 0;
+	ReorientationQueueEnteredCount	: UDINT := 0;
+	ReorientationQueueCompletedCount	: UDINT := 0;
+	ReorientationQueueBypassCount		: UDINT := 0;
+	ReorientationSensorSequence1	: UDINT := 0;
+	ReorientationSensorSequence2	: UDINT := 0;
+	ReorientationSensorSequence3	: UDINT := 0;
+	ReorientationSensorSequence4	: UDINT := 0;
+	ReorientationSensorSequence5	: UDINT := 0;
+	ReorientationSensorSequence6	: UDINT := 0;
+	ReorientationSensorSequence7	: UDINT := 0;
+	ReorientationSensorSequence8	: UDINT := 0;
+	ReorientationResultAvailable	: BOOL := FALSE;
+	ReorientationResultSequence		: UDINT := 0;
+	ReorientationResultTriggeredMask	: BYTE := 0;
+	ReorientationResultFaultCode	: UINT := 0;
+	// Frozen 128-part ring.  A slot is not reusable until its result is ACKed.
+	BatchQueueSequence				: ARRAY [0..127] OF UDINT;
+	BatchQueueTrackId				: ARRAY [0..127] OF UDINT;
+	BatchQueuePoseId				: ARRAY [0..127] OF UINT;
+	BatchQueueDecisionCode			: ARRAY [0..127] OF UINT;
+	BatchQueueArrayMask				: ARRAY [0..127] OF BYTE;
+	BatchQueueNozzleMask			: ARRAY [0..127, 1..4] OF BYTE;
+	BatchQueuePressureMbar			: ARRAY [0..127, 1..4] OF INT;
+	BatchQueueDelayMs				: ARRAY [0..127, 1..4] OF UINT;
+	BatchQueuePulseMs				: ARRAY [0..127, 1..4] OF UINT;
+	BatchQueueOffsetMm				: ARRAY [0..127, 1..4] OF REAL;
+	BatchQueueForceResponseMs		: ARRAY [0..127, 1..4] OF REAL;
+	BatchQueueForceSingleMs			: ARRAY [0..127, 1..4] OF REAL;
+	BatchQueuePairStartMs			: ARRAY [0..127, 1..4] OF UDINT;
+	BatchQueueTriggeredMask			: ARRAY [0..127] OF BYTE;
+	BatchQueueFinishedMask			: ARRAY [0..127] OF BYTE;
+	BatchQueueExitSeen				: ARRAY [0..127] OF BOOL;
+	BatchResultSequence				: ARRAY [0..127] OF UDINT;
+	BatchResultTriggeredMask		: ARRAY [0..127] OF BYTE;
+	BatchResultFaultCode			: ARRAY [0..127] OF UINT;
+	BatchNextSensorSequence			: ARRAY [1..8] OF UDINT;
+	BatchSensorSequence				: ARRAY [1..8] OF UDINT;
+	BatchSensorFalling				: ARRAY [1..8] OF BOOL;
+	BatchSensorStable				: ARRAY [1..8] OF BOOL;
+	BatchPairSpacingMm				: ARRAY [1..4] OF REAL;
+	BatchSensorNeedsClear			: ARRAY [1..8] OF BOOL;
+	BatchNextCompleteSequence		: UDINT := 1;
+	BatchLastAcceptedCommit			: UDINT := 0;
+	BatchAcceptedResultAck			: UDINT := 0;
+	// Each array has its own 16-entry job FIFO.  Jobs contain the final delay,
+	// pressure and nozzle mask and therefore remain immutable during a pulse.
+	BatchJobSequence				: ARRAY [0..15, 1..4] OF UDINT;
+	BatchJobNozzleMask				: ARRAY [0..15, 1..4] OF BYTE;
+	BatchJobPressureMbar			: ARRAY [0..15, 1..4] OF INT;
+	BatchJobDelayCycles				: ARRAY [0..15, 1..4] OF INT;
+	BatchJobPulseCycles				: ARRAY [0..15, 1..4] OF INT;
+	BatchJobHead					: ARRAY [1..4] OF UINT;
+	BatchJobTail					: ARRAY [1..4] OF UINT;
+	BatchJobCount					: ARRAY [1..4] OF UINT;
+	BatchActiveSequence				: ARRAY [1..4] OF UDINT;
+	BatchLoopIndex					: INT := 0;
+	BatchSlotIndex					: INT := 0;
+	BatchJobIndex					: INT := 0;
+	BatchElapsedMs					: UDINT := 0;
+	BatchComputedDelayMs			: REAL := 0.0;
+	BatchResponseDelayMs			: REAL := 0.0;
+	BatchNozzleCount				: INT := 0;
 	EstimatedVelocityMmPerSec	: REAL := 0.0;
 	EstimatedVelocityMmPerSec1	: REAL := 0.0;
 	EstimatedVelocityMmPerSec2	: REAL := 0.0;
@@ -479,6 +584,29 @@ NozzlePressure2 := TO_REAL(RawNozzlePressure2) * 10.0 / 32767.0;
 LogPressureTrigger := FALSE;
 LightBarrierEventClockMs := LightBarrierEventClockMs + 1;
 
+// Explicit compatibility escape hatch for PressureControlGUI. It is accepted
+// only after the batch owner is already fail-stopped; a live production run can
+// never be stolen. The legacy GUI applies its normal SAFE_STOP_VALUES next.
+IF GuiReorientationLegacyTakeover AND ReorientationSafeLatch THEN
+	GuiConveyorEnabled := FALSE;
+	GuiArrayEnabled1 := FALSE;
+	GuiArrayEnabled2 := FALSE;
+	GuiArrayEnabled3 := FALSE;
+	GuiArrayEnabled4 := FALSE;
+	GuiReorientationControlActive := FALSE;
+	GuiReorientationAbort := FALSE;
+	GuiReorientationStart := FALSE;
+	GuiReorientationFinish := FALSE;
+	ReorientationFaultCode := 0;
+	ReorientationState := 0;
+	ReorientationSafeLatch := FALSE;
+	ReorientationHeartbeatAlive := FALSE;
+	BatchJobCount[1] := 0; BatchJobCount[2] := 0; BatchJobCount[3] := 0; BatchJobCount[4] := 0;
+	BatchActiveSequence[1] := 0; BatchActiveSequence[2] := 0;
+	BatchActiveSequence[3] := 0; BatchActiveSequence[4] := 0;
+	GuiReorientationLegacyTakeover := FALSE;
+END_IF
+
 // A communication loss must remain safe and must never fall back to legacy control.
 IF GuiReorientationControlActive THEN
 	IF GuiReorientationHeartbeat <> ReorientationLastHeartbeat THEN
@@ -511,6 +639,38 @@ IF GuiReorientationReset AND GuiReorientationControlActive THEN
 	ReorientationComplete := FALSE;
 	ReorientationExitSeen := FALSE;
 	ReorientationTriggeredArrayMask := 0;
+	ReorientationQueueEnqueueAck := 0;
+	ReorientationQueueEnteredCount := 0;
+	ReorientationQueueCompletedCount := 0;
+	ReorientationQueueBypassCount := 0;
+	ReorientationSensorSequence1 := 0;
+	ReorientationSensorSequence2 := 0;
+	ReorientationSensorSequence3 := 0;
+	ReorientationSensorSequence4 := 0;
+	ReorientationSensorSequence5 := 0;
+	ReorientationSensorSequence6 := 0;
+	ReorientationSensorSequence7 := 0;
+	ReorientationSensorSequence8 := 0;
+	ReorientationResultAvailable := FALSE;
+	ReorientationResultSequence := 0;
+	ReorientationResultTriggeredMask := 0;
+	ReorientationResultFaultCode := 0;
+	BatchNextCompleteSequence := 1;
+	BatchLastAcceptedCommit := 0;
+	BatchAcceptedResultAck := 0;
+	GuiReorientationQueueCommit := 0;
+	GuiReorientationQueueSequence := 0;
+	GuiReorientationResultAck := 0;
+	FOR BatchLoopIndex := 1 TO 8 DO
+		BatchNextSensorSequence[BatchLoopIndex] := 1;
+		BatchSensorNeedsClear[BatchLoopIndex] := FALSE;
+	END_FOR
+	FOR BatchLoopIndex := 1 TO 4 DO
+		BatchJobHead[BatchLoopIndex] := 0;
+		BatchJobTail[BatchLoopIndex] := 0;
+		BatchJobCount[BatchLoopIndex] := 0;
+		BatchActiveSequence[BatchLoopIndex] := 0;
+	END_FOR
 END_IF
 
 IF GuiReorientationAbort AND GuiReorientationControlActive THEN
@@ -571,6 +731,88 @@ VelocityTimer(IN := VelocityTimingActive, PT := T#30S);
 VelocityTimer2(IN := VelocityTiming2Active, PT := T#30S);
 VelocityTimer3(IN := VelocityTiming3Active, PT := T#30S);
 VelocityTimer4(IN := VelocityTiming4Active, PT := T#30S);
+
+// Feed each idle array from its private FIFO.  The copied GUI-compatible fields
+// are not touched again until this pulse has completed, so the existing VTEM
+// state machines operate on an immutable per-part snapshot.
+IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (ReorientationState = 30)) THEN
+	IF (State = 2) AND (BatchActiveSequence[1] = 0) AND (BatchJobCount[1] > 0) THEN
+		BatchActiveSequence[1] := BatchJobSequence[BatchJobHead[1], 1];
+		GuiPressureMbar1 := BatchJobPressureMbar[BatchJobHead[1], 1];
+		GuiDelayMs1 := INT_TO_UINT(BatchJobDelayCycles[BatchJobHead[1], 1]);
+		GuiPulseDurationMs1 := INT_TO_UINT(BatchJobPulseCycles[BatchJobHead[1], 1]);
+		GuiOffsetMm1 := 0.0;
+		GuiForceResponseDelayMs1 := 0.0;
+		GuiForceSingleNozzleResponseDelayMs1 := 0.0;
+		GuiArrayEnabled1 := TRUE;
+		GuiNozzleEnabled1 := (BatchJobNozzleMask[BatchJobHead[1], 1] AND BYTE#1) <> BYTE#0;
+		GuiNozzleEnabled2 := (BatchJobNozzleMask[BatchJobHead[1], 1] AND BYTE#2) <> BYTE#0;
+		GuiNozzleEnabled3 := (BatchJobNozzleMask[BatchJobHead[1], 1] AND BYTE#4) <> BYTE#0;
+		GuiNozzleEnabled4 := (BatchJobNozzleMask[BatchJobHead[1], 1] AND BYTE#8) <> BYTE#0;
+		GuiNozzleEnabled5 := (BatchJobNozzleMask[BatchJobHead[1], 1] AND BYTE#16) <> BYTE#0;
+		GuiNozzleEnabled6 := (BatchJobNozzleMask[BatchJobHead[1], 1] AND BYTE#32) <> BYTE#0;
+		BatchJobHead[1] := (BatchJobHead[1] + 1) MOD 16;
+		BatchJobCount[1] := BatchJobCount[1] - 1;
+		Array1TriggerPending := TRUE;
+	END_IF
+	IF (State2 = 2) AND (BatchActiveSequence[2] = 0) AND (BatchJobCount[2] > 0) THEN
+		BatchActiveSequence[2] := BatchJobSequence[BatchJobHead[2], 2];
+		GuiPressureMbar2 := BatchJobPressureMbar[BatchJobHead[2], 2];
+		GuiDelayMs2 := INT_TO_UINT(BatchJobDelayCycles[BatchJobHead[2], 2]);
+		GuiPulseDurationMs2 := INT_TO_UINT(BatchJobPulseCycles[BatchJobHead[2], 2]);
+		GuiOffsetMm2 := 0.0;
+		GuiForceResponseDelayMs2 := 0.0;
+		GuiForceSingleNozzleResponseDelayMs2 := 0.0;
+		GuiArrayEnabled2 := TRUE;
+		GuiNozzleEnabled7 := (BatchJobNozzleMask[BatchJobHead[2], 2] AND BYTE#1) <> BYTE#0;
+		GuiNozzleEnabled8 := (BatchJobNozzleMask[BatchJobHead[2], 2] AND BYTE#2) <> BYTE#0;
+		GuiNozzleEnabled9 := (BatchJobNozzleMask[BatchJobHead[2], 2] AND BYTE#4) <> BYTE#0;
+		GuiNozzleEnabled10 := (BatchJobNozzleMask[BatchJobHead[2], 2] AND BYTE#8) <> BYTE#0;
+		GuiNozzleEnabled11 := (BatchJobNozzleMask[BatchJobHead[2], 2] AND BYTE#16) <> BYTE#0;
+		GuiNozzleEnabled12 := (BatchJobNozzleMask[BatchJobHead[2], 2] AND BYTE#32) <> BYTE#0;
+		BatchJobHead[2] := (BatchJobHead[2] + 1) MOD 16;
+		BatchJobCount[2] := BatchJobCount[2] - 1;
+		Array2TriggerPending := TRUE;
+	END_IF
+	IF (State3 = 2) AND (BatchActiveSequence[3] = 0) AND (BatchJobCount[3] > 0) THEN
+		BatchActiveSequence[3] := BatchJobSequence[BatchJobHead[3], 3];
+		GuiPressureMbar3 := BatchJobPressureMbar[BatchJobHead[3], 3];
+		GuiDelayMs3 := INT_TO_UINT(BatchJobDelayCycles[BatchJobHead[3], 3]);
+		GuiPulseDurationMs3 := INT_TO_UINT(BatchJobPulseCycles[BatchJobHead[3], 3]);
+		GuiOffsetMm3 := 0.0;
+		GuiForceResponseDelayMs3 := 0.0;
+		GuiForceSingleNozzleResponseDelayMs3 := 0.0;
+		GuiArrayEnabled3 := TRUE;
+		GuiNozzleEnabled13 := (BatchJobNozzleMask[BatchJobHead[3], 3] AND BYTE#1) <> BYTE#0;
+		GuiNozzleEnabled14 := (BatchJobNozzleMask[BatchJobHead[3], 3] AND BYTE#2) <> BYTE#0;
+		GuiNozzleEnabled15 := (BatchJobNozzleMask[BatchJobHead[3], 3] AND BYTE#4) <> BYTE#0;
+		GuiNozzleEnabled16 := (BatchJobNozzleMask[BatchJobHead[3], 3] AND BYTE#8) <> BYTE#0;
+		GuiNozzleEnabled17 := (BatchJobNozzleMask[BatchJobHead[3], 3] AND BYTE#16) <> BYTE#0;
+		GuiNozzleEnabled18 := (BatchJobNozzleMask[BatchJobHead[3], 3] AND BYTE#32) <> BYTE#0;
+		BatchJobHead[3] := (BatchJobHead[3] + 1) MOD 16;
+		BatchJobCount[3] := BatchJobCount[3] - 1;
+		Array3TriggerPending := TRUE;
+	END_IF
+	IF (State4 = 2) AND (BatchActiveSequence[4] = 0) AND (BatchJobCount[4] > 0) THEN
+		BatchActiveSequence[4] := BatchJobSequence[BatchJobHead[4], 4];
+		GuiPressureMbar4 := BatchJobPressureMbar[BatchJobHead[4], 4];
+		GuiDelayMs4 := INT_TO_UINT(BatchJobDelayCycles[BatchJobHead[4], 4]);
+		GuiPulseDurationMs4 := INT_TO_UINT(BatchJobPulseCycles[BatchJobHead[4], 4]);
+		GuiOffsetMm4 := 0.0;
+		GuiForceResponseDelayMs4 := 0.0;
+		GuiForceSingleNozzleResponseDelayMs4 := 0.0;
+		GuiArrayEnabled4 := TRUE;
+		GuiNozzleEnabled19 := (BatchJobNozzleMask[BatchJobHead[4], 4] AND BYTE#1) <> BYTE#0;
+		GuiNozzleEnabled20 := (BatchJobNozzleMask[BatchJobHead[4], 4] AND BYTE#2) <> BYTE#0;
+		GuiNozzleEnabled21 := (BatchJobNozzleMask[BatchJobHead[4], 4] AND BYTE#4) <> BYTE#0;
+		GuiNozzleEnabled22 := (BatchJobNozzleMask[BatchJobHead[4], 4] AND BYTE#8) <> BYTE#0;
+		GuiNozzleEnabled23 := (BatchJobNozzleMask[BatchJobHead[4], 4] AND BYTE#16) <> BYTE#0;
+		GuiNozzleEnabled24 := (BatchJobNozzleMask[BatchJobHead[4], 4] AND BYTE#32) <> BYTE#0;
+		BatchJobHead[4] := (BatchJobHead[4] + 1) MOD 16;
+		BatchJobCount[4] := BatchJobCount[4] - 1;
+		Array4TriggerPending := TRUE;
+	END_IF
+END_IF
 
 Array1Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled1 AND (GuiNozzleEnabled1 OR GuiNozzleEnabled2 OR GuiNozzleEnabled3 OR GuiNozzleEnabled4 OR GuiNozzleEnabled5 OR GuiNozzleEnabled6);
 Array2Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled2 AND (GuiNozzleEnabled7 OR GuiNozzleEnabled8 OR GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
@@ -1129,45 +1371,108 @@ LightBarrier6FallingEdge := (NOT LightBarrierStable6) AND LastLightBarrier6;
 LightBarrier7FallingEdge := (NOT LightBarrierStable7) AND LastLightBarrier7;
 LightBarrier8FallingEdge := (NOT LightBarrierStable8) AND LastLightBarrier8;
 
-// Reorientation cycle ownership and event latches. The conveyor is released only
-// after a fresh heartbeat and the GUI's explicit start pulse.
+// Production-run ownership.  State 20 accepts parts continuously; state 30
+// refuses new commits and drains the already accepted queue.
 IF GuiReorientationControlActive AND (ReorientationState = 0) THEN
 	ReorientationState := 10;
 END_IF
 IF GuiReorientationControlActive AND GuiReorientationStart AND (ReorientationState = 10) AND ReorientationHeartbeatAlive AND NOT ReorientationSafeLatch THEN
-	ReorientationExpectedArrayMask := GuiReorientationExpectedArrayMask;
+	ReorientationExpectedArrayMask := 0;
 	ReorientationTriggeredArrayMask := 0;
 	ReorientationExitSeen := FALSE;
 	ReorientationComplete := FALSE;
-	ReorientationCycleAgeMs := 0;
-	ReorientationDrainAgeMs := 0;
 	ReorientationState := 20;
 END_IF
 
-IF GuiReorientationControlActive AND (ReorientationState = 20) THEN
-	ReorientationCycleAgeMs := ReorientationCycleAgeMs + 1;
-	IF LightBarrier2FallingEdge AND ((ReorientationExpectedArrayMask AND BYTE#1) <> BYTE#0) THEN
-		ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#1;
-	END_IF
-	IF LightBarrier4FallingEdge AND ((ReorientationExpectedArrayMask AND BYTE#2) <> BYTE#0) THEN
-		ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#2;
-	END_IF
-	IF LightBarrier6FallingEdge AND ((ReorientationExpectedArrayMask AND BYTE#4) <> BYTE#0) THEN
-		ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#4;
-	END_IF
-	IF LightBarrier8FallingEdge THEN
-		IF (ReorientationExpectedArrayMask AND BYTE#8) <> BYTE#0 THEN
-			ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#8;
-		END_IF
-		ReorientationExitSeen := TRUE;
-		GuiConveyorEnabled := FALSE;
-		ReorientationState := 30;
-		ReorientationDrainAgeMs := 0;
-	ELSIF ReorientationCycleAgeMs > 60000 THEN
+IF GuiReorientationControlActive AND GuiReorientationFinish AND (ReorientationState = 20) THEN
+	ReorientationState := 30;
+END_IF
+
+// Atomic producer commit.  Sequence IDs must be contiguous and an unacknowledged
+// result keeps its ring slot occupied, preventing silent overwrite.
+IF GuiReorientationControlActive AND (ReorientationState = 20)
+	AND (GuiReorientationQueueCommit <> BatchLastAcceptedCommit) THEN
+	IF (GuiReorientationQueueCommit <> (ReorientationQueueEnqueueAck + 1))
+		OR (GuiReorientationQueueSequence <> GuiReorientationQueueCommit) THEN
 		ReorientationFaultCode := 92;
 		ReorientationState := 92;
 		ReorientationSafeLatch := TRUE;
+	ELSIF (ReorientationQueueEnqueueAck - BatchAcceptedResultAck) >= 128 THEN
+		ReorientationFaultCode := 93;
+		ReorientationState := 93;
+		ReorientationSafeLatch := TRUE;
+	ELSE
+		BatchSlotIndex := UDINT_TO_INT((GuiReorientationQueueSequence - 1) MOD 128);
+		BatchQueueSequence[BatchSlotIndex] := GuiReorientationQueueSequence;
+		BatchQueueTrackId[BatchSlotIndex] := GuiReorientationQueueTrackId;
+		BatchQueuePoseId[BatchSlotIndex] := GuiReorientationQueuePoseId;
+		BatchQueueDecisionCode[BatchSlotIndex] := GuiReorientationQueueDecisionCode;
+		BatchQueueArrayMask[BatchSlotIndex] := GuiReorientationQueueArrayMask AND BYTE#15;
+		BatchQueueNozzleMask[BatchSlotIndex, 1] := GuiReorientationQueueNozzleMask1 AND BYTE#63;
+		BatchQueueNozzleMask[BatchSlotIndex, 2] := GuiReorientationQueueNozzleMask2 AND BYTE#63;
+		BatchQueueNozzleMask[BatchSlotIndex, 3] := GuiReorientationQueueNozzleMask3 AND BYTE#63;
+		BatchQueueNozzleMask[BatchSlotIndex, 4] := GuiReorientationQueueNozzleMask4 AND BYTE#63;
+		BatchQueuePressureMbar[BatchSlotIndex, 1] := GuiReorientationQueuePressureMbar1;
+		BatchQueuePressureMbar[BatchSlotIndex, 2] := GuiReorientationQueuePressureMbar2;
+		BatchQueuePressureMbar[BatchSlotIndex, 3] := GuiReorientationQueuePressureMbar3;
+		BatchQueuePressureMbar[BatchSlotIndex, 4] := GuiReorientationQueuePressureMbar4;
+		BatchQueueDelayMs[BatchSlotIndex, 1] := GuiReorientationQueueDelayMs1;
+		BatchQueueDelayMs[BatchSlotIndex, 2] := GuiReorientationQueueDelayMs2;
+		BatchQueueDelayMs[BatchSlotIndex, 3] := GuiReorientationQueueDelayMs3;
+		BatchQueueDelayMs[BatchSlotIndex, 4] := GuiReorientationQueueDelayMs4;
+		BatchQueuePulseMs[BatchSlotIndex, 1] := GuiReorientationQueuePulseMs1;
+		BatchQueuePulseMs[BatchSlotIndex, 2] := GuiReorientationQueuePulseMs2;
+		BatchQueuePulseMs[BatchSlotIndex, 3] := GuiReorientationQueuePulseMs3;
+		BatchQueuePulseMs[BatchSlotIndex, 4] := GuiReorientationQueuePulseMs4;
+		BatchQueueOffsetMm[BatchSlotIndex, 1] := GuiReorientationQueueOffsetMm1;
+		BatchQueueOffsetMm[BatchSlotIndex, 2] := GuiReorientationQueueOffsetMm2;
+		BatchQueueOffsetMm[BatchSlotIndex, 3] := GuiReorientationQueueOffsetMm3;
+		BatchQueueOffsetMm[BatchSlotIndex, 4] := GuiReorientationQueueOffsetMm4;
+		BatchQueueForceResponseMs[BatchSlotIndex, 1] := GuiReorientationQueueForceResponseMs1;
+		BatchQueueForceResponseMs[BatchSlotIndex, 2] := GuiReorientationQueueForceResponseMs2;
+		BatchQueueForceResponseMs[BatchSlotIndex, 3] := GuiReorientationQueueForceResponseMs3;
+		BatchQueueForceResponseMs[BatchSlotIndex, 4] := GuiReorientationQueueForceResponseMs4;
+		BatchQueueForceSingleMs[BatchSlotIndex, 1] := GuiReorientationQueueForceSingleMs1;
+		BatchQueueForceSingleMs[BatchSlotIndex, 2] := GuiReorientationQueueForceSingleMs2;
+		BatchQueueForceSingleMs[BatchSlotIndex, 3] := GuiReorientationQueueForceSingleMs3;
+		BatchQueueForceSingleMs[BatchSlotIndex, 4] := GuiReorientationQueueForceSingleMs4;
+		BatchQueueTriggeredMask[BatchSlotIndex] := 0;
+		BatchQueueFinishedMask[BatchSlotIndex] := (NOT BatchQueueArrayMask[BatchSlotIndex]) AND BYTE#15;
+		BatchQueueExitSeen[BatchSlotIndex] := FALSE;
+		IF (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#1) <> BYTE#0)
+			AND (BatchQueueNozzleMask[BatchSlotIndex, 1] = BYTE#0))
+			OR (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#2) <> BYTE#0)
+			AND (BatchQueueNozzleMask[BatchSlotIndex, 2] = BYTE#0))
+			OR (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#4) <> BYTE#0)
+			AND (BatchQueueNozzleMask[BatchSlotIndex, 3] = BYTE#0))
+			OR (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#8) <> BYTE#0)
+			AND (BatchQueueNozzleMask[BatchSlotIndex, 4] = BYTE#0)) THEN
+			ReorientationFaultCode := 92;
+			ReorientationState := 92;
+			ReorientationSafeLatch := TRUE;
+		ELSE
+			BatchLastAcceptedCommit := GuiReorientationQueueCommit;
+			ReorientationQueueEnqueueAck := GuiReorientationQueueSequence;
+		END_IF
 	END_IF
+END_IF
+
+IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (ReorientationState = 30))
+	AND (GuiReorientationResultAck <> BatchAcceptedResultAck) THEN
+	IF (GuiReorientationResultAck = (BatchAcceptedResultAck + 1))
+		AND (GuiReorientationResultAck <= ReorientationQueueCompletedCount) THEN
+		BatchAcceptedResultAck := GuiReorientationResultAck;
+	ELSE
+		ReorientationFaultCode := 92; // invalid or out-of-order result acknowledgement
+		ReorientationState := 92;
+		ReorientationSafeLatch := TRUE;
+	END_IF
+END_IF
+
+IF ReorientationQueueEnqueueAck >= BatchAcceptedResultAck THEN
+	ReorientationQueueDepth := UDINT_TO_UINT(ReorientationQueueEnqueueAck - BatchAcceptedResultAck);
+ELSE
+	ReorientationQueueDepth := 0;
 END_IF
 
 // Record every accepted stable transition at PLC-cycle resolution for ADS diagnostics.
@@ -1211,6 +1516,125 @@ IF LightBarrierStable8 <> LastLightBarrier8 THEN
 	LightBarrierLastEventTimeMs8 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition8 := StepperInternalPosition;
 END_IF
+
+// Continuous part cursor. Every sensor sees sequence 1, 2, 3, ... in exactly
+// that order. Odd barriers capture time; the following even barrier creates an
+// immutable array job and computes its final offset delay from that same part.
+BatchSensorFalling[1] := LightBarrier1FallingEdge;
+BatchSensorFalling[2] := LightBarrier2FallingEdge;
+BatchSensorFalling[3] := LightBarrier3FallingEdge;
+BatchSensorFalling[4] := LightBarrier4FallingEdge;
+BatchSensorFalling[5] := LightBarrier5FallingEdge;
+BatchSensorFalling[6] := LightBarrier6FallingEdge;
+BatchSensorFalling[7] := LightBarrier7FallingEdge;
+BatchSensorFalling[8] := LightBarrier8FallingEdge;
+BatchSensorStable[1] := LightBarrierStable1;
+BatchSensorStable[2] := LightBarrierStable2;
+BatchSensorStable[3] := LightBarrierStable3;
+BatchSensorStable[4] := LightBarrierStable4;
+BatchSensorStable[5] := LightBarrierStable5;
+BatchSensorStable[6] := LightBarrierStable6;
+BatchSensorStable[7] := LightBarrierStable7;
+BatchSensorStable[8] := LightBarrierStable8;
+BatchPairSpacingMm[1] := GuiSensorSpacing12Mm;
+BatchPairSpacingMm[2] := GuiSensorSpacing34Mm;
+BatchPairSpacingMm[3] := GuiSensorSpacing56Mm;
+BatchPairSpacingMm[4] := GuiSensorSpacing78Mm;
+
+IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (ReorientationState = 30)) THEN
+	FOR BatchLoopIndex := 1 TO 8 DO
+		IF BatchSensorStable[BatchLoopIndex] THEN
+			BatchSensorNeedsClear[BatchLoopIndex] := FALSE;
+		END_IF
+		IF BatchSensorFalling[BatchLoopIndex] THEN
+			IF BatchSensorNeedsClear[BatchLoopIndex] THEN
+				ReorientationFaultCode := 96; // sensor did not become clear between parts
+				ReorientationState := 96;
+				ReorientationSafeLatch := TRUE;
+			ELSE
+				BatchSensorNeedsClear[BatchLoopIndex] := TRUE;
+				BatchSlotIndex := UDINT_TO_INT((BatchNextSensorSequence[BatchLoopIndex] - 1) MOD 128);
+				IF (BatchNextSensorSequence[BatchLoopIndex] > ReorientationQueueEnqueueAck)
+					OR (BatchQueueSequence[BatchSlotIndex] <> BatchNextSensorSequence[BatchLoopIndex]) THEN
+					ReorientationFaultCode := 96; // queue underflow or sequence mismatch
+					ReorientationState := 96;
+					ReorientationSafeLatch := TRUE;
+				ELSIF (BatchLoopIndex > 1)
+					AND (BatchSensorSequence[BatchLoopIndex - 1] < BatchNextSensorSequence[BatchLoopIndex]) THEN
+					ReorientationFaultCode := 96; // part reached a sensor out of order
+					ReorientationState := 96;
+					ReorientationSafeLatch := TRUE;
+				ELSE
+					BatchSensorSequence[BatchLoopIndex] := BatchNextSensorSequence[BatchLoopIndex];
+					IF (BatchLoopIndex MOD 2) = 1 THEN
+						BatchJobIndex := (BatchLoopIndex + 1) / 2;
+						BatchQueuePairStartMs[BatchSlotIndex, BatchJobIndex] := LightBarrierEventClockMs;
+						IF BatchLoopIndex = 1 THEN
+							ReorientationQueueEnteredCount := ReorientationQueueEnteredCount + 1;
+						END_IF
+					ELSE
+						BatchJobIndex := BatchLoopIndex / 2;
+						IF (BatchQueueArrayMask[BatchSlotIndex] AND SHL(BYTE#1, BatchJobIndex - 1)) <> BYTE#0 THEN
+							IF BatchJobCount[BatchJobIndex] >= 16 THEN
+								ReorientationFaultCode := 95; // per-array job FIFO overflow
+								ReorientationState := 95;
+								ReorientationSafeLatch := TRUE;
+							ELSE
+								BatchElapsedMs := LightBarrierEventClockMs - BatchQueuePairStartMs[BatchSlotIndex, BatchJobIndex];
+								BatchNozzleCount := 0;
+								FOR BatchSlotIndex := 0 TO 5 DO
+									IF (BatchQueueNozzleMask[UDINT_TO_INT((BatchNextSensorSequence[BatchLoopIndex] - 1) MOD 128), BatchJobIndex]
+										AND SHL(BYTE#1, BatchSlotIndex)) <> BYTE#0 THEN
+										BatchNozzleCount := BatchNozzleCount + 1;
+									END_IF
+								END_FOR
+								BatchSlotIndex := UDINT_TO_INT((BatchNextSensorSequence[BatchLoopIndex] - 1) MOD 128);
+								IF BatchNozzleCount <= 1 THEN
+									BatchResponseDelayMs := BatchQueueForceSingleMs[BatchSlotIndex, BatchJobIndex];
+								ELSE
+									BatchResponseDelayMs := BatchQueueForceResponseMs[BatchSlotIndex, BatchJobIndex];
+								END_IF
+								BatchComputedDelayMs := UINT_TO_REAL(BatchQueueDelayMs[BatchSlotIndex, BatchJobIndex]);
+								IF (BatchElapsedMs > 0) AND (BatchPairSpacingMm[BatchJobIndex] > 0.0)
+									AND (BatchQueueOffsetMm[BatchSlotIndex, BatchJobIndex] > 0.0) THEN
+									BatchComputedDelayMs := BatchComputedDelayMs
+										+ BatchQueueOffsetMm[BatchSlotIndex, BatchJobIndex]
+										* UDINT_TO_REAL(BatchElapsedMs) / BatchPairSpacingMm[BatchJobIndex]
+										- BatchResponseDelayMs;
+								END_IF
+								IF BatchComputedDelayMs < 0.0 THEN BatchComputedDelayMs := 0.0; END_IF
+								IF BatchComputedDelayMs > 31000.0 THEN BatchComputedDelayMs := 31000.0; END_IF
+								BatchJobSequence[BatchJobTail[BatchJobIndex], BatchJobIndex] := BatchQueueSequence[BatchSlotIndex];
+								BatchJobNozzleMask[BatchJobTail[BatchJobIndex], BatchJobIndex] := BatchQueueNozzleMask[BatchSlotIndex, BatchJobIndex];
+								BatchJobPressureMbar[BatchJobTail[BatchJobIndex], BatchJobIndex] := BatchQueuePressureMbar[BatchSlotIndex, BatchJobIndex];
+								BatchJobDelayCycles[BatchJobTail[BatchJobIndex], BatchJobIndex] := REAL_TO_INT(BatchComputedDelayMs);
+								BatchJobPulseCycles[BatchJobTail[BatchJobIndex], BatchJobIndex] := UINT_TO_INT(BatchQueuePulseMs[BatchSlotIndex, BatchJobIndex]);
+								BatchJobTail[BatchJobIndex] := (BatchJobTail[BatchJobIndex] + 1) MOD 16;
+								BatchJobCount[BatchJobIndex] := BatchJobCount[BatchJobIndex] + 1;
+								BatchQueueTriggeredMask[BatchSlotIndex] := BatchQueueTriggeredMask[BatchSlotIndex]
+									OR SHL(BYTE#1, BatchJobIndex - 1);
+							END_IF
+						END_IF
+						IF BatchLoopIndex = 8 THEN
+							BatchQueueExitSeen[BatchSlotIndex] := TRUE;
+							ReorientationExitSeen := TRUE;
+						END_IF
+					END_IF
+					BatchNextSensorSequence[BatchLoopIndex] := BatchNextSensorSequence[BatchLoopIndex] + 1;
+				END_IF
+			END_IF
+		END_IF
+	END_FOR
+END_IF
+
+ReorientationSensorSequence1 := BatchSensorSequence[1];
+ReorientationSensorSequence2 := BatchSensorSequence[2];
+ReorientationSensorSequence3 := BatchSensorSequence[3];
+ReorientationSensorSequence4 := BatchSensorSequence[4];
+ReorientationSensorSequence5 := BatchSensorSequence[5];
+ReorientationSensorSequence6 := BatchSensorSequence[6];
+ReorientationSensorSequence7 := BatchSensorSequence[7];
+ReorientationSensorSequence8 := BatchSensorSequence[8];
 
 // Accept either signal polarity, but only after the new state remains stable for the debounce time.
 // The candidate position is captured on the first cycle of the ultimately stable transition.
@@ -1282,19 +1706,19 @@ IF BarrierCalibrationActive
 	END_IF
 END_IF
 
-IF LightBarrier2FallingEdge AND Array1Active AND (State <= 2) THEN
+IF NOT GuiReorientationControlActive AND LightBarrier2FallingEdge AND Array1Active AND (State <= 2) THEN
 	Array1TriggerPending := TRUE;
 END_IF
 
-IF LightBarrier4FallingEdge AND Array2Active AND (State2 = 2) THEN
+IF NOT GuiReorientationControlActive AND LightBarrier4FallingEdge AND Array2Active AND (State2 = 2) THEN
 	Array2TriggerPending := TRUE;
 END_IF
 
-IF LightBarrier6FallingEdge AND Array3Active AND (State3 <= 2) THEN
+IF NOT GuiReorientationControlActive AND LightBarrier6FallingEdge AND Array3Active AND (State3 <= 2) THEN
 	Array3TriggerPending := TRUE;
 END_IF
 
-IF LightBarrier8FallingEdge AND Array4Active AND (State4 = 2) THEN
+IF NOT GuiReorientationControlActive AND LightBarrier8FallingEdge AND Array4Active AND (State4 = 2) THEN
 	Array4TriggerPending := TRUE;
 END_IF
 
@@ -1857,6 +2281,12 @@ CASE State OF
 					ShotCounter := ShotCounter + 1;
 					LogPressureTrigger := TRUE;
 				END_IF
+				IF GuiReorientationControlActive AND (BatchActiveSequence[1] > 0) THEN
+					BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[1] - 1) MOD 128);
+					BatchQueueFinishedMask[BatchSlotIndex] := BatchQueueFinishedMask[BatchSlotIndex] OR BYTE#1;
+					BatchActiveSequence[1] := 0;
+					GuiArrayEnabled1 := FALSE;
+				END_IF
 
 				Counter := 0;
 				State := 2;
@@ -1912,6 +2342,12 @@ CASE State2 OF
 				OpenValve8 := FALSE;
 				OpenValve19 := FALSE;
 				OpenValve20 := FALSE;
+				IF GuiReorientationControlActive AND (BatchActiveSequence[2] > 0) THEN
+					BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[2] - 1) MOD 128);
+					BatchQueueFinishedMask[BatchSlotIndex] := BatchQueueFinishedMask[BatchSlotIndex] OR BYTE#2;
+					BatchActiveSequence[2] := 0;
+					GuiArrayEnabled2 := FALSE;
+				END_IF
 				Counter2 := 0;
 				State2 := 2;
 			END_IF
@@ -1967,6 +2403,12 @@ CASE State3 OF
 				OpenValve12 := FALSE;
 				OpenValve21 := FALSE;
 				OpenValve22 := FALSE;
+				IF GuiReorientationControlActive AND (BatchActiveSequence[3] > 0) THEN
+					BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[3] - 1) MOD 128);
+					BatchQueueFinishedMask[BatchSlotIndex] := BatchQueueFinishedMask[BatchSlotIndex] OR BYTE#4;
+					BatchActiveSequence[3] := 0;
+					GuiArrayEnabled3 := FALSE;
+				END_IF
 				Counter3 := 0;
 				State3 := 2;
 			END_IF
@@ -2022,35 +2464,68 @@ CASE State4 OF
 				OpenValve16 := FALSE;
 				OpenValve23 := FALSE;
 				OpenValve24 := FALSE;
+				IF GuiReorientationControlActive AND (BatchActiveSequence[4] > 0) THEN
+					BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[4] - 1) MOD 128);
+					BatchQueueFinishedMask[BatchSlotIndex] := BatchQueueFinishedMask[BatchSlotIndex] OR BYTE#8;
+					BatchActiveSequence[4] := 0;
+					GuiArrayEnabled4 := FALSE;
+				END_IF
 				Counter4 := 0;
 				State4 := 2;
 			END_IF
 		END_IF
 END_CASE
 
-// Completion is independent of the legacy ShotCounter: all expected triggers and
-// the complete idle/valve state are required after the latched LB8 falling edge.
+// Physical idle status covers the four active jobs and all queued array jobs.
 ReorientationArraysIdle := (State = 2) AND (State2 = 2) AND (State3 = 2) AND (State4 = 2)
 	AND NOT Array1TriggerPending AND NOT Array2TriggerPending AND NOT Array3TriggerPending AND NOT Array4TriggerPending
+	AND (BatchJobCount[1] = 0) AND (BatchJobCount[2] = 0) AND (BatchJobCount[3] = 0) AND (BatchJobCount[4] = 0)
+	AND (BatchActiveSequence[1] = 0) AND (BatchActiveSequence[2] = 0)
+	AND (BatchActiveSequence[3] = 0) AND (BatchActiveSequence[4] = 0)
 	AND NOT OpenValve1 AND NOT OpenValve2 AND NOT OpenValve3 AND NOT OpenValve4
 	AND NOT OpenValve5 AND NOT OpenValve6 AND NOT OpenValve7 AND NOT OpenValve8
 	AND NOT OpenValve9 AND NOT OpenValve10 AND NOT OpenValve11 AND NOT OpenValve12
 	AND NOT OpenValve13 AND NOT OpenValve14 AND NOT OpenValve15 AND NOT OpenValve16
 	AND NOT OpenValve17 AND NOT OpenValve18 AND NOT OpenValve19 AND NOT OpenValve20
 	AND NOT OpenValve21 AND NOT OpenValve22 AND NOT OpenValve23 AND NOT OpenValve24;
-
-IF GuiReorientationControlActive AND (ReorientationState = 30) THEN
-	ReorientationDrainAgeMs := ReorientationDrainAgeMs + 1;
-	IF ReorientationArraysIdle AND (ReorientationTriggeredArrayMask = ReorientationExpectedArrayMask) THEN
-		ReorientationComplete := TRUE;
-		ReorientationBusy := FALSE;
+// Complete records strictly in sequence.  LB8 may arrive before a delayed array
+// pulse ends, therefore ExitSeen and all four finished bits are both required.
+IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (ReorientationState = 30))
+	AND (BatchNextCompleteSequence <= ReorientationQueueEnqueueAck) THEN
+	BatchSlotIndex := UDINT_TO_INT((BatchNextCompleteSequence - 1) MOD 128);
+	IF BatchQueueExitSeen[BatchSlotIndex] AND (BatchQueueFinishedMask[BatchSlotIndex] = BYTE#15) THEN
+		BatchResultSequence[BatchSlotIndex] := BatchQueueSequence[BatchSlotIndex];
+		BatchResultTriggeredMask[BatchSlotIndex] := BatchQueueTriggeredMask[BatchSlotIndex];
+		BatchResultFaultCode[BatchSlotIndex] := 0;
+		ReorientationQueueCompletedCount := BatchNextCompleteSequence;
 		ReorientationCycleCounter := ReorientationCycleCounter + 1;
-		ReorientationState := 40;
-	ELSIF ReorientationDrainAgeMs > 35000 THEN
-		ReorientationFaultCode := 93;
-		ReorientationState := 93;
-		ReorientationSafeLatch := TRUE;
+		IF BatchQueueArrayMask[BatchSlotIndex] = BYTE#0 THEN
+			ReorientationQueueBypassCount := ReorientationQueueBypassCount + 1;
+		END_IF
+		BatchNextCompleteSequence := BatchNextCompleteSequence + 1;
 	END_IF
+END_IF
+
+// Result ring head. The GUI acknowledges only after its image/CSV export.
+IF BatchAcceptedResultAck < ReorientationQueueCompletedCount THEN
+	BatchSlotIndex := UDINT_TO_INT(BatchAcceptedResultAck MOD 128);
+	ReorientationResultAvailable := TRUE;
+	ReorientationResultSequence := BatchResultSequence[BatchSlotIndex];
+	ReorientationResultTriggeredMask := BatchResultTriggeredMask[BatchSlotIndex];
+	ReorientationResultFaultCode := BatchResultFaultCode[BatchSlotIndex];
+ELSE
+	ReorientationResultAvailable := FALSE;
+END_IF
+
+// A normal finish drains sensors, array FIFOs and exported results before the
+// conveyor is stopped. No timeout is imposed on an intentionally long run.
+IF GuiReorientationControlActive AND (ReorientationState = 30)
+	AND (ReorientationQueueCompletedCount = ReorientationQueueEnqueueAck)
+	AND (BatchAcceptedResultAck = ReorientationQueueCompletedCount)
+	AND ReorientationArraysIdle THEN
+	GuiConveyorEnabled := FALSE;
+	ReorientationComplete := TRUE;
+	ReorientationState := 40;
 END_IF
 
 ReorientationBusy := GuiReorientationControlActive AND (ReorientationState >= 10) AND (ReorientationState < 40);
@@ -2059,6 +2534,9 @@ ReorientationBusy := GuiReorientationControlActive AND (ReorientationState >= 10
 // the enables and conveyor permit remain latched off.
 IF ReorientationSafeLatch THEN
 	Counter := 0; Counter2 := 0; Counter3 := 0; Counter4 := 0;
+	BatchJobCount[1] := 0; BatchJobCount[2] := 0; BatchJobCount[3] := 0; BatchJobCount[4] := 0;
+	BatchActiveSequence[1] := 0; BatchActiveSequence[2] := 0;
+	BatchActiveSequence[3] := 0; BatchActiveSequence[4] := 0;
 	IF State = 3 THEN State := 2; END_IF
 	IF State2 = 3 THEN State2 := 2; END_IF
 	IF State3 = 3 THEN State3 := 2; END_IF

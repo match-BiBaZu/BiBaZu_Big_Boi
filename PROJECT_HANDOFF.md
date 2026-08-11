@@ -1,6 +1,6 @@
 # BiBaZu Big Boi - Projektuebergabe
 
-Stand: 2026-08-10
+Stand: 2026-08-11
 
 Abgeglichen mit Git-Basis: `d6182a0` (`main`) plus lokaler
 Pressure-Control-Roadmap-Auswahl
@@ -62,7 +62,7 @@ Die relevanten Dateien liegen unter `CSVSaver`:
 | `CSVSaver/pressure_profiles/` | Gespeicherte JSON-Profile |
 | `CSVSaver/TwinCAT Projekt3 - Kopie/TwinCAT Projekt3/` | TwinCAT-System- und PLC-Projekt |
 | `.../Untitled1/POUs/MAIN.TcPOU` | Zentrale SPS-Logik |
-| `ReorientationControlGUI/` | Eigenstaendige GUI fuer Kamera-/YOLO-gefuehrte Einzelzyklen |
+| `ReorientationControlGUI/` | Eigenstaendige GUI fuer kontinuierliche Kamera-/YOLO-gefuehrte Produktionslaeufe |
 | `ReorientationControlGUI/pyproject.toml` | Python-3.12-Abhaengigkeiten und CLI `bibazu-reorientation` |
 | `ReorientationControlGUI/src/bibazu_reorientation/` | Modulare Domain-, Hardware-, UI-, Logging- und Controller-Schichten |
 | `ReorientationControlGUI/src/bibazu_reorientation/roadmap.py` | Handover-YAML und internen JSON-Export validieren und in Posen/Kanten normalisieren |
@@ -150,7 +150,7 @@ Der Kamera-Worker leert den GenTL-Stream kontinuierlich, konvertiert und emittie
 aber nur die konfigurierte Vorschau-Bildrate. Default sind `15 FPS`, einstellbar
 von 1 bis 60 FPS. Dadurch entsteht bei einer schnellen Baumer-Kamera keine
 Warteschlange alter Vollbilder. YOLO verarbeitet ebenfalls nur das jeweils neueste
-Bild und ist auf 5 FPS begrenzt. Die beiden Panels verbinden sich immer
+Bild und ist auf 15 FPS begrenzt. Die beiden Panels verbinden sich immer
 nacheinander, damit WinRT-Scan und GATT-Aufbau nicht ueberlappen und beide Adapter
 nicht dasselbe Panel waehlen. Ein blockierender Windows-GATT-Aufruf bleibt dabei
 im BLE-Worker und kann den Qt-Hauptthread nicht mehr anhalten.
@@ -588,8 +588,9 @@ Die komplette bedienerseitige Oberfläche dieser Anwendung ist Englisch. Dazu
 gehören Hauptfenster, Setup-/Roadmap-/Hardwaredialoge, Preflight, Statuswerte und
 alle in der GUI angezeigten Validierungs- und Hardwarefehlermeldungen.
 
-Die neue Anwendung fuehrt die Ergebnisse von PressureControl, Kameraaufnahme und
-YOLO fuer genau ein ueberwachtes Bauteil pro Zyklus zusammen. Schema v1 kennt genau
+Die Anwendung fuehrt die Ergebnisse von PressureControl, Kameraaufnahme und YOLO
+in einem kontinuierlichen Lauf mit beliebig vielen eingereihten Bauteilen zusammen.
+Alle sichtbaren Teile werden getrennt von rechts nach links verfolgt. Schema v1 kennt genau
 zwei Posen; YOLO-Klasse 0 muss `Pose 1`, Klasse 1 muss `Pose 2` heissen. Schema v2
 nutzt die explizite Klassen-zu-Roadmap-Pose-Zuordnung und kann einen eindeutigen
 direkten Pfad oder einen Pfad mit genau einer Zwischenpose ausfuehren. Als Ziel kann
@@ -601,8 +602,9 @@ in Schema v1 Pose 1 oder Pose 2 konfiguriert werden:
   konfigurierte Profil `1 -> 2`.
 
 Der Pass-through verwendet Bandrichtung, Geschwindigkeit und Kalibrierung des
-ausgewaehlten Pressure-Profils, aber eine effektive Arraymaske von null. V1
-bestaetigt den SPS-seitigen Transport-/Triggerabschluss, nicht die tatsaechlich
+ausgewaehlten Pressure-Profils, aber eine effektive Arraymaske von null. Das gilt
+auch fuer unsichere/unbekannte Erkennungen und nicht eindeutig planbare Posen. Die
+SPS bestaetigt Transport-/Triggerabschluss je Queue-Sequenz, nicht die tatsaechlich
 erreichte Endorientierung. Eine kamerabasierte Nachkontrolle kommt erst spaeter.
 
 ### Bauteilkonfiguration und Bedienoberflaeche
@@ -647,25 +649,27 @@ Resolver akzeptiert einen eindeutigen direkten Pfad oder maximal eine Zwischenpo
 Nur Kanten mit zugeordnetem Pressure-Profil werden betrachtet. Parallele belegte
 Kanten bleiben ueber `edge_id` getrennt und blockieren als mehrdeutig, statt dass
 die Anwendung eine Aktion errät. Fehlende Profile bleiben fuer Drafts erlaubt;
-wird spaeter eine nicht erreichbare Pose erkannt, endet der Zyklus vor jedem
-Aktuierungswrite mit `roadmap_plan`.
+wird spaeter eine nicht erreichbare Pose erkannt, wird sie als
+`bypass_uncertain` mit Arraymaske null eingereiht.
 
 Alle geladenen Profile werden auf `ur_ry_angle_deg` und
 `conveyor_speed_mm_per_sec` verglichen. Gleiche Werte fuellen die beiden Felder im
 Hardwarebereich automatisch. Bei Abweichungen zeigt die GUI jede Kante mit
 Profilpfad und Einzelwerten; der Bediener kann die gemeinsamen Werte einstellen
-und mit `Use machine parameters` bestaetigen. Beim Zyklusstart werden noch nicht
+und mit `Use machine parameters` bestaetigen. Beim Laufstart werden noch nicht
 bestaetigte Eingabewerte automatisch uebernommen. Aenderungen an diesen Feldern
 loeschen die bereits geladene Konfiguration nicht mehr. Ein expliziter UR-Wert braucht danach
 weiterhin den separaten quittierten `Apply UR angle`-Schritt.
 
 Der manuelle Conveyor-Start ist bewusst unabhaengig von Config, YOLO, Leuchten,
 Roadmap-Vollstaendigkeit und Profil-Readiness. Er verlangt nur ADS, einen inaktiven
-Automatikzyklus und positive Geschwindigkeit, schreibt alle vier Array-Enables
-false und setzt einen vom vorherigen Zyklus verriegelten PLC-Fehler vor dem Start
+Automatiklauf und positive Geschwindigkeit, schreibt alle vier Array-Enables
+false und setzt einen vom vorherigen Lauf verriegelten PLC-Fehler vor dem Start
 automatisch zurueck.
 
-Nach dem Drei-Frame-Konsens kombiniert der Controller ausschliesslich aktive Arrays
+Nach fuenf identischen Erkennungen wird die Pose eines Tracks unveraenderlich
+festgeschrieben. Beim Ueberqueren der einstellbaren Uebergabelinie kombiniert der
+Controller ausschliesslich aktive Arrays
 der gewaehlten ein oder zwei Pfadprofile zu einem SPS-Profil. Eine doppelte Belegung
 desselben physischen Arrays wird blockiert. Array 1..4 entsprechen der raeumlichen
 Reihenfolge LB2/LB4/LB6/LB8. Somit kann beispielsweise `2 -> 3 -> 4` in einem
@@ -711,8 +715,8 @@ Leuchten, Kamera und ADS ohne blockierendes Warten im GUI-Thread getrennt.
 Der Start verwendet das vorhandene Geschwindigkeitsfeld, erzwingt Vorwaertsfahrt
 und schreibt alle vier Array-Enables false. Freigabe gibt es nur bei ADS-Verbindung,
 ReorientationState 0, gueltiger Kalibrierung sowie stehendem, fehlerfreiem Antrieb.
-In einem aktiven Automatikzyklus ist manueller Start gesperrt; Stop fordert dann den
-koordinierten Cycle-Abbruch an.
+In einem aktiven Produktionslauf ist manueller Start gesperrt; Stop fordert dann das
+kontrollierte Laufende mit vollstaendigem Queue-Drain an.
 Reorientation Control und Automated Image Capture halten beim Programmstart
 zusaetzlich denselben Windows-Named-Mutex `Local\BiBaZuCameraAndLights`. Eine
 zweite Hardware-GUI beendet ihren Start mit klarer Meldung, bevor Adapter erzeugt
@@ -776,10 +780,11 @@ Backend ist `QSettings` unter
 - Vorschau: `15 FPS`, einstellbar `1..60`
 - SPS: IP `192.168.0.23`, AMS `10.145.4.14.1.1`, Port `851`
 
-YOLO unterstuetzt normale Detect-Boxen und OBB. Ein gueltiger Entscheid verlangt
-genau ein vollstaendig sichtbares, bekanntes Objekt auf drei unterschiedlichen,
-frischen, aufeinanderfolgenden Frames. Null, mehrere, unbekannte, widerspruechliche
-oder veraltete Erkennungen setzen den Konsens zurueck. Das Modell wird nach dem
+YOLO unterstuetzt normale Detect-Boxen und OBB. Jeder Track verlangt ein
+vollstaendig sichtbares, bekanntes Objekt auf fuenf unterschiedlichen, frischen,
+aufeinanderfolgenden Frames derselben Klasse. Fehlende, unbekannte,
+widerspruechliche oder veraltete Erkennungen setzen den noch nicht gesperrten
+Konsens zurueck. Das Modell wird nach dem
 Laden einer Konfiguration automatisch in einem eigenen Worker geladen; ein
 `Load YOLO model`-Button erlaubt Reload. Bei gemappten Erkennungen zeigt das
 Box/OBB-Overlay die Roadmap-Pose groß und seitlich daneben nur die Konfidenz in
@@ -791,7 +796,7 @@ sonst CPU.
 
 Ein Modell-Reload stoppt den bisherigen Inference-Worker nichtblockierend und
 startet das neue Modell nach dessen `finished`-Signal automatisch. Waerenddessen
-wird `model_ready` sofort false gesetzt; ein Zyklus kann deshalb nicht mehr mit
+wird `model_ready` sofort false gesetzt; ein Lauf kann deshalb nicht mehr mit
 einem bereits gestoppten Worker in `DETECTING` starten.
 
 Beide Neewer RGB660 Pro II muessen verbunden und eingeschaltet sein. Pro aktueller
@@ -805,15 +810,15 @@ letzten Zustand; explizite Ausschaltbuttons sind vorhanden.
 Zustaende der GUI:
 
 ```text
-NO_CONFIG/OFFLINE -> READY -> DETECTING -> DECIDED -> STAGING ->
-ARMED -> RUNNING -> DRAINING -> COMPLETE
+NO_CONFIG/OFFLINE -> READY -> STARTING -> RUNNING -> FINISHING ->
+DRAINING -> COMPLETE
 ```
 
-Aktive Zustaende koennen in `ABORTED` oder einen sichtbaren `FAULT` wechseln.
+Aktive Zustaende koennen in einen sichtbaren, verriegelten `FAULT` wechseln.
 Preflight verlangt insbesondere aufgewärmtes Modell, frischen Kameraframe,
 ADS plus Reorientation-PLC-Vertrag, stehendes Band,
 gueltige Bandkalibrierung, vier idle Arrays, keine Pending-Trigger, 24 geschlossene
-Ventile, fehlerfreie EL7047/VTEM-Zustaende und sechs fuer mindestens
+Ventile, fehlerfreie EL7047/VTEM-Zustaende und acht fuer mindestens
 Debounce+100 ms freie normalisierte Lichtschranken.
 
 Leuchtenverbindung, bestaetigte Befehle und Bediener-Checkboxen bleiben sichtbar
@@ -824,22 +829,23 @@ Ein `ur_ry_angle_deg` wird nur verwendet, wenn das Feld im Profil tatsaechlich
 vorhanden ist. Dann muss der Winkel ueber den separaten Button angewendet und
 exakt quittiert werden. Alte Profile erhalten keinen impliziten 18-Grad-Befehl.
 
-Staging-Reihenfolge:
+Laufstart-/Queue-Reihenfolge:
 
 1. Band, Arrays und Messmodi deaktivieren und Readback pruefen.
 2. Profilkonfiguration ohne Freigabe schreiben und vollstaendig zuruecklesen.
 3. Einen gegen `ReorientationHeartbeatAck` neuen Heartbeat vorladen.
 4. PLC-Ownership und Reset setzen und `State=10`, Fault 0 sowie HeartbeatAlive
    abwarten; Reset erst danach loesen und denselben Zustand erneut bestaetigen.
-5. Effektive Arraymaske und Bandfreigabe zuletzt schreiben.
-6. Start setzen und bis zur PLC-Quittierung `State=20` gesetzt lassen; erst danach
-   den Startimpuls loesen.
-7. Bei Abschluss/Abort Roh-Enables false schreiben und pruefen, erst dann den
-   Owner freigeben.
+5. Bandfreigabe setzen und Start bis zur PLC-Quittierung `State=20` halten.
+6. Pro Linienuebergabe alle Staging-Felder schreiben und zuletzt den monotonen
+   Commit setzen. Erst `ReorientationQueueEnqueueAck` bestaetigt die Aufnahme.
+7. `Finish` erst nach einer Sekunde ohne sichtbaren Track und ohne ausstehenden
+   Commit setzen. Nach Queue-/Result-Drain Roh-Enables false schreiben und pruefen,
+   erst dann den Owner freigeben.
 
-Ist die erkannte Pose bereits die Zielpose, besitzt diese Entscheidung Vorrang vor
-jedem geladenen Pfad: `GuiReorientationExpectedArrayMask` wird null und alle vier
-`GuiArrayEnabledN` werden explizit false geschrieben.
+Zielpose, ungesicherte Pose und nicht planbare Pose erhalten einen regulaeren
+Queue-Eintrag mit Maske null. Sie durchlaufen alle acht Sensorcursor, loesen aber
+keine Ventile aus und halten damit die physische Reihenfolge fuer Folgeteile stabil.
 
 ### PLC-Reorientation-Vertrag
 
@@ -850,7 +856,13 @@ GUI nach PLC:
 - `GuiReorientationStart`
 - `GuiReorientationAbort`
 - `GuiReorientationReset`
-- `GuiReorientationExpectedArrayMask`
+- `GuiReorientationFinish`, `GuiReorientationResultAck`
+- `GuiReorientationQueueSequence`, `GuiReorientationQueueTrackId`
+- `GuiReorientationQueuePoseId`, `GuiReorientationQueueDecisionCode`
+- `GuiReorientationQueueArrayMask`
+- je Array `GuiReorientationQueueNozzleMaskN`, `PressureMbarN`, `DelayMsN`,
+  `PulseMsN`, `OffsetMmN`, `ForceResponseMsN`, `ForceSingleMsN`
+- `GuiReorientationQueueCommit` als letzter atomarer Publish-Schritt
 
 PLC nach GUI:
 
@@ -859,18 +871,27 @@ PLC nach GUI:
 - `ReorientationExitSeen`, `ReorientationArraysIdle`
 - `ReorientationExpectedArrayMask`, `ReorientationTriggeredArrayMask`
 - `ReorientationComplete`, `ReorientationCycleCounter`
+- `ReorientationQueueDepth`, `ReorientationQueueCapacity`,
+  `ReorientationQueueEnqueueAck`
+- `ReorientationQueueEnteredCount`, `CompletedCount`, `BypassCount`
+- `ReorientationSensorSequence1..8`
+- `ReorientationResultAvailable`, `ResultSequence`, `ResultTriggeredMask`,
+  `ResultFaultCode`
 
-Heartbeatintervall ist 250 ms, PLC-Timeout 2 s, maximales Warten bis LB8 60 s,
-Drain-Timeout 35 s. Die PLC latcht die entprellte fallende LB8-Flanke, stoppt
-danach den Transport und meldet erst Complete, wenn erwartete und ausgeloeste
-Arraymasken exakt gleich sind, alle vier State-Machines idle sind, kein Pending
-existiert und alle 24 Ventile aus sind. Fehlercodes: 90 manueller Abort, 91
-Heartbeat, 92 Zyklus/LB8, 93 Drain, 94 Antrieb/VTEM.
+Heartbeatintervall ist 250 ms, PLC-Timeout 2 s. Die PLC besitzt einen 128-teiligen
+Ring und einen Ergebnisring. Jeder der acht Sensoren fuehrt einen eigenen monotonen
+Sequenzcursor. Das ungerade Signal speichert die Zeit, das folgende gerade Signal
+berechnet die Geschwindigkeit und legt einen immutable Auftrag in die 16er-FIFO
+des zugehoerigen Arrays. Ein Teil ist erst abgeschlossen, wenn LB8 gesehen wurde
+und alle vier Finished-Bits gesetzt sind. Fehlercodes trennen Abort/Heartbeat,
+Commit-/Queue-Reihenfolge, Ueberlauf, Array-FIFO, Sensorreihenfolge und Antrieb/VTEM.
 
 Bei Heartbeatverlust bleibt ein Safe-Latch aktiv; es darf keinen automatischen
-Rueckfall in die Legacy-Freigaben geben. `PressureControlGUI` und
-`ConveyorSetupGUI` verweigern ihren ersten Write, solange Reorientation den Owner
-haelt. Zusaetzlich verhindert der gemeinsame Windows-Mutex
+Rueckfall in die Legacy-Freigaben geben. Bei inaktivem Reorientation-Owner bleibt
+die bisherige Pressure-/Conveyor-Logik unveraendert und benoetigt keine Queue.
+`PressureControlGUI` und `ConveyorSetupGUI` verweigern Writes nur, solange ein
+laufender Reorientation-Owner haelt. Nach einem bereits verriegelten Fail-Stop kann
+Pressure Control den expliziten Legacy-Takeover ausloesen. Zusaetzlich verhindert der gemeinsame Windows-Mutex
 `Local\BiBaZuPlcControl`, dass Reorientation, Pressure Control oder Conveyor Setup
 parallel gestartet werden. Pressure Control nach dem Erstellen/Speichern eines
 Profils immer schließen, bevor Reorientation gestartet wird. Weitere parallele ADS-Schreiber bleiben verboten. Das PLC-Programm muss
@@ -879,11 +900,12 @@ Symbol beweist nicht, dass die laufende PLC bereits diesen Stand verwendet.
 
 ### Reorientation-Logging
 
-Pro Versuch entstehen eine schema-versionierte CSV-Zeile, ein atomar gespeichertes
-PNG des Entscheidungsframes sowie Kopien der YAML und des verwendeten Profils.
-Enthalten sind unter anderem Cycle-ID/Zeitpunkte, absolute Pfade und SHA256,
-drei Konsensmessungen, erkannte/Zielpose, Aktion, UR-Status, Lichtadressen,
-erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywerte.
+Pro Lauf entstehen `run.json`, `result.json`, `parts.csv` sowie Kopien von Config,
+Roadmap und verwendeten Profilen. Jedes uebergebene Teil erhaelt ein atomar
+gespeichertes annotiertes PNG. Die CSV enthaelt unter anderem Run-/Track-/Sequenz-ID,
+fuenf Konsensmessungen, Uebergabe-/ACK-/Abschlusszeit, Pose/Ziel/Pfad,
+Profilpfade und SHA256, alle Array-Snapshots, Lichtadressen, Sensorcursor,
+erwartete/ausgeloeste Maske und PLC-Fehlerstatus.
 
 ### Aktueller Inbetriebnahmestand 2026-08-11
 
@@ -1131,7 +1153,7 @@ python ConveyorSetupGUI.py
 python PressureControlGUI.py
 ```
 
-Zuletzt liefen 53 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
+Zuletzt liefen 54 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
 muessen nach jedem Umzug erneut durchgefuehrt werden.
 
 Im Verzeichnis `ReorientationControlGUI`:
@@ -1141,9 +1163,9 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `95` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `108` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..9, Legacy-Migration,
-Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
+Detect/OBB, Fuenf-Frame-Mehrteiltracking, Controller/Queue-/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
 Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen, eindeutige direkte
 und zweistufige Roadmap-Pfade, Mehrprofil-Parametervergleich/-Komposition sowie
@@ -1267,8 +1289,8 @@ abgedeckt. Sie ersetzen keine Hardwareabnahme.
 Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
-Legacy-Tests:       python -m unittest test_pressure_control_gui.py (53)
-Reorientation-Test: uv run pytest (95), uv run ruff check src tests
+Legacy-Tests:       python -m unittest test_pressure_control_gui.py (54)
+Reorientation-Test: uv run pytest (108), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004

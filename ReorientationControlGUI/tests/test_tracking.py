@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import numpy as np
+
+from bibazu_reorientation.models import Detection, InferenceFrame
+from bibazu_reorientation.tracking import MultiPartTracker
+
+
+def frame(*rows: tuple[int, float, int], timestamp: float) -> InferenceFrame:
+    detections = tuple(
+        Detection(
+            class_id,
+            f"class {class_id}",
+            0.9,
+            ((x - 5, y - 5), (x + 5, y - 5), (x + 5, y + 5), (x - 5, y + 5)),
+            "detect",
+        )
+        for class_id, x, y in rows
+    )
+    return InferenceFrame(np.zeros((100, 100, 3), np.uint8), detections, 1.0, timestamp)
+
+
+def test_tracks_multiple_parts_and_hands_each_off_once() -> None:
+    tracker = MultiPartTracker(handoff_line_ratio=0.30)
+    mapping = {0: 10, 1: 5}
+    decisions = []
+
+    for index in range(5):
+        update = tracker.update(
+            frame(
+                (1, 70 - index * 10, 30),
+                (0, 95 - index * 10, 70),
+                timestamp=1.0 + index,
+            ),
+            mapping,
+        )
+        decisions.extend(update.handoffs)
+        assert not update.fault
+
+    assert [(item.track_id, item.pose_id) for item in decisions] == [(1, 5)]
+    assert len(decisions[0].observations) == 5
+
+    for index in range(3):
+        update = tracker.update(
+            frame((0, 45 - index * 10, 70), timestamp=6.0 + index), mapping
+        )
+        decisions.extend(update.handoffs)
+    assert [(item.track_id, item.pose_id) for item in decisions] == [(1, 5), (2, 10)]
+
+
+def test_wrong_class_resets_five_frame_streak() -> None:
+    tracker = MultiPartTracker(handoff_line_ratio=0.20)
+    mapping = {0: 10, 1: 5}
+
+    for index, class_id in enumerate((1, 1, 0, 1, 1, 1, 1)):
+        update = tracker.update(
+            frame((class_id, 80 - index * 5, 50), timestamp=float(index + 1)), mapping
+        )
+    assert update.tracks[0].confirmed_pose_id is None
+    assert update.tracks[0].pose_streak == 4
+
+    update = tracker.update(frame((1, 40, 50), timestamp=8.0), mapping)
+    assert update.tracks[0].confirmed_pose_id == 5
+    assert update.tracks[0].pose_streak == 5
+
+
+def test_unconfirmed_part_crosses_as_bypass_decision() -> None:
+    tracker = MultiPartTracker(handoff_line_ratio=0.30)
+    mapping = {0: 10}
+    tracker.update(frame((0, 45, 50), timestamp=1.0), mapping)
+    update = tracker.update(frame((0, 25, 50), timestamp=2.0), mapping)
+
+    assert len(update.handoffs) == 1
+    assert update.handoffs[0].pose_id is None
+    assert update.handoffs[0].reason == "consensus_incomplete"
+
+
+def test_lost_real_track_before_line_is_fault() -> None:
+    tracker = MultiPartTracker(handoff_line_ratio=0.20, max_missed_frames=2)
+    mapping = {0: 10}
+    tracker.update(frame((0, 80, 50), timestamp=1.0), mapping)
+    tracker.update(frame((0, 70, 50), timestamp=2.0), mapping)
+    tracker.update(frame(timestamp=3.0), mapping)
+    tracker.update(frame(timestamp=4.0), mapping)
+    update = tracker.update(frame(timestamp=5.0), mapping)
+
+    assert "lost before the handoff line" in update.fault
+
+
+def test_overtaking_or_order_inversion_is_a_tracking_fault() -> None:
+    tracker = MultiPartTracker(handoff_line_ratio=0.20)
+    mapping = {0: 10}
+    tracker.update(frame((0, 40, 30), (0, 60, 70), timestamp=1.0), mapping)
+    update = tracker.update(frame((0, 55, 30), (0, 45, 70), timestamp=2.0), mapping)
+
+    assert "order became ambiguous" in update.fault

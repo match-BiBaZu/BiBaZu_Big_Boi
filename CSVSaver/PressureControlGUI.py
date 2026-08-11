@@ -2,6 +2,7 @@ import csv
 import json
 import statistics
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -549,6 +550,50 @@ class AdsWorker(QObject):
         if failed:
             raise RuntimeError(f"ADS sum write failed: {failed}")
 
+    def reclaim_fail_stopped_reorientation_owner(self) -> bool:
+        """Return to legacy mode only after the PLC has latched a safe stop.
+
+        The Windows process lease already proves that no local Reorientation
+        Control instance is still running.  The PLC condition prevents this
+        compatibility path from taking ownership from a healthy remote run.
+        """
+        try:
+            owner = bool(
+                self.plc().read_by_name(
+                    "MAIN.GuiReorientationControlActive", pyads.PLCTYPE_BOOL
+                )
+            )
+            safe_latched = bool(
+                self.plc().read_by_name(
+                    "MAIN.ReorientationSafeLatch", pyads.PLCTYPE_BOOL
+                )
+            )
+            if not owner and not safe_latched:
+                return True
+            if not safe_latched:
+                return False
+            self.plc().write_by_name(
+                "MAIN.GuiReorientationLegacyTakeover", True, pyads.PLCTYPE_BOOL
+            )
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                owner = bool(
+                    self.plc().read_by_name(
+                        "MAIN.GuiReorientationControlActive", pyads.PLCTYPE_BOOL
+                    )
+                )
+                safe_latched = bool(
+                    self.plc().read_by_name(
+                        "MAIN.ReorientationSafeLatch", pyads.PLCTYPE_BOOL
+                    )
+                )
+                if not owner and not safe_latched:
+                    return True
+                time.sleep(0.02)
+        except Exception:
+            return False
+        return False
+
     @pyqtSlot()
     def connect_ads(self) -> None:
         if self.shutting_down or self.client.is_connected:
@@ -573,10 +618,11 @@ class AdsWorker(QObject):
                 )
             except Exception:
                 reorientation_owner = False
-            if reorientation_owner:
+            if reorientation_owner and not self.reclaim_fail_stopped_reorientation_owner():
                 self.disconnect_ads(
                     "BiBaZu Reorientation Control besitzt derzeit die SPS; "
-                    "PressureControlGUI bleibt schreibgeschützt."
+                    "PressureControlGUI bleibt bis zum sicheren Laufende "
+                    "schreibgeschützt."
                 )
                 return
             safe_values = dict(self.SAFE_STOP_VALUES)
