@@ -653,9 +653,17 @@ Aktuierungswrite mit `roadmap_plan`.
 Alle geladenen Profile werden auf `ur_ry_angle_deg` und
 `conveyor_speed_mm_per_sec` verglichen. Gleiche Werte fuellen die beiden Felder im
 Hardwarebereich automatisch. Bei Abweichungen zeigt die GUI jede Kante mit
-Profilpfad und Einzelwerten; der Bediener muss die gemeinsamen Werte einstellen
-und mit `Use machine parameters` bestaetigen. Ein expliziter UR-Wert braucht danach
+Profilpfad und Einzelwerten; der Bediener kann die gemeinsamen Werte einstellen
+und mit `Use machine parameters` bestaetigen. Beim Zyklusstart werden noch nicht
+bestaetigte Eingabewerte automatisch uebernommen. Aenderungen an diesen Feldern
+loeschen die bereits geladene Konfiguration nicht mehr. Ein expliziter UR-Wert braucht danach
 weiterhin den separaten quittierten `Apply UR angle`-Schritt.
+
+Der manuelle Conveyor-Start ist bewusst unabhaengig von Config, YOLO, Leuchten,
+Roadmap-Vollstaendigkeit und Profil-Readiness. Er verlangt nur ADS, einen inaktiven
+Automatikzyklus und positive Geschwindigkeit, schreibt alle vier Array-Enables
+false und setzt einen vom vorherigen Zyklus verriegelten PLC-Fehler vor dem Start
+automatisch zurueck.
 
 Nach dem Drei-Frame-Konsens kombiniert der Controller ausschliesslich aktive Arrays
 der gewaehlten ein oder zwei Pfadprofile zu einem SPS-Profil. Eine doppelte Belegung
@@ -803,10 +811,14 @@ ARMED -> RUNNING -> DRAINING -> COMPLETE
 
 Aktive Zustaende koennen in `ABORTED` oder einen sichtbaren `FAULT` wechseln.
 Preflight verlangt insbesondere aufgewärmtes Modell, frischen Kameraframe,
-beide bestaetigten Leuchten, ADS plus Reorientation-PLC-Vertrag, stehendes Band,
+ADS plus Reorientation-PLC-Vertrag, stehendes Band,
 gueltige Bandkalibrierung, vier idle Arrays, keine Pending-Trigger, 24 geschlossene
 Ventile, fehlerfreie EL7047/VTEM-Zustaende und sechs fuer mindestens
 Debounce+100 ms freie normalisierte Lichtschranken.
+
+Leuchtenverbindung, bestaetigte Befehle und Bediener-Checkboxen bleiben sichtbar
+und werden geloggt, blockieren den Start auf ausdruecklichen Betreiberwunsch aber
+nicht mehr.
 
 Ein `ur_ry_angle_deg` wird nur verwendet, wenn das Feld im Profil tatsaechlich
 vorhanden ist. Dann muss der Winkel ueber den separaten Button angewendet und
@@ -816,9 +828,13 @@ Staging-Reihenfolge:
 
 1. Band, Arrays und Messmodi deaktivieren und Readback pruefen.
 2. Profilkonfiguration ohne Freigabe schreiben und vollstaendig zuruecklesen.
-3. PLC-Ownership und Heartbeat etablieren.
-4. Effektive Arraymaske und Bandfreigabe zuletzt schreiben.
-5. Bei Abschluss/Abort Roh-Enables false schreiben und pruefen, erst dann den
+3. Einen gegen `ReorientationHeartbeatAck` neuen Heartbeat vorladen.
+4. PLC-Ownership und Reset setzen und `State=10`, Fault 0 sowie HeartbeatAlive
+   abwarten; Reset erst danach loesen und denselben Zustand erneut bestaetigen.
+5. Effektive Arraymaske und Bandfreigabe zuletzt schreiben.
+6. Start setzen und bis zur PLC-Quittierung `State=20` gesetzt lassen; erst danach
+   den Startimpuls loesen.
+7. Bei Abschluss/Abort Roh-Enables false schreiben und pruefen, erst dann den
    Owner freigeben.
 
 Ist die erkannte Pose bereits die Zielpose, besitzt diese Entscheidung Vorrang vor
@@ -888,6 +904,18 @@ erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywer
   YOLO-Status noch `worker is still stopping` meldete, waehrend der alte
   `model_ready`-Wert den Start faelschlich erlaubte. Der Reload ist nun asynchron,
   startet automatisch neu und sperrt den Zyklus waehrend des Worker-Wechsels.
+- Der erste Kk1a-Aktuierungsversuch erreichte Pose 5 und plante korrekt `5 -> 10`
+  mit Maske 2, scheiterte aber beim Readback von `GuiArrayEnabled2`: Die PLC hatte
+  den Wert wegen einer noch wirksamen Safe-Latch-/Heartbeat-Uebergangsphase sofort
+  wieder false gesetzt. Die GUI laedt nun zuerst einen garantiert neuen Heartbeat
+  und haelt Reset/Start bis zur Quittierung der PLC-Ausgangszustaende. Abort wird
+  ebenfalls quittiert und danach explizit false geschrieben. Der PLC-Reset setzt
+  in `MAIN.TcPOU` zusaetzlich Heartbeat-Alter/Ack/Alive deterministisch zurueck.
+- Nach diesem Abbruch blieb der vorgesehene PLC-Fehler 90 verriegelt. Ein neuer
+  Versuch interpretierte ihn bereits in `DETECTING` als neuen Zyklusfehler und
+  brach vor der Poseentscheidung ab. Verriegelte Fehler eines vorherigen Versuchs
+  werden nun waehrend Erkennung/Staging toleriert und im Ownership/Reset-Schritt
+  geloescht, bevor Conveyor- oder Array-Enables geschrieben werden.
 - Ein weiterer realer `AppHangB1` um 12:37 wurde nicht durch einen zweiten
   Hardwareprozess verursacht. Ursache waren noch vorhandene Lambda-Verbindungen,
   die BLE-Worker-Signale unmittelbar in Qt-Widgets weiterleiten konnten. Diese
@@ -1113,7 +1141,7 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `92` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `95` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..9, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
@@ -1240,7 +1268,7 @@ Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
 Legacy-Tests:       python -m unittest test_pressure_control_gui.py (53)
-Reorientation-Test: uv run pytest (92), uv run ruff check src tests
+Reorientation-Test: uv run pytest (95), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004

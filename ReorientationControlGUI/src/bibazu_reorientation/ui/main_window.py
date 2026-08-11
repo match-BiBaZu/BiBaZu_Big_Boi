@@ -393,12 +393,7 @@ class MainWindow(QMainWindow):
             not self._manual_conveyor_command_pending
             and self._manual_conveyor_idle_state(self.controller.state)
             and snapshot.connected
-            and snapshot.reorientation_state == 0
-            and snapshot.reorientation_fault_code == 0
-            and snapshot.conveyor_motion_state == 0
-            and not snapshot.stepper_busy
-            and not snapshot.stepper_error
-            and snapshot.calibration_valid
+            and self.conveyor_speed_input.value() > 0.0
         )
 
     def _update_manual_conveyor_buttons(self) -> None:
@@ -423,14 +418,44 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Manual conveyor",
-                "Manual start requires an idle reorientation controller, PLC state 0, "
-                "a stopped fault-free drive, and valid conveyor calibration.",
+                "Manual start requires only an ADS connection, an idle automatic cycle, "
+                "and a positive conveyor speed.",
             )
             return
         self._manual_conveyor_command_pending = True
         self._update_manual_conveyor_buttons()
-        self.manual_conveyor_status.setText("Manual conveyor: sending safe start …")
+        snapshot = self.controller.snapshot
+        if snapshot.reorientation_state != 0 or snapshot.reorientation_fault_code != 0:
+            self.manual_conveyor_status.setText(
+                "Manual conveyor: clearing previous cycle latch …"
+            )
+            values: dict[str, bool | float] = {
+                "MAIN.GuiReorientationControlActive": True,
+                "MAIN.GuiReorientationReset": True,
+                "MAIN.GuiReorientationAbort": False,
+                "MAIN.GuiReorientationStart": False,
+                "MAIN.GuiConveyorEnabled": False,
+            }
+            values.update({f"MAIN.GuiArrayEnabled{index}": False for index in range(1, 5)})
+            self.pressure.write("manual_conveyor_reset", values, True)
+            return
+        self._send_manual_conveyor_start()
+
+    def _send_manual_conveyor_start(self) -> None:
+        if (
+            self._shutting_down
+            or not self._manual_conveyor_command_pending
+            or not self.controller.snapshot.connected
+        ):
+            self._manual_conveyor_command_pending = False
+            self._update_manual_conveyor_buttons()
+            return
+        self.manual_conveyor_status.setText("Manual conveyor: sending start …")
         values: dict[str, bool | float] = {
+            "MAIN.GuiReorientationControlActive": False,
+            "MAIN.GuiReorientationReset": False,
+            "MAIN.GuiReorientationAbort": False,
+            "MAIN.GuiReorientationStart": False,
             "MAIN.GuiConveyorCalibrationMode": False,
             "MAIN.GuiVelocityCheckMode": False,
             "MAIN.GuiForceDelayMeasurementEnabled": False,
@@ -459,6 +484,14 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _pressure_operation_finished(self, name: str) -> None:
+        if name == "manual_conveyor_reset":
+            self.manual_conveyor_status.setText(
+                "Manual conveyor: previous cycle latch cleared …"
+            )
+            # Keep Reset asserted long enough for at least one PLC scan before
+            # releasing the automation owner and starting in legacy/manual mode.
+            QTimer.singleShot(100, self._send_manual_conveyor_start)
+            return
         if name not in {"manual_conveyor_start", "manual_conveyor_stop"}:
             return
         self._manual_conveyor_command_pending = False
@@ -472,7 +505,11 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str, str)
     def _pressure_operation_failed(self, name: str, detail: str) -> None:
-        if name not in {"manual_conveyor_start", "manual_conveyor_stop"}:
+        if name not in {
+            "manual_conveyor_reset",
+            "manual_conveyor_start",
+            "manual_conveyor_stop",
+        }:
             return
         self._manual_conveyor_command_pending = False
         self.manual_conveyor_status.setStyleSheet("color:#b91c1c;font-weight:bold")
@@ -845,7 +882,6 @@ class MainWindow(QMainWindow):
         self.machine_parameter_status.setText(
             "Machine values changed. Press 'Use machine parameters' before starting."
         )
-        self.controller.clear_configuration()
 
     def apply_machine_parameters(self, *, show_error: bool = True) -> None:
         if self.part is None or not self._roadmap_mode:
@@ -853,7 +889,6 @@ class MainWindow(QMainWindow):
         try:
             angle = self.ur_angle_input.value() if self.use_ur_angle.isChecked() else None
             speed = self.conveyor_speed_input.value()
-            self._validate_roadmap_paths(speed, angle)
             self._machine_parameters_confirmed = True
             self.controller.set_roadmap_configuration(
                 self.part,
@@ -876,7 +911,6 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             self._machine_parameters_confirmed = False
-            self.controller.clear_configuration()
             self.machine_parameter_status.setStyleSheet("color:#b91c1c;font-weight:bold")
             self.machine_parameter_status.setText(str(exc))
             if show_error:
@@ -1191,7 +1225,7 @@ class MainWindow(QMainWindow):
             self.preflight.addWidget(QLabel(f"{'✓' if passed else '✗'} {label}"))
         self._preflight_ok = all(checks.values())
         self.start_button.setEnabled(
-            (self._preflight_ok and self._machine_parameters_confirmed)
+            self._preflight_ok
             or self.controller.state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
         )
 
@@ -1222,7 +1256,6 @@ class MainWindow(QMainWindow):
             or (
                 state is CycleState.READY
                 and self._preflight_ok
-                and self._machine_parameters_confirmed
             )
         )
         self.stop_button.setEnabled(True)
@@ -1233,6 +1266,12 @@ class MainWindow(QMainWindow):
             if self.controller.state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}:
                 self.controller.prepare_next_cycle()
                 return
+            if self._roadmap_mode and not self._machine_parameters_confirmed:
+                self.apply_machine_parameters(show_error=False)
+                if not self._machine_parameters_confirmed:
+                    raise RuntimeError(
+                        "The currently entered conveyor/UR values could not be applied."
+                    )
             self.controller.start_cycle()
         except Exception as exc:
             QMessageBox.warning(self, "Cycle", str(exc))

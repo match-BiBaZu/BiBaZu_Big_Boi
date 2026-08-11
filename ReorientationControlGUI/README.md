@@ -89,8 +89,10 @@ Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
    und Förderbandgeschwindigkeit. Stimmen beide Werte überall überein, werden die
    Hardwarefelder automatisch gefüllt. Bei Abweichungen Werte auswählen und
    **Use machine parameters** drücken.
-3. **Connect all components** drücken, beide Leuchten einschalten/einstellen und
-   deren Zyklus-Checkbox bestätigen. Falls UR aktiv ist, **Apply UR angle** drücken.
+3. **Connect all components** drücken. Die Leuchten können eingeschaltet und
+   eingestellt werden; Verbindungsstatus und Zyklus-Checkboxen dienen nur noch als
+   Bedienhinweis und blockieren den Start nicht. Falls UR aktiv ist, **Apply UR angle**
+   drücken.
 4. Sobald alle Preflight-Zeilen grün sind, **Start cycle** drücken. Erst jetzt wird
    der Drei-Frame-Konsens gesammelt. Die erkannte Pose bestimmt den eindeutigen
    direkten oder zweistufigen Pfad.
@@ -143,10 +145,11 @@ anonymous Python callbacks.
 
 **Start conveyor** and **Stop conveyor** provide manual transport independently of
 YOLO, lights, and part configuration. The speed comes from the existing Conveyor
-speed field. Manual start is available only with ADS connected, PLC reorientation
-state 0, valid calibration, and a stopped fault-free drive; it explicitly selects
-forward travel and writes all four array enables false. During an automatic cycle,
-manual start is locked and Stop conveyor requests the normal coordinated abort.
+speed field. Manual start requires only ADS, an idle automatic cycle, and a positive
+speed; it explicitly selects forward travel and writes all four array enables false.
+A latched fault from the previous automatic cycle is reset automatically before the
+manual start. During an automatic cycle, manual start is locked and Stop conveyor
+requests the normal coordinated abort.
 
 Reloading a YOLO model now retires the previous inference worker asynchronously and
 starts the requested model automatically after that worker has exited. Model readiness
@@ -166,13 +169,15 @@ panels together; the preview ran at 15 FPS without an application hang.
   Schema v2 uses the explicit class mapping from YAML; extra model classes are
   permitted, but any detection of an unmapped class blocks consensus.
 - A decision requires one fully visible object in three fresh consecutive frames.
-- Both lights must be connected, receive a confirmed command, and be manually
-  confirmed for the cycle.
+- Light connection, last confirmed commands, and the two operator checkboxes remain
+  visible and are logged, but they no longer participate in start preflight.
 - A profile with an explicit `ur_ry_angle_deg` remains blocked until the separate
   UR apply command returns an exact acknowledgement. No legacy profile gets an
   implicit 18° command.
 - The PLC owner is acquired only after safe-stop and full configuration readback.
-  The conveyor/array enables are written last.
+  A fresh heartbeat is written before ownership; Reset and Start remain asserted
+  until PLC state/heartbeat acknowledgement. The conveyor/array enables are written
+  only after that acknowledgement.
 - On completion or abort, raw conveyor and array enables are written false and
   verified before ownership is released.
 
@@ -210,4 +215,4 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
-The current offscreen suite contains 92 tests.
+The current offscreen suite contains 95 tests.

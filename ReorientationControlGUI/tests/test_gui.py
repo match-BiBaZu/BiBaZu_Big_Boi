@@ -176,6 +176,12 @@ def test_roadmap_profile_prefills_machine_fields_and_enables_executor(
     assert window.use_ur_angle.isChecked()
     assert window.ur_angle_input.value() == 18.5
     assert "confirmed" in window.machine_parameter_status.text()
+    window.conveyor_speed_input.setValue(140.0)
+    assert not window._machine_parameters_confirmed
+    assert window.controller.part == definition
+    window.apply_machine_parameters(show_error=False)
+    assert window._machine_parameters_confirmed
+    assert window.controller.profile.conveyor_speed_mm_per_sec == 140.0
     window.close()
     window.camera.shutdown()
     window.pressure.shutdown()
@@ -390,6 +396,45 @@ def test_manual_conveyor_start_is_independent_and_forces_arrays_off(
     window._manual_conveyor_stop()
     assert coordinated_stops == [True]
     assert len(writes) == write_count
+    window.close()
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_manual_conveyor_clears_latched_cycle_fault_before_start(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    writes: list[tuple[str, dict, bool]] = []
+    monkeypatch.setattr(
+        window.pressure,
+        "write",
+        lambda name, values, verify=False: writes.append((name, values, verify)),
+    )
+    snapshot = PlcSnapshot(
+        connected=True,
+        reorientation_state=90,
+        reorientation_fault_code=90,
+    )
+    window.pressure.snapshot_changed.emit(snapshot)
+    window.conveyor_speed_input.setValue(100.0)
+
+    assert window.manual_conveyor_start_button.isEnabled()
+    window._manual_conveyor_start()
+    assert writes[-1][0] == "manual_conveyor_reset"
+    assert writes[-1][1]["MAIN.GuiReorientationReset"] is True
+    assert writes[-1][1]["MAIN.GuiConveyorEnabled"] is False
+
+    window.pressure.operation_finished.emit("manual_conveyor_reset")
+    qtbot.waitUntil(lambda: writes[-1][0] == "manual_conveyor_start", timeout=1_000)
+    assert writes[-1][1]["MAIN.GuiReorientationControlActive"] is False
+    assert writes[-1][1]["MAIN.GuiReorientationReset"] is False
+    assert writes[-1][1]["MAIN.GuiConveyorEnabled"] is True
+    assert not any(
+        writes[-1][1][f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5)
+    )
     window.close()
     window.camera.shutdown()
     window.pressure.shutdown()

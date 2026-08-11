@@ -67,10 +67,16 @@ class ReorientationController(QObject):
         self._terminal_state = CycleState.COMPLETE
         self._result_emitted = False
         self._heartbeat = 0
+        self._heartbeat_ack_before_ownership = 0
         self._barriers_clear_since: float | None = None
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(250)
         self._heartbeat_timer.timeout.connect(self._send_heartbeat)
+        self._handshake_phase: str | None = None
+        self._handshake_timer = QTimer(self)
+        self._handshake_timer.setSingleShot(True)
+        self._handshake_timer.setInterval(3_000)
+        self._handshake_timer.timeout.connect(self._handshake_timeout)
         pressure.snapshot_changed.connect(self._on_snapshot)
         pressure.connection_changed.connect(self._connection_changed)
         pressure.operation_finished.connect(self._operation_finished)
@@ -208,7 +214,6 @@ class ReorientationController(QObject):
             and s.open_valve_mask == 0,
             "Drive and VTEM fault-free": not s.stepper_error and s.vtem_error_codes == (0, 0),
             "Light barriers clear": self._barriers_clear_long_enough(),
-            "Both lights confirmed": all(self.lights_ready),
             "UR angle acknowledged": p is None
             or p.ur_ry_angle_deg is None
             or self.ur_applied == p.ur_ry_angle_deg,
@@ -235,6 +240,7 @@ class ReorientationController(QObject):
         self._plan = None
         self._selected_transitions = ()
         self._selected_profiles = ()
+        self._clear_handshake()
         if self._roadmap_mode:
             self.profile = self._transport_profile
         self.consensus.reset()
@@ -252,6 +258,7 @@ class ReorientationController(QObject):
         self._observations = ()
         self._selected_transitions = ()
         self._selected_profiles = ()
+        self._clear_handshake()
         if self._roadmap_mode:
             self.profile = self._transport_profile
         self._set_state(CycleState.OFFLINE)
@@ -355,28 +362,38 @@ class ReorientationController(QObject):
         if name == "safe_stop":
             self.pressure.write("configuration", self._plan.configuration, True)
         elif name == "configuration":
+            # Seed a fresh heartbeat while ownership is still inactive. This
+            # prevents a retained PLC heartbeat age from immediately restoring
+            # the safe latch between the reset and first heartbeat writes.
+            self._heartbeat_ack_before_ownership = int(self.snapshot.heartbeat_ack)
+            self._heartbeat = (self._heartbeat_ack_before_ownership + 1) & 0xFFFFFFFF
             self.pressure.write(
-                "ownership",
-                {"MAIN.GuiReorientationControlActive": True, "MAIN.GuiReorientationReset": True},
-                True,
-            )
-        elif name == "ownership":
-            self.pressure.write("reset_end", {"MAIN.GuiReorientationReset": False}, True)
-        elif name == "reset_end":
-            self._heartbeat_timer.start()
-            self._heartbeat = (self._heartbeat + 1) & 0xFFFFFFFF
-            self.pressure.write(
-                "heartbeat_initial",
+                "heartbeat_prepare",
                 {"MAIN.GuiReorientationHeartbeat": self._heartbeat},
                 True,
             )
-        elif name == "heartbeat_initial":
-            self.pressure.write("enables", self._plan.enables, True)
+        elif name == "heartbeat_prepare":
+            self.pressure.write(
+                "ownership",
+                {
+                    "MAIN.GuiReorientationControlActive": True,
+                    "MAIN.GuiReorientationReset": True,
+                    "MAIN.GuiReorientationAbort": False,
+                    "MAIN.GuiReorientationStart": False,
+                },
+                True,
+            )
+        elif name == "ownership":
+            self._heartbeat_timer.start()
+            self._begin_handshake("ownership_ack")
+        elif name == "reset_end":
+            self._begin_handshake("reset_release_ack")
         elif name == "enables":
             self._set_state(CycleState.ARMED)
             self.pressure.write("start", {"MAIN.GuiReorientationStart": True}, True)
         elif name == "start":
-            self.pressure.write("start_pulse_end", {"MAIN.GuiReorientationStart": False})
+            self._begin_handshake("start_ack")
+        elif name == "start_pulse_end":
             self._set_state(CycleState.RUNNING)
         elif name == "release_safe":
             self.pressure.write(
@@ -384,8 +401,11 @@ class ReorientationController(QObject):
             )
         elif name == "release_owner":
             self._heartbeat_timer.stop()
+            self._clear_handshake()
             self._finish(self._terminal_state)
         elif name == "abort":
+            self._begin_handshake("abort_ack")
+        elif name == "abort_pulse_end":
             self.pressure.write("release_safe", self._plan.safe_stop, True)
 
     def _operation_failed(self, name: str, error: str) -> None:
@@ -398,8 +418,60 @@ class ReorientationController(QObject):
                 self._barriers_clear_since = time.monotonic()
         else:
             self._barriers_clear_since = None
+        if self._handshake_phase == "ownership_ack":
+            if (
+                snapshot.reorientation_state == 10
+                and snapshot.reorientation_fault_code == 0
+                and snapshot.heartbeat_alive
+                and snapshot.heartbeat_ack != self._heartbeat_ack_before_ownership
+            ):
+                self._clear_handshake()
+                self.pressure.write(
+                    "reset_end", {"MAIN.GuiReorientationReset": False}, True
+                )
+            return
+        if self._handshake_phase == "reset_release_ack":
+            if (
+                snapshot.reorientation_state == 10
+                and snapshot.reorientation_fault_code == 0
+                and snapshot.heartbeat_alive
+            ):
+                self._clear_handshake()
+                self.pressure.write("enables", self._plan.enables, True)
+            return
+        if self._handshake_phase == "start_ack":
+            if snapshot.reorientation_state == 20 and snapshot.heartbeat_alive:
+                self._clear_handshake()
+                self.pressure.write(
+                    "start_pulse_end", {"MAIN.GuiReorientationStart": False}, True
+                )
+            elif snapshot.reorientation_fault_code:
+                self._fault(
+                    f"plc_{snapshot.reorientation_fault_code}",
+                    "PLC rejected the reorientation start",
+                )
+            return
+        if self._handshake_phase == "abort_ack":
+            if snapshot.reorientation_state >= 90 or snapshot.reorientation_fault_code:
+                self._clear_handshake()
+                self.pressure.write(
+                    "abort_pulse_end", {"MAIN.GuiReorientationAbort": False}, True
+                )
+            return
         if self.state in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
             self._refresh_preflight()
+            return
+        if self.state in {
+            CycleState.DETECTING,
+            CycleState.DECIDED,
+            CycleState.STAGING,
+        }:
+            # Fault 90 is deliberately latched by the PLC after an abort.  It is
+            # therefore expected to still be visible while the next pose is
+            # detected and while its profile is staged.  The ownership/reset
+            # step below clears it before any conveyor or array enable is
+            # written.  Treating the old latch as a new cycle fault here made a
+            # retry fail immediately, before YOLO could even make a decision.
             return
         if snapshot.reorientation_fault_code:
             self._fault(f"plc_{snapshot.reorientation_fault_code}", "PLC reorientation fault")
@@ -433,6 +505,29 @@ class ReorientationController(QObject):
         self._heartbeat = (self._heartbeat + 1) & 0xFFFFFFFF
         self.pressure.write("heartbeat", {"MAIN.GuiReorientationHeartbeat": self._heartbeat})
 
+    def _begin_handshake(self, phase: str) -> None:
+        self._handshake_phase = phase
+        self._handshake_timer.start()
+
+    def _clear_handshake(self) -> None:
+        self._handshake_phase = None
+        self._handshake_timer.stop()
+
+    def _handshake_timeout(self) -> None:
+        phase = self._handshake_phase or "unknown"
+        self._handshake_phase = None
+        if phase == "abort_ack":
+            # Clear the command even if the status poll missed the short PLC
+            # transition. Safe-stop/readback still precedes owner release.
+            self.pressure.write(
+                "abort_pulse_end", {"MAIN.GuiReorientationAbort": False}, True
+            )
+            return
+        self._fault(
+            f"plc_handshake_{phase}",
+            f"PLC handshake timed out while waiting for {phase}.",
+        )
+
     def stop(self) -> None:
         if self.state not in {CycleState.READY, CycleState.OFFLINE, CycleState.NO_CONFIG}:
             if self.state == CycleState.DETECTING:
@@ -441,6 +536,7 @@ class ReorientationController(QObject):
                 return
             if self._finalizing:
                 return
+            self._clear_handshake()
             self._finalizing = True
             self._terminal_state = CycleState.ABORTED
             self._set_state(CycleState.ABORTING)
@@ -449,6 +545,7 @@ class ReorientationController(QObject):
     def _fault(self, code: str, text: str) -> None:
         if self.state == CycleState.FAULT:
             return
+        self._clear_handshake()
         self._set_state(CycleState.FAULT, text)
         self._terminal_state = CycleState.FAULT
         self.pressure.write(

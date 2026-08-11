@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -151,6 +152,32 @@ def roadmap_profile(tmp_path: Path, name: str, array_index: int):
     return load_pressure_profile(source)
 
 
+def advance_staging_to_enables(
+    controller: ReorientationController, pressure: FakePressure
+) -> None:
+    pressure.operation_finished.emit("safe_stop")
+    pressure.operation_finished.emit("configuration")
+    assert pressure.writes[-1][0] == "heartbeat_prepare"
+    pressure.operation_finished.emit("heartbeat_prepare")
+    assert pressure.writes[-1][0] == "ownership"
+    pressure.operation_finished.emit("ownership")
+    assert controller._handshake_phase == "ownership_ack"
+    acknowledged = PlcSnapshot(
+        connected=True,
+        calibration_valid=True,
+        light_barriers_stable=(True,) * 8,
+        reorientation_state=10,
+        heartbeat_alive=True,
+        heartbeat_ack=controller._heartbeat,
+    )
+    controller._on_snapshot(acknowledged)
+    assert pressure.writes[-1][0] == "reset_end"
+    pressure.operation_finished.emit("reset_end")
+    assert controller._handshake_phase == "reset_release_ack"
+    controller._on_snapshot(acknowledged)
+    assert pressure.writes[-1][0] == "enables"
+
+
 def test_roadmap_cycle_combines_unique_two_step_path_before_staging(tmp_path: Path) -> None:
     first = roadmap_profile(tmp_path, "2-3.json", 1)
     second = roadmap_profile(tmp_path, "3-4.json", 3)
@@ -266,6 +293,54 @@ def test_preflight_is_only_emitted_when_a_check_changes(tmp_path: Path) -> None:
     assert len(emissions) == 1
 
 
+def test_light_connection_and_confirmation_do_not_block_start(tmp_path: Path) -> None:
+    controller, _pressure = configured_controller(tmp_path)
+
+    controller.set_lights_ready(False, False)
+
+    assert "Both lights confirmed" not in controller.preflight()
+    assert controller.state == CycleState.READY
+
+
+def test_latched_previous_abort_is_reset_during_staging(tmp_path: Path) -> None:
+    controller, pressure = configured_controller(tmp_path)
+    controller.start_cycle()
+
+    stale_abort = PlcSnapshot(
+        connected=True,
+        calibration_valid=True,
+        light_barriers_stable=(True,) * 8,
+        reorientation_state=90,
+        reorientation_fault_code=90,
+    )
+    controller._on_snapshot(stale_abort)
+    assert controller.state == CycleState.DETECTING
+
+    started = time.time()
+    for index in range(3):
+        controller.accept_inference(inference_frame(2, started + index * 0.01))
+    assert controller.state == CycleState.STAGING
+    controller._on_snapshot(stale_abort)
+    assert controller.state == CycleState.STAGING
+
+    pressure.operation_finished.emit("safe_stop")
+    pressure.operation_finished.emit("configuration")
+    pressure.operation_finished.emit("heartbeat_prepare")
+    pressure.operation_finished.emit("ownership")
+    assert controller._handshake_phase == "ownership_ack"
+
+    cleared = replace(
+        stale_abort,
+        reorientation_state=10,
+        reorientation_fault_code=0,
+        heartbeat_alive=True,
+        heartbeat_ack=controller._heartbeat,
+    )
+    controller._on_snapshot(cleared)
+    assert pressure.writes[-1][0] == "reset_end"
+    assert controller.state == CycleState.STAGING
+
+
 def test_staging_order_and_no_enable_before_readback(tmp_path: Path) -> None:
     controller, pressure = configured_controller(tmp_path)
     controller.start_cycle()
@@ -278,10 +353,57 @@ def test_staging_order_and_no_enable_before_readback(tmp_path: Path) -> None:
     assert [row[0] for row in pressure.writes] == ["safe_stop", "configuration"]
     assert "MAIN.GuiConveyorEnabled" not in pressure.writes[1][1]
     pressure.operation_finished.emit("configuration")
+    assert pressure.writes[-1][0] == "heartbeat_prepare"
+    assert pressure.writes[-1][1]["MAIN.GuiReorientationHeartbeat"] > 0
+    pressure.operation_finished.emit("heartbeat_prepare")
+    assert pressure.writes[-1][0] == "ownership"
     pressure.operation_finished.emit("ownership")
+    assert pressure.writes[-1][0] == "ownership"
+    assert controller._handshake_phase == "ownership_ack"
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            calibration_valid=True,
+            light_barriers_stable=(True,) * 8,
+            reorientation_state=10,
+            heartbeat_alive=True,
+            heartbeat_ack=controller._heartbeat_ack_before_ownership,
+        )
+    )
+    assert pressure.writes[-1][0] == "ownership"
+    acknowledged = PlcSnapshot(
+        connected=True,
+        calibration_valid=True,
+        light_barriers_stable=(True,) * 8,
+        reorientation_state=10,
+        heartbeat_alive=True,
+        heartbeat_ack=controller._heartbeat,
+    )
+    controller._on_snapshot(acknowledged)
+    assert pressure.writes[-1][0] == "reset_end"
     pressure.operation_finished.emit("reset_end")
-    pressure.operation_finished.emit("heartbeat_initial")
+    assert pressure.writes[-1][0] == "reset_end"
+    assert controller._handshake_phase == "reset_release_ack"
+    controller._on_snapshot(acknowledged)
     assert [row[0] for row in pressure.writes][-1] == "enables"
+    pressure.operation_finished.emit("enables")
+    assert pressure.writes[-1][0] == "start"
+    pressure.operation_finished.emit("start")
+    assert pressure.writes[-1][0] == "start"
+    assert controller._handshake_phase == "start_ack"
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            calibration_valid=True,
+            light_barriers_stable=(True,) * 8,
+            reorientation_state=20,
+            heartbeat_alive=True,
+            busy=True,
+        )
+    )
+    assert pressure.writes[-1][0] == "start_pulse_end"
+    pressure.operation_finished.emit("start_pulse_end")
+    assert controller.state == CycleState.RUNNING
 
 
 def test_pose_one_uses_zero_array_mask(tmp_path: Path) -> None:
@@ -290,11 +412,7 @@ def test_pose_one_uses_zero_array_mask(tmp_path: Path) -> None:
     started = time.time()
     for index in range(3):
         controller.accept_inference(inference_frame(1, started + index * 0.01))
-    pressure.operation_finished.emit("safe_stop")
-    pressure.operation_finished.emit("configuration")
-    pressure.operation_finished.emit("ownership")
-    pressure.operation_finished.emit("reset_end")
-    pressure.operation_finished.emit("heartbeat_initial")
+    advance_staging_to_enables(controller, pressure)
     enables = pressure.writes[-1][1]
     assert enables["MAIN.GuiReorientationExpectedArrayMask"] == 0
     assert not any(enables[f"MAIN.GuiArrayEnabled{i}"] for i in range(1, 5))

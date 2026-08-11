@@ -504,6 +504,10 @@ IF GuiReorientationReset AND GuiReorientationControlActive THEN
 	ReorientationFaultCode := 0;
 	ReorientationSafeLatch := FALSE;
 	ReorientationState := 10;
+	ReorientationHeartbeatAgeMs := 0;
+	ReorientationLastHeartbeat := GuiReorientationHeartbeat;
+	ReorientationHeartbeatAck := GuiReorientationHeartbeat;
+	ReorientationHeartbeatAlive := TRUE;
 	ReorientationComplete := FALSE;
 	ReorientationExitSeen := FALSE;
 	ReorientationTriggeredArrayMask := 0;
