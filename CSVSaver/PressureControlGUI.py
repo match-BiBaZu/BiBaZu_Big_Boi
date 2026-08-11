@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pyads
+from plc_control_lease import PlcControlLease
 from PyQt6.QtCore import (
     QObject,
     QSignalBlocker,
@@ -3772,9 +3773,22 @@ class PressureControlWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    lease = PlcControlLease.acquire()
+    if lease is None:
+        QMessageBox.critical(
+            None,
+            "SPS bereits belegt",
+            "BiBaZu Reorientation Control, Conveyor Setup oder eine weitere "
+            "Pressure-Control-Instanz steuert bereits die SPS. Bitte zuerst die "
+            "andere Steueranwendung schließen.",
+        )
+        return 2
     window = PressureControlWindow()
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        lease.close()
 
 
 if __name__ == "__main__":

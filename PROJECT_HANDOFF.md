@@ -699,10 +699,19 @@ Panelwahl. BLE-Befehle sind serialisiert; Timeout oder Verbindungsverlust loesen
 den Client und hinterlassen einen sauber wiederholbaren Fehlerzustand. Mit
 `Disconnect all components` werden laufende BLE-Tasks abgebrochen sowie beide
 Leuchten, Kamera und ADS ohne blockierendes Warten im GUI-Thread getrennt.
+`Start conveyor` und `Stop conveyor` erlauben davon unabhaengig manuellen Transport.
+Der Start verwendet das vorhandene Geschwindigkeitsfeld, erzwingt Vorwaertsfahrt
+und schreibt alle vier Array-Enables false. Freigabe gibt es nur bei ADS-Verbindung,
+ReorientationState 0, gueltiger Kalibrierung sowie stehendem, fehlerfreiem Antrieb.
+In einem aktiven Automatikzyklus ist manueller Start gesperrt; Stop fordert dann den
+koordinierten Cycle-Abbruch an.
 Reorientation Control und Automated Image Capture halten beim Programmstart
 zusaetzlich denselben Windows-Named-Mutex `Local\BiBaZuCameraAndLights`. Eine
 zweite Hardware-GUI beendet ihren Start mit klarer Meldung, bevor Adapter erzeugt
-werden. In der Reorientation-GUI sind einzelne Auto-Reconnect-Loops deaktiviert;
+werden. Reorientation Control, Pressure Control und Conveyor Setup halten
+zusaetzlich exklusiv `Local\BiBaZuPlcControl`, sodass nur eine schreibende
+SPS-Steuer-GUI starten kann. In der Reorientation-GUI sind einzelne
+Auto-Reconnect-Loops deaktiviert;
 ein zentraler Ablauf verbindet und wiederholt beide Panels ausschliesslich
 seriell. Jeder Paneladapter fuehrt Scan, GATT-Verbindung und Befehle in einem
 eigenen langlebigen Asyncio-Worker-Thread aus. Connect, BLE-Cancel und Shutdown
@@ -764,11 +773,18 @@ genau ein vollstaendig sichtbares, bekanntes Objekt auf drei unterschiedlichen,
 frischen, aufeinanderfolgenden Frames. Null, mehrere, unbekannte, widerspruechliche
 oder veraltete Erkennungen setzen den Konsens zurueck. Das Modell wird nach dem
 Laden einer Konfiguration automatisch in einem eigenen Worker geladen; ein
-`Load YOLO model`-Button erlaubt Reload. Overlay, zugeordnete Roadmap-Pose und
-Konfidenz werden live angezeigt. Schema v2 verlangt alle explizit gemappten
+`Load YOLO model`-Button erlaubt Reload. Bei gemappten Erkennungen zeigt das
+Box/OBB-Overlay die Roadmap-Pose groß und seitlich daneben nur die Konfidenz in
+Prozent; die YOLO-Klassen-ID bleibt im Bild verborgen. Dieselbe Zuordnung wird
+fuer den Konsens verwendet. Schema v2 verlangt alle explizit gemappten
 Klassen im Modell, erlaubt aber weitere Klassen; deren Erkennung blockiert den
 Konsens. Der Warm-up-Frame wird verworfen; GPU wird verwendet, wenn verfuegbar,
 sonst CPU.
+
+Ein Modell-Reload stoppt den bisherigen Inference-Worker nichtblockierend und
+startet das neue Modell nach dessen `finished`-Signal automatisch. Waerenddessen
+wird `model_ready` sofort false gesetzt; ein Zyklus kann deshalb nicht mehr mit
+einem bereits gestoppten Worker in `DETECTING` starten.
 
 Beide Neewer RGB660 Pro II muessen verbunden und eingeschaltet sein. Pro aktueller
 Verbindung muss mindestens ein Lichtbefehl bestaetigt und die manuelle
@@ -805,6 +821,10 @@ Staging-Reihenfolge:
 5. Bei Abschluss/Abort Roh-Enables false schreiben und pruefen, erst dann den
    Owner freigeben.
 
+Ist die erkannte Pose bereits die Zielpose, besitzt diese Entscheidung Vorrang vor
+jedem geladenen Pfad: `GuiReorientationExpectedArrayMask` wird null und alle vier
+`GuiArrayEnabledN` werden explizit false geschrieben.
+
 ### PLC-Reorientation-Vertrag
 
 GUI nach PLC:
@@ -834,7 +854,10 @@ Heartbeat, 92 Zyklus/LB8, 93 Drain, 94 Antrieb/VTEM.
 Bei Heartbeatverlust bleibt ein Safe-Latch aktiv; es darf keinen automatischen
 Rueckfall in die Legacy-Freigaben geben. `PressureControlGUI` und
 `ConveyorSetupGUI` verweigern ihren ersten Write, solange Reorientation den Owner
-haelt. Weitere parallele ADS-Schreiber bleiben verboten. Das PLC-Programm muss
+haelt. Zusaetzlich verhindert der gemeinsame Windows-Mutex
+`Local\BiBaZuPlcControl`, dass Reorientation, Pressure Control oder Conveyor Setup
+parallel gestartet werden. Pressure Control nach dem Erstellen/Speichern eines
+Profils immer schließen, bevor Reorientation gestartet wird. Weitere parallele ADS-Schreiber bleiben verboten. Das PLC-Programm muss
 gebaut, aktiviert und auf Port 851 geladen sein; ein im Quelltext vorhandenes
 Symbol beweist nicht, dass die laufende PLC bereits diesen Stand verwendet.
 
@@ -855,6 +878,16 @@ erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywer
 - Der Qt-Eventloop blieb waehrend jeder Messsekunde responsiv. Scan und GATT-
   Verbindung laufen nun ausserhalb des Qt-Hauptthreads; ein zusaetzlicher Test
   bildet einen intern synchron blockierenden WinRT-Connect nach.
+- Beim Kk1a-Versuch liefen `PressureControlGUI.py` und Reorientation Control
+  gleichzeitig. Die gespeicherte Kk1a-Config selbst war korrekt (`class 1 ->
+  Pose 10`, Zielpose 10); die parallele Legacy-ADS-Anwendung war damit ein realer
+  konkurrierender Schreiber. Der gemeinsame PLC-Mutex verhindert diesen Zustand
+  nach einem Neustart beider Anwendungen. Der Roadmap-Controller besitzt
+  zusaetzlich einen getesteten Zielpose-Guard mit effektiver Arraymaske null.
+- Beim folgenden Startversuch blieb der Zustand in `DETECTING`, weil der sichtbare
+  YOLO-Status noch `worker is still stopping` meldete, waehrend der alte
+  `model_ready`-Wert den Start faelschlich erlaubte. Der Reload ist nun asynchron,
+  startet automatisch neu und sperrt den Zyklus waehrend des Worker-Wechsels.
 - Ein weiterer realer `AppHangB1` um 12:37 wurde nicht durch einen zweiten
   Hardwareprozess verursacht. Ursache waren noch vorhandene Lambda-Verbindungen,
   die BLE-Worker-Signale unmittelbar in Qt-Widgets weiterleiten konnten. Diese
@@ -1070,7 +1103,7 @@ python ConveyorSetupGUI.py
 python PressureControlGUI.py
 ```
 
-Zuletzt liefen 52 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
+Zuletzt liefen 53 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
 muessen nach jedem Umzug erneut durchgefuehrt werden.
 
 Im Verzeichnis `ReorientationControlGUI`:
@@ -1080,7 +1113,7 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `87` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `92` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..9, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
@@ -1090,7 +1123,8 @@ die animierte Uebergangsvorschau mit
 Bild-Fallback ab. Zusaetzlich sind SPS-IP-Migration, BLE-Auswahl, Timeout-Cleanup,
 Connect-Cancel, serielle Doppelverbindung, Connect-Timeout, Isolation eines
 blockierenden WinRT-Aufrufs, Exposure-/FPS-UI, Langzeit-Exposure-Fetch-Timeout und
-Qt-Thread-Affinität der Worker-Signale sowie `Disconnect all components`
+Qt-Thread-Affinität der Worker-Signale, asynchronen YOLO-Reload sowie sichere
+manuelle Bandfreigabe/-abschaltung und `Disconnect all components`
 abgedeckt. Sie ersetzen keine Hardwareabnahme.
 
 ## 13. Empfohlene Wiederinbetriebnahme
@@ -1205,8 +1239,8 @@ abgedeckt. Sie ersetzen keine Hardwareabnahme.
 Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
-Legacy-Tests:       python -m unittest test_pressure_control_gui.py (52)
-Reorientation-Test: uv run pytest (87), uv run ruff check src tests
+Legacy-Tests:       python -m unittest test_pressure_control_gui.py (53)
+Reorientation-Test: uv run pytest (92), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004

@@ -232,8 +232,13 @@ class ReorientationController(QObject):
         self._result_emitted = False
         self._camera_lost_after_decision = False
         self._lights_lost_after_decision = False
+        self._plan = None
+        self._selected_transitions = ()
+        self._selected_profiles = ()
+        if self._roadmap_mode:
+            self.profile = self._transport_profile
         self.consensus.reset()
-        self._set_state(CycleState.DETECTING)
+        self._set_state(CycleState.DETECTING, "Waiting for three valid YOLO frames")
 
     def prepare_next_cycle(self) -> None:
         if self.state not in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}:
@@ -283,12 +288,27 @@ class ReorientationController(QObject):
         except Exception as exc:
             self._fault("fault_logging", f"Decision image could not be saved: {exc}")
             return
-        actuate = (
-            bool(self._selected_transitions)
-            if self._roadmap_mode
-            else decision.pose_id != self.part.target_pose
+        # Reaching the configured target is the highest-priority, fail-safe
+        # decision.  Never derive actuation for that case from a previously
+        # selected route or from profile contents: the PLC must receive an
+        # explicit zero mask and all four GUI array enables must be false.
+        already_at_target = decision.pose_id == self.part.target_pose
+        actuate = False if already_at_target else (
+            bool(self._selected_transitions) if self._roadmap_mode else True
         )
         self._plan = build_write_plan(self.profile, actuate=actuate)
+        if already_at_target and (
+            self._plan.expected_array_mask != 0
+            or any(
+                bool(self._plan.enables[f"MAIN.GuiArrayEnabled{index}"])
+                for index in range(1, 5)
+            )
+        ):
+            self._fault(
+                "target_pose_actuation_guard",
+                "Target pose decision produced a non-zero array enable; cycle blocked.",
+            )
+            return
         route = " → ".join(
             map(
                 str,

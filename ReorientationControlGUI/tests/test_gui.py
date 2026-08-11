@@ -7,11 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 from bibazu_reorientation.config import save_roadmap_part_definition
-from bibazu_reorientation.models import CameraStatus, ConnectionState
+from bibazu_reorientation.models import CameraStatus, ConnectionState, CycleState, PlcSnapshot
 from bibazu_reorientation.roadmap import load_pose_roadmap
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.main_window import MainWindow
@@ -290,6 +290,106 @@ def test_identical_preflight_update_keeps_existing_widgets(qtbot, tmp_path, monk
     window._preflight(checks.copy())
 
     assert [window.preflight.itemAt(index).widget() for index in range(2)] == widgets
+    window.close()
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_yolo_reload_retires_old_worker_without_stale_readiness_or_gui_wait(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    class RetiringInference(QObject):
+        frame_ready = pyqtSignal(object)
+        model_ready = pyqtSignal(object)
+        status_changed = pyqtSignal(str)
+        error = pyqtSignal(str)
+        finished = pyqtSignal()
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.running = True
+            self.stop_requests = 0
+
+        def isRunning(self) -> bool:  # noqa: N802 - QThread-compatible fake
+            return self.running
+
+        def request_stop(self) -> None:
+            self.stop_requests += 1
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    worker = RetiringInference()
+    window.inference = worker
+    window.part = SimpleNamespace(model_path=tmp_path / "best.pt", poses=())
+    window.controller.set_model_ready(True)
+    starts: list[bool] = []
+    monkeypatch.setattr(window, "_start_yolo_worker", lambda: starts.append(True))
+
+    window.load_yolo_model()
+
+    assert worker.stop_requests == 1
+    assert not window.controller.model_ready
+    assert not window.load_yolo_button.isEnabled()
+    assert window.yolo_status.text() == "YOLO: stopping previous model …"
+    assert starts == []
+
+    worker.running = False
+    worker.finished.emit()
+    qtbot.waitUntil(lambda: starts == [True])
+    assert window.inference is None
+    window.close()
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_manual_conveyor_start_is_independent_and_forces_arrays_off(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    writes: list[tuple[str, dict, bool]] = []
+    monkeypatch.setattr(
+        window.pressure,
+        "write",
+        lambda name, values, verify=False: writes.append((name, values, verify)),
+    )
+    snapshot = PlcSnapshot(
+        connected=True,
+        calibration_valid=True,
+        light_barriers_stable=(True,) * 8,
+        reorientation_state=0,
+    )
+    window.pressure.snapshot_changed.emit(snapshot)
+    window.conveyor_speed_input.setValue(125.0)
+
+    assert window.manual_conveyor_start_button.isEnabled()
+    window._manual_conveyor_start()
+
+    name, values, verify = writes[-1]
+    assert name == "manual_conveyor_start"
+    assert verify is True
+    assert values["MAIN.GuiConveyorEnabled"] is True
+    assert values["MAIN.GuiConveyorSpeedMmPerSec"] == 125.0
+    assert values["MAIN.GuiConveyorReverse"] is False
+    assert not any(values[f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5))
+
+    window.pressure.operation_finished.emit("manual_conveyor_start")
+    window._manual_conveyor_stop()
+    assert writes[-1][0] == "manual_conveyor_stop"
+    assert writes[-1][1]["MAIN.GuiConveyorEnabled"] is False
+    assert not any(
+        writes[-1][1][f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5)
+    )
+    window.pressure.operation_finished.emit("manual_conveyor_stop")
+    coordinated_stops: list[bool] = []
+    monkeypatch.setattr(window.controller, "stop", lambda: coordinated_stops.append(True))
+    window.controller.state = CycleState.RUNNING
+    write_count = len(writes)
+    window._manual_conveyor_stop()
+    assert coordinated_stops == [True]
+    assert len(writes) == write_count
     window.close()
     window.camera.shutdown()
     window.pressure.shutdown()

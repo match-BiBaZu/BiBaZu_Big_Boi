@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 
 HARDWARE_LEASE_NAME = r"Local\BiBaZuCameraAndLights"
+PLC_CONTROL_LEASE_NAME = r"Local\BiBaZuPlcControl"
 ERROR_ALREADY_EXISTS = 183
 
 
@@ -18,7 +19,7 @@ def _close_windows_handle(handle: int) -> None:
 
 @dataclass(slots=True)
 class HardwareLease:
-    """Process-wide Windows mutex shared by the two camera/light applications."""
+    """Process-wide Windows mutex shared by BiBaZu hardware applications."""
 
     _handle: int | None
 

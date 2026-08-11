@@ -4,6 +4,7 @@ import os
 import tempfile
 import time
 import unittest
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import ConveyorSetupGUI as setup_gui
 import PressureControlGUI as gui
+import plc_control_lease
 import ur_angle_control
 from PyQt6.QtCore import QEventLoop, QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QFileDialog
@@ -98,6 +100,20 @@ class AdsThreadTests(unittest.TestCase):
         loop = QEventLoop()
         QTimer.singleShot(milliseconds, loop.quit)
         loop.exec()
+
+    @unittest.skipUnless(os.name == "nt", "Windows named-mutex behavior")
+    def test_plc_control_lease_excludes_a_second_control_gui(self):
+        name = rf"Local\BiBaZuPlcControlTest-{uuid.uuid4()}"
+        first = plc_control_lease.PlcControlLease.acquire(name)
+        self.assertIsNotNone(first)
+        try:
+            self.assertIsNone(plc_control_lease.PlcControlLease.acquire(name))
+        finally:
+            first.close()
+
+        replacement = plc_control_lease.PlcControlLease.acquire(name)
+        self.assertIsNotNone(replacement)
+        replacement.close()
 
     def test_light_barrier_defaults_match_standard_setup(self):
         self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 40.0)

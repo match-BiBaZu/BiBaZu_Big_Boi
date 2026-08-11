@@ -28,6 +28,7 @@ class InferenceConfig:
     max_fps: float = 5.0
     device: str = "auto"
     expected_class_ids: tuple[int, ...] | None = None
+    class_to_pose: tuple[tuple[int, int], ...] = ()
 
     def validated(self, *, require_model: bool = True) -> InferenceConfig:
         model_path = Path(self.model_path).expanduser().resolve()
@@ -39,6 +40,12 @@ class InferenceConfig:
             raise ValueError("Image size must be a multiple of 32")
         if not 0.2 <= self.max_fps <= 60:
             raise ValueError("Inference rate must be between 0.2 and 60 FPS")
+        class_ids = [class_id for class_id, _pose_id in self.class_to_pose]
+        pose_ids = [pose_id for _class_id, pose_id in self.class_to_pose]
+        if len(class_ids) != len(set(class_ids)):
+            raise ValueError("Each YOLO class may be mapped to only one pose")
+        if len(pose_ids) != len(set(pose_ids)):
+            raise ValueError("Each pose may be mapped to only one YOLO class")
         return replace(self, model_path=model_path)
 
 
@@ -139,26 +146,61 @@ def fully_visible(detection: Detection, width: int, height: int, margin: float =
     )
 
 
-def draw_overlay(image: np.ndarray, detections: tuple[Detection, ...]) -> np.ndarray:
+def overlay_labels(
+    detection: Detection, class_to_pose: dict[int, int] | None = None
+) -> tuple[str, str]:
+    """Return a prominent mapped pose and confidence without the model class."""
+    pose_id = None if class_to_pose is None else class_to_pose.get(detection.class_id)
+    if pose_id is None:
+        return f"{detection.class_name} {detection.confidence:.0%}", ""
+    return f"Pose {pose_id}", f"{detection.confidence:.0%}"
+
+
+def draw_overlay(
+    image: np.ndarray,
+    detections: tuple[Detection, ...],
+    class_to_pose: dict[int, int] | None = None,
+) -> np.ndarray:
     annotated = np.ascontiguousarray(image).copy()
     palette = ((34, 197, 94), (249, 115, 22))
     for detection in detections:
         color = palette[detection.class_id % len(palette)]
         points = np.rint(np.asarray(detection.corners)).astype(np.int32)
         cv2.polylines(annotated, [points], True, color, 2, cv2.LINE_AA)
-        label = f"{detection.class_name} {detection.confidence:.0%}"
+        primary, secondary = overlay_labels(detection, class_to_pose)
         x = max(0, int(points[:, 0].min()))
-        y = max(24, int(points[:, 1].min()))
+        y = max(42, int(points[:, 1].min()))
+        primary_origin = (x, y - 18 if secondary else y - 5)
         cv2.putText(
             annotated,
-            label,
-            (x, y - 5),
+            primary,
+            primary_origin,
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            1.15 if secondary else 0.7,
             color,
-            2,
+            3 if secondary else 2,
             cv2.LINE_AA,
         )
+        if secondary:
+            primary_width = cv2.getTextSize(
+                primary, cv2.FONT_HERSHEY_SIMPLEX, 1.15, 3
+            )[0][0]
+            secondary_width = cv2.getTextSize(
+                secondary, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
+            )[0][0]
+            secondary_x = x + primary_width + 14
+            if secondary_x + secondary_width >= annotated.shape[1]:
+                secondary_x = max(0, x - secondary_width - 14)
+            cv2.putText(
+                annotated,
+                secondary,
+                (secondary_x, primary_origin[1]),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
     return annotated
 
 
@@ -238,14 +280,20 @@ class InferenceWorker(QThread):
         if image.ndim != 3 or image.shape[2] != 3:
             return
         with self._condition:
+            if self._stopping:
+                return
             self._latest = (image, timestamp)
             self._condition.notify()
 
-    def stop(self, wait_ms: int = 10_000) -> bool:
+    def request_stop(self) -> None:
+        """Request termination without blocking the caller's Qt thread."""
         with self._condition:
             self._stopping = True
             self._latest = None
             self._condition.notify_all()
+
+    def stop(self, wait_ms: int = 10_000) -> bool:
+        self.request_stop()
         return self.wait(wait_ms) if QThread.currentThread() is not self else True
 
     def _model(self) -> Any:
@@ -305,7 +353,14 @@ class InferenceWorker(QThread):
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 self.frame_ready.emit(
                     InferenceFrame(
-                        draw_overlay(image, detections), detections, elapsed_ms, timestamp
+                        draw_overlay(
+                            image,
+                            detections,
+                            dict(self._config.class_to_pose),
+                        ),
+                        detections,
+                        elapsed_ms,
+                        timestamp,
                     )
                 )
                 next_allowed = started + 1.0 / self._config.max_fps

@@ -82,8 +82,9 @@ Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
 ### Roadmap-Zyklus starten
 
 1. Konfiguration öffnen. Das YOLO-Modell wird automatisch in einem Worker geladen;
-   **Load YOLO model** erlaubt einen manuellen Reload. Box/OBB, Klassenname,
-   Roadmap-Pose und Konfidenz erscheinen direkt im Kamerabild bzw. darunter.
+   **Load YOLO model** erlaubt einen manuellen Reload. Bei einer gemappten Klasse
+   steht die Roadmap-Pose groß im Box/OBB-Overlay; daneben steht nur die Konfidenz
+   in Prozent. Die YOLO-Klassen-ID wird im Bild nicht mehr angezeigt.
 2. Die GUI liest alle zugeordneten Transition-Profile und zeigt deren UR-Ry-Winkel
    und Förderbandgeschwindigkeit. Stimmen beide Werte überall überein, werden die
    Hardwarefelder automatisch gefüllt. Bei Abweichungen Werte auswählen und
@@ -97,8 +98,10 @@ Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
    Array darf im Pfad höchstens einmal belegt sein. Das SPS-Profil wird zunächst bei
    gestopptem Band geschrieben und zurückgelesen; Freigaben und Band folgen zuletzt.
 
-Eine erkannte Zielpose fährt mit Arraymaske null durch. Eine nicht erreichbare oder
-mehrdeutige Pose endet vor jedem Aktuierungswrite als sichtbarer Fehler.
+Eine erkannte Zielpose fährt mit Arraymaske null durch. Dieser Fall erzwingt
+unabhängig von zuvor ausgewählten Übergängen zusätzlich alle vier Array-Enables
+auf `false`. Eine nicht erreichbare oder mehrdeutige Pose endet vor jedem
+Aktuierungswrite als sichtbarer Fehler.
 
 ### Hardware einstellen
 
@@ -126,15 +129,29 @@ blocking Windows-GATT call cannot block Qt. Connect and command timeouts release
 the stale BLE client and leave a clean, retryable error instead of retaining a
 stale connection.
 
-Reorientation Control and Automated Image Capture share a Windows hardware lease.
-Starting either application while the other is open now shows a clear message and
-performs no hardware connection. The two panel connections use one central serial
-retry sequence; individual panel reconnect loops are disabled to prevent
-overlapping WinRT scans. Connect, cancel, and BLE shutdown work is bounded so a
-faulty driver cannot freeze Qt or hold the application open indefinitely.
+Reorientation Control and Automated Image Capture share a Windows camera/light
+lease. Reorientation Control, Pressure Control, and Conveyor Setup additionally
+share the PLC-control lease `Local\BiBaZuPlcControl`. Starting a second conflicting
+application now shows a clear message and performs no hardware connection. The two
+panel connections use one central serial retry sequence; individual panel reconnect
+loops are disabled to prevent overlapping WinRT scans. Connect, cancel, and BLE
+shutdown work is bounded so a faulty driver cannot freeze Qt or hold the application
+open indefinitely.
 All BLE, YOLO, and UR worker results cross into the UI through QObject slots;
 worker-thread signals never call labels, dialogs, or MainWindow state through
 anonymous Python callbacks.
+
+**Start conveyor** and **Stop conveyor** provide manual transport independently of
+YOLO, lights, and part configuration. The speed comes from the existing Conveyor
+speed field. Manual start is available only with ADS connected, PLC reorientation
+state 0, valid calibration, and a stopped fault-free drive; it explicitly selects
+forward travel and writes all four array enables false. During an automatic cycle,
+manual start is locked and Stop conveyor requests the normal coordinated abort.
+
+Reloading a YOLO model now retires the previous inference worker asynchronously and
+starts the requested model automatically after that worker has exited. Model readiness
+is cleared immediately during this handover, so a cycle cannot enter Detecting with a
+stopped worker.
 
 The Baumer preview has explicit backpressure: at most one converted frame may be
 waiting for Qt, and large sensor images are reduced in the camera worker before
@@ -177,10 +194,12 @@ all six `LightBarrierStableN` signals is `TRUE`. Also resolve the documented UR
 fixed-orientation discrepancy (`Rz=-90°` versus the installation's possible
 `Rz=180°`).
 
-`PressureControlGUI` and therefore `ConveyorSetupGUI` refuse their initial write
-while the reorientation owner is active. Other ADS writers are prohibited during a
-cycle. The PLC watchdog and GUI stop are not safety-rated; physical emergency stop
-and pneumatic pressure relief remain mandatory.
+`PressureControlGUI` and `ConveyorSetupGUI` refuse their initial write while the
+reorientation owner is active. The shared process lease also prevents these three
+control applications from being started together. Close Pressure Control after
+creating/saving a profile and before starting Reorientation Control. Other ADS
+writers are prohibited during a cycle. The PLC watchdog and GUI stop are not
+safety-rated; physical emergency stop and pneumatic pressure relief remain mandatory.
 
 ## Tests
 
@@ -191,4 +210,4 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
-The current offscreen suite contains 87 tests.
+The current offscreen suite contains 92 tests.

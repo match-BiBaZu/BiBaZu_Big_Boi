@@ -6,7 +6,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bibazu_reorientation.inference import PoseConsensus, extract_detections, validate_model_classes
+from bibazu_reorientation.inference import (
+    InferenceConfig,
+    PoseConsensus,
+    draw_overlay,
+    extract_detections,
+    overlay_labels,
+    validate_model_classes,
+)
 from bibazu_reorientation.models import Detection, InferenceFrame
 
 
@@ -77,3 +84,31 @@ def test_unmapped_detection_alongside_mapped_object_resets_consensus() -> None:
     )
     assert consensus.add(mixed, {0: 1, 1: 2}) is None
     assert consensus.observations == ()
+
+
+def test_overlay_promotes_mapped_roadmap_pose_over_yolo_class(tmp_path) -> None:
+    detection = frame(class_id=1).detections[0]
+    assert overlay_labels(detection, {1: 10}) == ("Pose 10", "90%")
+    assert overlay_labels(detection, {}) == ("Pose 2 90%", "")
+
+    config = InferenceConfig(
+        tmp_path / "best.pt",
+        class_to_pose=((1, 10),),
+    ).validated(require_model=False)
+    assert dict(config.class_to_pose) == {1: 10}
+
+
+def test_mapped_confidence_is_drawn_beside_pose_not_on_box(monkeypatch) -> None:
+    detection = frame(class_id=1).detections[0]
+    calls: list[tuple[str, tuple[int, int]]] = []
+
+    def record_text(_image, text, origin, *_args):
+        calls.append((text, origin))
+        return _image
+
+    monkeypatch.setattr("bibazu_reorientation.inference.cv2.putText", record_text)
+    draw_overlay(np.zeros((100, 400, 3), np.uint8), (detection,), {1: 10})
+
+    assert [text for text, _origin in calls] == ["Pose 10", "90%"]
+    assert calls[1][1][0] > calls[0][1][0]
+    assert calls[1][1][1] == calls[0][1][1]

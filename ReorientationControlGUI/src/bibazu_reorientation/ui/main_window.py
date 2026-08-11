@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
         )
         self.controller = ReorientationController(self.pressure)
         self.inference: InferenceWorker | None = None
+        self._yolo_reload_pending = False
+        self._shutting_down = False
         self.part = None
         self.profile = None
         self.ur_worker: UrAngleWorker | None = None
@@ -148,6 +150,7 @@ class MainWindow(QMainWindow):
         self._updating_machine_parameters = False
         self._profile_parameter_details = ""
         self._light_connect_task: asyncio.Task[None] | None = None
+        self._manual_conveyor_command_pending = False
         self._build_ui()
         self._wire()
         self.freshness_timer = QTimer(self)
@@ -284,6 +287,25 @@ class MainWindow(QMainWindow):
         machine_buttons.addWidget(self.apply_machine_parameters_button)
         machine_buttons.addWidget(self.ur_button)
         hardware_layout.addLayout(machine_buttons)
+        self.manual_conveyor_start_button = QPushButton("Start conveyor")
+        self.manual_conveyor_start_button.setToolTip(
+            "Manual conveyor operation without YOLO or light preflight. Arrays are disabled."
+        )
+        self.manual_conveyor_start_button.setEnabled(False)
+        self.manual_conveyor_start_button.clicked.connect(self._manual_conveyor_start)
+        self.manual_conveyor_stop_button = QPushButton("Stop conveyor")
+        self.manual_conveyor_stop_button.setToolTip(
+            "Stops manual transport; during a cycle this requests a coordinated abort."
+        )
+        self.manual_conveyor_stop_button.setEnabled(False)
+        self.manual_conveyor_stop_button.clicked.connect(self._manual_conveyor_stop)
+        manual_conveyor_buttons = QHBoxLayout()
+        manual_conveyor_buttons.addWidget(self.manual_conveyor_start_button)
+        manual_conveyor_buttons.addWidget(self.manual_conveyor_stop_button)
+        hardware_layout.addLayout(manual_conveyor_buttons)
+        self.manual_conveyor_status = QLabel("Manual conveyor: PLC disconnected")
+        self.manual_conveyor_status.setWordWrap(True)
+        hardware_layout.addWidget(self.manual_conveyor_status)
         hardware_layout.addWidget(self.connect_button)
         hardware_layout.addWidget(self.disconnect_button)
         self.light_panel1 = LightPanel(self.light1)
@@ -320,6 +342,9 @@ class MainWindow(QMainWindow):
     def _wire(self) -> None:
         self.pressure.connection_changed.connect(self._plc_connection_changed)
         self.pressure.baseline_ready.connect(self._baseline_ready)
+        self.pressure.snapshot_changed.connect(self._manual_conveyor_snapshot)
+        self.pressure.operation_finished.connect(self._pressure_operation_finished)
+        self.pressure.operation_failed.connect(self._pressure_operation_failed)
         self.camera.state_changed.connect(self._camera_state_changed)
         self.camera.status_changed.connect(self._camera_status_changed)
         self.camera.exposure_applied.connect(self._camera_exposure_applied)
@@ -340,12 +365,119 @@ class MainWindow(QMainWindow):
 
     def _plc_connection_changed(self, connected: bool, detail: str) -> None:
         self.plc_status.setText(f"PLC: {'connected' if connected else 'disconnected'} – {detail}")
+        if not connected:
+            self._manual_conveyor_command_pending = False
+            self.manual_conveyor_status.setText("Manual conveyor: PLC disconnected")
+        self._update_manual_conveyor_buttons()
         if connected:
             LOGGER.info(
                 "ADS connected: %s / %s", self.settings.plc_ams_net_id, self.settings.plc_ip
             )
         else:
             LOGGER.error("ADS connection failed/lost: %s", detail)
+
+    @staticmethod
+    def _manual_conveyor_idle_state(state: CycleState) -> bool:
+        return state in {
+            CycleState.NO_CONFIG,
+            CycleState.OFFLINE,
+            CycleState.READY,
+            CycleState.COMPLETE,
+            CycleState.ABORTED,
+            CycleState.FAULT,
+        }
+
+    def _manual_conveyor_can_start(self) -> bool:
+        snapshot = self.controller.snapshot
+        return (
+            not self._manual_conveyor_command_pending
+            and self._manual_conveyor_idle_state(self.controller.state)
+            and snapshot.connected
+            and snapshot.reorientation_state == 0
+            and snapshot.reorientation_fault_code == 0
+            and snapshot.conveyor_motion_state == 0
+            and not snapshot.stepper_busy
+            and not snapshot.stepper_error
+            and snapshot.calibration_valid
+        )
+
+    def _update_manual_conveyor_buttons(self) -> None:
+        snapshot = self.controller.snapshot
+        self.manual_conveyor_start_button.setEnabled(self._manual_conveyor_can_start())
+        self.manual_conveyor_stop_button.setEnabled(
+            snapshot.connected and not self._manual_conveyor_command_pending
+        )
+
+    @pyqtSlot(object)
+    def _manual_conveyor_snapshot(self, snapshot: object) -> None:
+        self._update_manual_conveyor_buttons()
+        if self._manual_conveyor_command_pending:
+            return
+        if getattr(snapshot, "conveyor_motion_state", 0) != 0:
+            self.manual_conveyor_status.setText("Manual conveyor: running / drive active")
+        elif getattr(snapshot, "connected", False):
+            self.manual_conveyor_status.setText("Manual conveyor: stopped")
+
+    def _manual_conveyor_start(self) -> None:
+        if not self._manual_conveyor_can_start():
+            QMessageBox.warning(
+                self,
+                "Manual conveyor",
+                "Manual start requires an idle reorientation controller, PLC state 0, "
+                "a stopped fault-free drive, and valid conveyor calibration.",
+            )
+            return
+        self._manual_conveyor_command_pending = True
+        self._update_manual_conveyor_buttons()
+        self.manual_conveyor_status.setText("Manual conveyor: sending safe start …")
+        values: dict[str, bool | float] = {
+            "MAIN.GuiConveyorCalibrationMode": False,
+            "MAIN.GuiVelocityCheckMode": False,
+            "MAIN.GuiForceDelayMeasurementEnabled": False,
+            "MAIN.GuiConveyorReverse": False,
+            "MAIN.GuiConveyorSpeedMmPerSec": self.conveyor_speed_input.value(),
+            "MAIN.GuiConveyorEnabled": True,
+        }
+        values.update({f"MAIN.GuiArrayEnabled{index}": False for index in range(1, 5)})
+        self.pressure.write("manual_conveyor_start", values, True)
+
+    def _manual_conveyor_stop(self) -> None:
+        if not self._manual_conveyor_idle_state(self.controller.state):
+            self.manual_conveyor_status.setText(
+                "Manual conveyor: coordinated cycle abort requested …"
+            )
+            self.controller.stop()
+            return
+        if not self.controller.snapshot.connected:
+            return
+        self._manual_conveyor_command_pending = True
+        self._update_manual_conveyor_buttons()
+        self.manual_conveyor_status.setText("Manual conveyor: sending stop …")
+        values = {"MAIN.GuiConveyorEnabled": False}
+        values.update({f"MAIN.GuiArrayEnabled{index}": False for index in range(1, 5)})
+        self.pressure.write("manual_conveyor_stop", values, True)
+
+    @pyqtSlot(str)
+    def _pressure_operation_finished(self, name: str) -> None:
+        if name not in {"manual_conveyor_start", "manual_conveyor_stop"}:
+            return
+        self._manual_conveyor_command_pending = False
+        self.manual_conveyor_status.setStyleSheet("")
+        self.manual_conveyor_status.setText(
+            "Manual conveyor: start accepted – waiting for drive"
+            if name == "manual_conveyor_start"
+            else "Manual conveyor: stop accepted – waiting for standstill"
+        )
+        self._update_manual_conveyor_buttons()
+
+    @pyqtSlot(str, str)
+    def _pressure_operation_failed(self, name: str, detail: str) -> None:
+        if name not in {"manual_conveyor_start", "manual_conveyor_stop"}:
+            return
+        self._manual_conveyor_command_pending = False
+        self.manual_conveyor_status.setStyleSheet("color:#b91c1c;font-weight:bold")
+        self.manual_conveyor_status.setText(f"Manual conveyor failed: {detail}")
+        self._update_manual_conveyor_buttons()
 
     @staticmethod
     def _hardware_error(component: str, detail: str) -> None:
@@ -919,14 +1051,52 @@ class MainWindow(QMainWindow):
         LOGGER.error(error)
 
     def load_yolo_model(self) -> None:
-        if self.part is None:
+        if self.part is None or self._shutting_down:
+            return
+        # Invalidate readiness before touching the old worker. A stopped or
+        # retiring model must never leave Start enabled with a stale ready flag.
+        self.controller.set_model_ready(False)
+        self.load_yolo_button.setEnabled(False)
+        if self.inference is not None and self.inference.isRunning():
+            if not self._yolo_reload_pending:
+                self._yolo_reload_pending = True
+                self._disconnect_inference_output(self.inference)
+                self.inference.finished.connect(self._inference_stopped_for_reload)
+                self.inference.request_stop()
+            self.yolo_status.setStyleSheet("")
+            self.yolo_status.setText("YOLO: stopping previous model …")
             return
         if self.inference is not None:
-            if not self.inference.stop(2_000):
-                self.yolo_status.setText("YOLO worker is still stopping; try again shortly.")
-                return
             self.inference = None
-        self.controller.set_model_ready(False)
+        self._start_yolo_worker()
+
+    def _disconnect_inference_output(self, worker: InferenceWorker) -> None:
+        for signal, slot in (
+            (worker.frame_ready, self._inference_frame),
+            (worker.model_ready, self._inference_model_ready),
+            (worker.status_changed, self._inference_status_changed),
+            (worker.error, self._inference_error),
+        ):
+            with contextlib.suppress(TypeError, RuntimeError):
+                signal.disconnect(slot)
+
+    @pyqtSlot()
+    def _inference_stopped_for_reload(self) -> None:
+        worker = self.sender()
+        if worker is not self.inference:
+            return
+        with contextlib.suppress(TypeError, RuntimeError):
+            worker.finished.disconnect(self._inference_stopped_for_reload)
+        self.inference = None
+        pending = self._yolo_reload_pending
+        self._yolo_reload_pending = False
+        if pending and not self._shutting_down:
+            QTimer.singleShot(0, self._start_yolo_worker)
+
+    def _start_yolo_worker(self) -> None:
+        if self.part is None or self._shutting_down:
+            self.load_yolo_button.setEnabled(self.part is not None)
+            return
         self.yolo_status.setStyleSheet("")
         self.yolo_status.setText(f"YOLO: loading {self.part.model_path.name} …")
         self.load_yolo_button.setEnabled(False)
@@ -935,8 +1105,15 @@ class MainWindow(QMainWindow):
             if self._roadmap_mode
             else None
         )
+        class_to_pose = tuple(
+            (pose.model_class_id, pose.id) for pose in self.part.poses
+        )
         self.inference = InferenceWorker(
-            InferenceConfig(self.part.model_path, expected_class_ids=expected)
+            InferenceConfig(
+                self.part.model_path,
+                expected_class_ids=expected,
+                class_to_pose=class_to_pose,
+            )
         )
         self.inference.frame_ready.connect(self._inference_frame)
         self.inference.model_ready.connect(self._inference_model_ready)
@@ -1019,6 +1196,7 @@ class MainWindow(QMainWindow):
         )
 
     def _cycle_state_changed(self, state, detail: str) -> None:
+        LOGGER.info("Cycle state: %s%s", state, f" – {detail}" if detail else "")
         self.cycle_status.setText(f"{state}: {detail}")
         configuration_editable = state in {
             CycleState.NO_CONFIG,
@@ -1035,7 +1213,7 @@ class MainWindow(QMainWindow):
         machine_editable = configuration_editable and self._roadmap_mode
         self.use_ur_angle.setEnabled(machine_editable)
         self.ur_angle_input.setEnabled(machine_editable and self.use_ur_angle.isChecked())
-        self.conveyor_speed_input.setEnabled(machine_editable)
+        self.conveyor_speed_input.setEnabled(configuration_editable)
         self.apply_machine_parameters_button.setEnabled(machine_editable)
         terminal = state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
         self.start_button.setText("Prepare next cycle" if terminal else "Start cycle")
@@ -1048,6 +1226,7 @@ class MainWindow(QMainWindow):
             )
         )
         self.stop_button.setEnabled(True)
+        self._update_manual_conveyor_buttons()
 
     def _start(self) -> None:
         try:
@@ -1059,11 +1238,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Cycle", str(exc))
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._shutting_down = True
+        self._yolo_reload_pending = False
         self.freshness_timer.stop()
         self.exposure_apply_timer.stop()
         super().closeEvent(event)
 
     async def shutdown_async(self) -> None:
+        self._shutting_down = True
+        self._yolo_reload_pending = False
         self.freshness_timer.stop()
         self.exposure_apply_timer.stop()
         if self._light_connect_task and not self._light_connect_task.done():

@@ -8,7 +8,7 @@ from typing import Any
 import qasync
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from bibazu_reorientation.hardware_lease import HardwareLease
+from bibazu_reorientation.hardware_lease import PLC_CONTROL_LEASE_NAME, HardwareLease
 from bibazu_reorientation.logging_setup import configure_logging
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.main_window import MainWindow
@@ -36,8 +36,18 @@ def main() -> int:
     sys.excepthook = _exception_hook
     app = QApplication(sys.argv)
     app.setApplicationName("BiBaZu Reorientation Control")
-    lease = HardwareLease.acquire()
-    if lease is None:
+    plc_lease = HardwareLease.acquire(PLC_CONTROL_LEASE_NAME)
+    if plc_lease is None:
+        QMessageBox.critical(
+            None,
+            "PLC control already in use",
+            "Pressure Control, Conveyor Setup, or another Reorientation Control "
+            "instance is already controlling the PLC. Close the other control "
+            "application before starting this one.",
+        )
+        return 2
+    hardware_lease = HardwareLease.acquire()
+    if hardware_lease is None:
         QMessageBox.critical(
             None,
             "Hardware already in use",
@@ -45,6 +55,7 @@ def main() -> int:
             "already using the Baumer camera and Neewer panels. Close the other "
             "application before starting this one.",
         )
+        plc_lease.close()
         return 2
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
@@ -52,7 +63,8 @@ def main() -> int:
         with loop:
             return loop.run_until_complete(_run(app))
     finally:
-        lease.close()
+        hardware_lease.close()
+        plc_lease.close()
 
 
 if __name__ == "__main__":

@@ -201,6 +201,53 @@ def test_roadmap_cycle_combines_unique_two_step_path_before_staging(tmp_path: Pa
     ]
 
 
+def test_roadmap_target_pose_forces_zero_mask_and_disables_every_array(
+    tmp_path: Path,
+) -> None:
+    transition_profile = roadmap_profile(tmp_path, "5-10.json", 1)
+    part = PartDefinition(
+        schema_version=2,
+        part_name="Kk1a",
+        model_path=tmp_path / "best.pt",
+        poses=(PoseDefinition(5, "Pose 5", 2), PoseDefinition(10, "Pose 10", 1)),
+        target_pose=10,
+        transitions=(
+            TransitionSpec(5, 10, transition_profile.source_path, "edge-5-10"),
+        ),
+    )
+    pressure = FakePressure()
+    controller = ReorientationController(pressure, RunJournal(tmp_path / "runs"))
+    controller.set_roadmap_configuration(
+        part,
+        {"edge-5-10": transition_profile},
+        conveyor_speed_mm_per_sec=100.0,
+        ur_ry_angle_deg=18.0,
+    )
+    controller.set_model_ready(True)
+    controller.set_camera_fresh(True)
+    controller.set_lights_ready(True, True)
+    controller.set_ur_applied(18.0)
+    controller._on_snapshot(
+        PlcSnapshot(connected=True, calibration_valid=True, light_barriers_stable=(True,) * 8)
+    )
+    controller._barriers_clear_since = time.monotonic() - 1.0
+    controller._refresh_preflight()
+
+    controller.start_cycle()
+    started = time.time()
+    for index in range(3):
+        controller.accept_inference(roadmap_inference_frame(1, started + index * 0.01))
+
+    assert controller._detected_pose == 10
+    assert controller._selected_transitions == ()
+    assert controller._plan.expected_array_mask == 0
+    assert not any(
+        controller._plan.enables[f"MAIN.GuiArrayEnabled{index}"]
+        for index in range(1, 5)
+    )
+    assert pressure.writes[0][0] == "safe_stop"
+
+
 def test_preflight_is_only_emitted_when_a_check_changes(tmp_path: Path) -> None:
     controller, _pressure = configured_controller(tmp_path)
     emissions: list[dict[str, bool]] = []

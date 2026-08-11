@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from read_ur_tcp_pose import read_tcp_pose_from_connection
+from plc_control_lease import PlcControlLease
 
 from PressureControlGUI import (
     ADS_TIMEOUT_MS,
@@ -1315,9 +1316,22 @@ class ConveyorSetupWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    lease = PlcControlLease.acquire()
+    if lease is None:
+        QMessageBox.critical(
+            None,
+            "SPS bereits belegt",
+            "BiBaZu Reorientation Control, Pressure Control oder eine weitere "
+            "Conveyor-Setup-Instanz steuert bereits die SPS. Bitte zuerst die "
+            "andere Steueranwendung schließen.",
+        )
+        return 2
     window = ConveyorSetupWindow()
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        lease.close()
 
 
 if __name__ == "__main__":

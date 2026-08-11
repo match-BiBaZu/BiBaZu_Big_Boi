@@ -7,10 +7,10 @@ model_path: ../../../../Pictures/Kk1i/Kk1a_YOLO_20260810/Kk1a_best.pt
 poses:
 - id: 5
   label: Pose 5
-  model_class_id: 2
+  model_class_id: 1
 - id: 10
   label: Pose 10
-  model_class_id: 1
+  model_class_id: 0
 target_pose: 10
 transition_profiles:
   a1:5->10:free_y: ../CSVSaver/pressure_profiles/Kk1a_Uebergang_5-10_free_y.json
