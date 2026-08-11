@@ -1,0 +1,15 @@
+schema_version: 1
+part_name: part
+model_path: best.pt
+poses:
+- id: 1
+  label: Pose 1
+  model_class_id: 0
+- id: 2
+  label: Pose 2
+  model_class_id: 1
+target_pose: 1
+transitions:
+- from_pose: 2
+  to_pose: 1
+  pressure_profile: profile.json

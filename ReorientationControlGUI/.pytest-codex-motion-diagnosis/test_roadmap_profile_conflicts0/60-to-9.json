@@ -1,0 +1,1 @@
+{"version": 9, "ur_ry_angle_deg": 18.0, "conveyor_enabled": true, "conveyor_speed_mm_per_sec": 100, "conveyor_max_speed_mm_per_sec": 1000, "conveyor_calibration": {"marker_distance_mm": 315, "mm_per_full_step": 0.3296, "valid": true}, "arrays": [{"index": 1, "enabled": true, "nozzles_enabled": [true], "pressure_mbar": 3000, "pulse_duration_ms": 100}]}

@@ -195,6 +195,14 @@ VAR
 	ReorientationCycleAgeMs		: UDINT := 0;
 	ReorientationDrainAgeMs		: UDINT := 0;
 	ReorientationSafeLatch			: BOOL := FALSE;
+	// Latched diagnostic context for ReorientationFaultCode 96.
+	ReorientationFaultDetail		: UINT := 0; // 1=no clear, 2=queue mismatch, 3=sensor order
+	ReorientationFaultSensor		: UINT := 0;
+	ReorientationFaultExpectedSequence	: UDINT := 0;
+	ReorientationFaultPreviousSequence	: UDINT := 0;
+	ReorientationFaultQueueAck		: UDINT := 0;
+	ReorientationFaultQueueSlotSequence	: UDINT := 0;
+	ReorientationFaultBarrierStableMask	: BYTE := 0;
 	// Public continuous-run queue/result diagnostics.
 	ReorientationQueueDepth			: UINT := 0;
 	ReorientationQueueCapacity		: UINT := 128;
@@ -240,6 +248,15 @@ VAR
 	BatchSensorStable				: ARRAY [1..8] OF BOOL;
 	BatchPairSpacingMm				: ARRAY [1..4] OF REAL;
 	BatchSensorNeedsClear			: ARRAY [1..8] OF BOOL;
+	PairedFirstBarrierFalling		: ARRAY [1..4] OF BOOL;
+	PairedFirstBarrierLocked		: ARRAY [1..4] OF BOOL;
+	PairedFirstBarrierLockStartMs	: ARRAY [1..4] OF UDINT;
+	PairedSecondBarrierFalling		: ARRAY [1..4] OF BOOL;
+	PairedSecondBarrierLocked		: ARRAY [1..4] OF BOOL;
+	PairedSecondBarrierLockStartMs	: ARRAY [1..4] OF UDINT;
+	PairedBarrierLockTimeoutMs		: UDINT := 500;
+	BatchSensorOrderInvalid			: BOOL := FALSE;
+	BatchCurrentBarrierStableMask	: BYTE := 0;
 	BatchNextCompleteSequence		: UDINT := 1;
 	BatchLastAcceptedCommit			: UDINT := 0;
 	BatchAcceptedResultAck			: UDINT := 0;
@@ -655,6 +672,13 @@ IF GuiReorientationReset AND GuiReorientationControlActive THEN
 	ReorientationResultSequence := 0;
 	ReorientationResultTriggeredMask := 0;
 	ReorientationResultFaultCode := 0;
+	ReorientationFaultDetail := 0;
+	ReorientationFaultSensor := 0;
+	ReorientationFaultExpectedSequence := 0;
+	ReorientationFaultPreviousSequence := 0;
+	ReorientationFaultQueueAck := 0;
+	ReorientationFaultQueueSlotSequence := 0;
+	ReorientationFaultBarrierStableMask := 0;
 	BatchNextCompleteSequence := 1;
 	BatchLastAcceptedCommit := 0;
 	BatchAcceptedResultAck := 0;
@@ -663,6 +687,7 @@ IF GuiReorientationReset AND GuiReorientationControlActive THEN
 	GuiReorientationResultAck := 0;
 	FOR BatchLoopIndex := 1 TO 8 DO
 		BatchNextSensorSequence[BatchLoopIndex] := 1;
+		BatchSensorSequence[BatchLoopIndex] := 0;
 		BatchSensorNeedsClear[BatchLoopIndex] := FALSE;
 	END_FOR
 	FOR BatchLoopIndex := 1 TO 4 DO
@@ -670,7 +695,14 @@ IF GuiReorientationReset AND GuiReorientationControlActive THEN
 		BatchJobTail[BatchLoopIndex] := 0;
 		BatchJobCount[BatchLoopIndex] := 0;
 		BatchActiveSequence[BatchLoopIndex] := 0;
+		PairedFirstBarrierLocked[BatchLoopIndex] := FALSE;
+		PairedFirstBarrierLockStartMs[BatchLoopIndex] := 0;
+		PairedSecondBarrierLocked[BatchLoopIndex] := FALSE;
+		PairedSecondBarrierLockStartMs[BatchLoopIndex] := 0;
 	END_FOR
+	// Reset is a command pulse. The PLC consumes it once so the GUI does not
+	// need a separate reset/ready handshake just to lower the bit again.
+	GuiReorientationReset := FALSE;
 END_IF
 
 IF GuiReorientationAbort AND GuiReorientationControlActive THEN
@@ -1371,6 +1403,52 @@ LightBarrier6FallingEdge := (NOT LightBarrierStable6) AND LastLightBarrier6;
 LightBarrier7FallingEdge := (NOT LightBarrierStable7) AND LastLightBarrier7;
 LightBarrier8FallingEdge := (NOT LightBarrierStable8) AND LastLightBarrier8;
 
+// Alternating pair gate. A workpiece can expose more than one optical edge at
+// either barrier. After the first barrier fires, only the second barrier can
+// release it; after the second fires, only the next accepted first-barrier edge
+// can release it. Both locks also expire after 500 ms. Raw/stable transitions
+// above remain available unchanged for diagnostics and calibration.
+FOR BatchLoopIndex := 1 TO 4 DO
+	IF PairedFirstBarrierLocked[BatchLoopIndex]
+		AND ((LightBarrierEventClockMs - PairedFirstBarrierLockStartMs[BatchLoopIndex])
+			>= PairedBarrierLockTimeoutMs) THEN
+		PairedFirstBarrierLocked[BatchLoopIndex] := FALSE;
+	END_IF
+	IF PairedSecondBarrierLocked[BatchLoopIndex]
+		AND ((LightBarrierEventClockMs - PairedSecondBarrierLockStartMs[BatchLoopIndex])
+			>= PairedBarrierLockTimeoutMs) THEN
+		PairedSecondBarrierLocked[BatchLoopIndex] := FALSE;
+	END_IF
+END_FOR
+
+// Evaluate the second barrier first. This lets a simultaneous second edge for
+// the old workpiece release the first edge of the following workpiece.
+PairedSecondBarrierFalling[1] := LightBarrier2FallingEdge AND NOT PairedSecondBarrierLocked[1];
+PairedSecondBarrierFalling[2] := LightBarrier4FallingEdge AND NOT PairedSecondBarrierLocked[2];
+PairedSecondBarrierFalling[3] := LightBarrier6FallingEdge AND NOT PairedSecondBarrierLocked[3];
+PairedSecondBarrierFalling[4] := LightBarrier8FallingEdge AND NOT PairedSecondBarrierLocked[4];
+
+FOR BatchLoopIndex := 1 TO 4 DO
+	IF PairedSecondBarrierFalling[BatchLoopIndex] THEN
+		PairedSecondBarrierLocked[BatchLoopIndex] := TRUE;
+		PairedSecondBarrierLockStartMs[BatchLoopIndex] := LightBarrierEventClockMs;
+		PairedFirstBarrierLocked[BatchLoopIndex] := FALSE;
+	END_IF
+END_FOR
+
+PairedFirstBarrierFalling[1] := LightBarrier1FallingEdge AND NOT PairedFirstBarrierLocked[1];
+PairedFirstBarrierFalling[2] := LightBarrier3FallingEdge AND NOT PairedFirstBarrierLocked[2];
+PairedFirstBarrierFalling[3] := LightBarrier5FallingEdge AND NOT PairedFirstBarrierLocked[3];
+PairedFirstBarrierFalling[4] := LightBarrier7FallingEdge AND NOT PairedFirstBarrierLocked[4];
+
+FOR BatchLoopIndex := 1 TO 4 DO
+	IF PairedFirstBarrierFalling[BatchLoopIndex] THEN
+		PairedFirstBarrierLocked[BatchLoopIndex] := TRUE;
+		PairedFirstBarrierLockStartMs[BatchLoopIndex] := LightBarrierEventClockMs;
+		PairedSecondBarrierLocked[BatchLoopIndex] := FALSE;
+	END_IF
+END_FOR
+
 // Production-run ownership.  State 20 accepts parts continuously; state 30
 // refuses new commits and drains the already accepted queue.
 IF GuiReorientationControlActive AND (ReorientationState = 0) THEN
@@ -1439,21 +1517,8 @@ IF GuiReorientationControlActive AND (ReorientationState = 20)
 		BatchQueueTriggeredMask[BatchSlotIndex] := 0;
 		BatchQueueFinishedMask[BatchSlotIndex] := (NOT BatchQueueArrayMask[BatchSlotIndex]) AND BYTE#15;
 		BatchQueueExitSeen[BatchSlotIndex] := FALSE;
-		IF (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#1) <> BYTE#0)
-			AND (BatchQueueNozzleMask[BatchSlotIndex, 1] = BYTE#0))
-			OR (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#2) <> BYTE#0)
-			AND (BatchQueueNozzleMask[BatchSlotIndex, 2] = BYTE#0))
-			OR (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#4) <> BYTE#0)
-			AND (BatchQueueNozzleMask[BatchSlotIndex, 3] = BYTE#0))
-			OR (((BatchQueueArrayMask[BatchSlotIndex] AND BYTE#8) <> BYTE#0)
-			AND (BatchQueueNozzleMask[BatchSlotIndex, 4] = BYTE#0)) THEN
-			ReorientationFaultCode := 92;
-			ReorientationState := 92;
-			ReorientationSafeLatch := TRUE;
-		ELSE
-			BatchLastAcceptedCommit := GuiReorientationQueueCommit;
-			ReorientationQueueEnqueueAck := GuiReorientationQueueSequence;
-		END_IF
+		BatchLastAcceptedCommit := GuiReorientationQueueCommit;
+		ReorientationQueueEnqueueAck := GuiReorientationQueueSequence;
 	END_IF
 END_IF
 
@@ -1520,14 +1585,14 @@ END_IF
 // Continuous part cursor. Every sensor sees sequence 1, 2, 3, ... in exactly
 // that order. Odd barriers capture time; the following even barrier creates an
 // immutable array job and computes its final offset delay from that same part.
-BatchSensorFalling[1] := LightBarrier1FallingEdge;
-BatchSensorFalling[2] := LightBarrier2FallingEdge;
-BatchSensorFalling[3] := LightBarrier3FallingEdge;
-BatchSensorFalling[4] := LightBarrier4FallingEdge;
-BatchSensorFalling[5] := LightBarrier5FallingEdge;
-BatchSensorFalling[6] := LightBarrier6FallingEdge;
-BatchSensorFalling[7] := LightBarrier7FallingEdge;
-BatchSensorFalling[8] := LightBarrier8FallingEdge;
+BatchSensorFalling[1] := PairedFirstBarrierFalling[1];
+BatchSensorFalling[2] := PairedSecondBarrierFalling[1];
+BatchSensorFalling[3] := PairedFirstBarrierFalling[2];
+BatchSensorFalling[4] := PairedSecondBarrierFalling[2];
+BatchSensorFalling[5] := PairedFirstBarrierFalling[3];
+BatchSensorFalling[6] := PairedSecondBarrierFalling[3];
+BatchSensorFalling[7] := PairedFirstBarrierFalling[4];
+BatchSensorFalling[8] := PairedSecondBarrierFalling[4];
 BatchSensorStable[1] := LightBarrierStable1;
 BatchSensorStable[2] := LightBarrierStable2;
 BatchSensorStable[3] := LightBarrierStable3;
@@ -1536,6 +1601,15 @@ BatchSensorStable[5] := LightBarrierStable5;
 BatchSensorStable[6] := LightBarrierStable6;
 BatchSensorStable[7] := LightBarrierStable7;
 BatchSensorStable[8] := LightBarrierStable8;
+BatchCurrentBarrierStableMask := BYTE#0;
+IF BatchSensorStable[1] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#1; END_IF
+IF BatchSensorStable[2] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#2; END_IF
+IF BatchSensorStable[3] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#4; END_IF
+IF BatchSensorStable[4] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#8; END_IF
+IF BatchSensorStable[5] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#16; END_IF
+IF BatchSensorStable[6] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#32; END_IF
+IF BatchSensorStable[7] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#64; END_IF
+IF BatchSensorStable[8] THEN BatchCurrentBarrierStableMask := BatchCurrentBarrierStableMask OR BYTE#128; END_IF
 BatchPairSpacingMm[1] := GuiSensorSpacing12Mm;
 BatchPairSpacingMm[2] := GuiSensorSpacing34Mm;
 BatchPairSpacingMm[3] := GuiSensorSpacing56Mm;
@@ -1547,20 +1621,37 @@ IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (Reorientatio
 			BatchSensorNeedsClear[BatchLoopIndex] := FALSE;
 		END_IF
 		IF BatchSensorFalling[BatchLoopIndex] THEN
+			ReorientationFaultSensor := INT_TO_UINT(BatchLoopIndex);
+			ReorientationFaultExpectedSequence := BatchNextSensorSequence[BatchLoopIndex];
+			ReorientationFaultPreviousSequence := 0;
+			ReorientationFaultQueueAck := ReorientationQueueEnqueueAck;
+			ReorientationFaultBarrierStableMask := BatchCurrentBarrierStableMask;
 			IF BatchSensorNeedsClear[BatchLoopIndex] THEN
+				ReorientationFaultDetail := 1;
+				ReorientationFaultQueueSlotSequence := 0;
 				ReorientationFaultCode := 96; // sensor did not become clear between parts
 				ReorientationState := 96;
 				ReorientationSafeLatch := TRUE;
 			ELSE
 				BatchSensorNeedsClear[BatchLoopIndex] := TRUE;
 				BatchSlotIndex := UDINT_TO_INT((BatchNextSensorSequence[BatchLoopIndex] - 1) MOD 128);
+				// A normal TwinCAT AND does not guarantee short-circuit evaluation.
+				// Never form BatchSensorSequence[0] while processing sensor 1.
+				BatchSensorOrderInvalid := FALSE;
+				IF BatchLoopIndex > 1 THEN
+					ReorientationFaultPreviousSequence := BatchSensorSequence[BatchLoopIndex - 1];
+					BatchSensorOrderInvalid :=
+						BatchSensorSequence[BatchLoopIndex - 1] < BatchNextSensorSequence[BatchLoopIndex];
+				END_IF
+				ReorientationFaultQueueSlotSequence := BatchQueueSequence[BatchSlotIndex];
 				IF (BatchNextSensorSequence[BatchLoopIndex] > ReorientationQueueEnqueueAck)
 					OR (BatchQueueSequence[BatchSlotIndex] <> BatchNextSensorSequence[BatchLoopIndex]) THEN
+					ReorientationFaultDetail := 2;
 					ReorientationFaultCode := 96; // queue underflow or sequence mismatch
 					ReorientationState := 96;
 					ReorientationSafeLatch := TRUE;
-				ELSIF (BatchLoopIndex > 1)
-					AND (BatchSensorSequence[BatchLoopIndex - 1] < BatchNextSensorSequence[BatchLoopIndex]) THEN
+				ELSIF BatchSensorOrderInvalid THEN
+					ReorientationFaultDetail := 3;
 					ReorientationFaultCode := 96; // part reached a sensor out of order
 					ReorientationState := 96;
 					ReorientationSafeLatch := TRUE;
@@ -1623,6 +1714,11 @@ IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (Reorientatio
 					BatchNextSensorSequence[BatchLoopIndex] := BatchNextSensorSequence[BatchLoopIndex] + 1;
 				END_IF
 			END_IF
+		END_IF
+		// Preserve the first faulting sensor and its context. Without EXIT, a
+		// second edge in this same 1-ms scan could overwrite the diagnostics.
+		IF ReorientationSafeLatch THEN
+			EXIT;
 		END_IF
 	END_FOR
 END_IF
@@ -1706,31 +1802,31 @@ IF BarrierCalibrationActive
 	END_IF
 END_IF
 
-IF NOT GuiReorientationControlActive AND LightBarrier2FallingEdge AND Array1Active AND (State <= 2) THEN
+IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[1] AND Array1Active AND (State <= 2) THEN
 	Array1TriggerPending := TRUE;
 END_IF
 
-IF NOT GuiReorientationControlActive AND LightBarrier4FallingEdge AND Array2Active AND (State2 = 2) THEN
+IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[2] AND Array2Active AND (State2 = 2) THEN
 	Array2TriggerPending := TRUE;
 END_IF
 
-IF NOT GuiReorientationControlActive AND LightBarrier6FallingEdge AND Array3Active AND (State3 <= 2) THEN
+IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[3] AND Array3Active AND (State3 <= 2) THEN
 	Array3TriggerPending := TRUE;
 END_IF
 
-IF NOT GuiReorientationControlActive AND LightBarrier8FallingEdge AND Array4Active AND (State4 = 2) THEN
+IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[4] AND Array4Active AND (State4 = 2) THEN
 	Array4TriggerPending := TRUE;
 END_IF
 
 // Measure the selected force-sensor peak relative to a debounced light-barrier edge.
 IF GuiForceDelayLightBarrier = 2 THEN
-	ForceDelayTrigger := LightBarrier2FallingEdge;
+	ForceDelayTrigger := PairedSecondBarrierFalling[1];
 ELSIF GuiForceDelayLightBarrier = 4 THEN
-	ForceDelayTrigger := LightBarrier4FallingEdge;
+	ForceDelayTrigger := PairedSecondBarrierFalling[2];
 ELSIF GuiForceDelayLightBarrier = 6 THEN
-	ForceDelayTrigger := LightBarrier6FallingEdge;
+	ForceDelayTrigger := PairedSecondBarrierFalling[3];
 ELSE
-	ForceDelayTrigger := LightBarrier8FallingEdge;
+	ForceDelayTrigger := PairedSecondBarrierFalling[4];
 END_IF
 
 IF GuiForceDelaySensor = 2 THEN
@@ -1831,7 +1927,7 @@ IF NOT ForceDelayBusy THEN
 END_IF
 
 // Falling edge on light barrier 1 starts the velocity timing window.
-IF LightBarrier1FallingEdge THEN
+IF PairedFirstBarrierFalling[1] THEN
 	VelocityTimingActive := FALSE;
 	VelocityTimer(IN := FALSE, PT := T#30S);
 	VelocityTimingActive := TRUE;
@@ -1844,7 +1940,7 @@ END_IF
 
 // Light barriers 1 and 2 measure velocity for nozzle array 1.
 // Light barrier 2 is also the physical trigger for nozzle array 1.
-IF LightBarrier2FallingEdge THEN
+IF PairedSecondBarrierFalling[1] THEN
 	IF VelocityTimingActive AND (TIME_TO_INT(VelocityTimer.ET) > 0) AND (GuiSensorSpacing12Mm > 0.0) THEN
 		LastVelocityTimeMs := TIME_TO_INT(VelocityTimer.ET);
 		EstimatedVelocityMmPerSec := GuiSensorSpacing12Mm * 1000.0 / TO_REAL(LastVelocityTimeMs);
@@ -1855,7 +1951,7 @@ IF LightBarrier2FallingEdge THEN
 END_IF
 
 // Light barriers 3 and 4 measure velocity for nozzle array 2.
-IF LightBarrier3FallingEdge THEN
+IF PairedFirstBarrierFalling[2] THEN
 	VelocityTiming2Active := FALSE;
 	VelocityTimer2(IN := FALSE, PT := T#30S);
 	VelocityTiming2Active := TRUE;
@@ -1866,7 +1962,7 @@ IF LightBarrier3FallingEdge THEN
 END_IF
 
 // Light barrier 4 completes the array 2 velocity measurement and triggers array 2.
-IF LightBarrier4FallingEdge THEN
+IF PairedSecondBarrierFalling[2] THEN
 	IF VelocityTiming2Active AND (TIME_TO_INT(VelocityTimer2.ET) > 0) AND (GuiSensorSpacing34Mm > 0.0) THEN
 		LastVelocityTime2Ms := TIME_TO_INT(VelocityTimer2.ET);
 		EstimatedVelocityMmPerSec2 := GuiSensorSpacing34Mm * 1000.0 / TO_REAL(LastVelocityTime2Ms);
@@ -1876,7 +1972,7 @@ IF LightBarrier4FallingEdge THEN
 END_IF
 
 // Light barriers 5 and 6 measure velocity for nozzle array 3.
-IF LightBarrier5FallingEdge THEN
+IF PairedFirstBarrierFalling[3] THEN
 	VelocityTiming3Active := FALSE;
 	VelocityTimer3(IN := FALSE, PT := T#30S);
 	VelocityTiming3Active := TRUE;
@@ -1887,7 +1983,7 @@ IF LightBarrier5FallingEdge THEN
 END_IF
 
 // Light barrier 6 completes the array 3 velocity measurement and triggers array 3.
-IF LightBarrier6FallingEdge THEN
+IF PairedSecondBarrierFalling[3] THEN
 	IF VelocityTiming3Active AND (TIME_TO_INT(VelocityTimer3.ET) > 0) AND (GuiSensorSpacing56Mm > 0.0) THEN
 		LastVelocityTime3Ms := TIME_TO_INT(VelocityTimer3.ET);
 		EstimatedVelocityMmPerSec3 := GuiSensorSpacing56Mm * 1000.0 / TO_REAL(LastVelocityTime3Ms);
@@ -1897,7 +1993,7 @@ IF LightBarrier6FallingEdge THEN
 END_IF
 
 // Light barriers 7 and 8 measure velocity for nozzle array 4.
-IF LightBarrier7FallingEdge THEN
+IF PairedFirstBarrierFalling[4] THEN
 	VelocityTiming4Active := FALSE;
 	VelocityTimer4(IN := FALSE, PT := T#30S);
 	VelocityTiming4Active := TRUE;
@@ -1908,7 +2004,7 @@ IF LightBarrier7FallingEdge THEN
 END_IF
 
 // Light barrier 8 completes the array 4 velocity measurement and triggers array 4.
-IF LightBarrier8FallingEdge THEN
+IF PairedSecondBarrierFalling[4] THEN
 	IF VelocityTiming4Active AND (TIME_TO_INT(VelocityTimer4.ET) > 0) AND (GuiSensorSpacing78Mm > 0.0) THEN
 		LastVelocityTime4Ms := TIME_TO_INT(VelocityTimer4.ET);
 		EstimatedVelocityMmPerSec4 := GuiSensorSpacing78Mm * 1000.0 / TO_REAL(LastVelocityTime4Ms);

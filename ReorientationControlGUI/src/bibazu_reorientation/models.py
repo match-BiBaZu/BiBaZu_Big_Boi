@@ -377,6 +377,13 @@ class PlcSnapshot:
     batch_result_sequence: int = 0
     batch_result_triggered_mask: int = 0
     batch_result_fault_code: int = 0
+    reorientation_fault_detail: int = 0
+    reorientation_fault_sensor: int = 0
+    reorientation_fault_expected_sequence: int = 0
+    reorientation_fault_previous_sequence: int = 0
+    reorientation_fault_queue_ack: int = 0
+    reorientation_fault_queue_slot_sequence: int = 0
+    reorientation_fault_barrier_stable_mask: int = 0
 
 
 @dataclass(slots=True, frozen=True)

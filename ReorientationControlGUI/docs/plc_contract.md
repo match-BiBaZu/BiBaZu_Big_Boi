@@ -13,10 +13,21 @@
 | PLC → GUI | `ReorientationExpected/TriggeredArrayMask : BYTE` |
 | PLC → GUI | `ReorientationCycleCounter : UDINT` |
 
-States are `0 legacy`, `10 armed`, `20 running to LB6`, `30 draining`, and
-`40 complete`. Latched terminal states are `90 manual abort`, `91 heartbeat
-timeout`, `92 cycle timeout`, and `93 drain/missing-trigger timeout`.
-`94` reports an EL7047/VTEM drive fault during the active cycle.
+States are `0 legacy`, `10 armed`, `20 running`, `30 draining`, and `40 complete`.
+Latched terminal states are:
+
+- `90`: operator/GUI abort;
+- `91`: heartbeat watchdog timeout;
+- `92`: invalid queue commit or result acknowledgement;
+- `93`: 128-record part queue exhausted;
+- `94`: EL7047 or VTEM drive fault;
+- `95`: per-array job FIFO overflow;
+- `96`: light barrier did not clear, queue underflow/sequence mismatch, or a part
+  reached a barrier out of order.
+
+The fixed-batch GUI enters state 20 with `GuiConveyorEnabled = FALSE`, commits and
+waits for acknowledgement of the complete snapshot queue, then enables the conveyor
+and asserts `Finish`. State 30 continues processing the accepted queue.
 
 When the safe latch is set, conveyor and all array enables are cleared, pending
 triggers and active delay/pulse states are aborted, and all 24 valve commands are

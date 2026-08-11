@@ -1,0 +1,1 @@
+{"version": 1, "arrays": [{"index": 1, "enabled": true, "nozzles_enabled": [true], "pressure_mbar": 3000, "delay_ms": 20, "pulse_duration_ms": 100, "offset_mm": 12.0}]}

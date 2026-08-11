@@ -55,7 +55,7 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     qtbot.addWidget(window)
     assert window.windowTitle() == "BiBaZu Reorientation Control"
     assert window.start_button.text() == "Start production run"
-    assert window.stop_button.text() == "Finish run (drain queue)"
+    assert window.stop_button.text() == "Cancel production start"
     assert window.connect_button.text() == "Connect all components"
     assert window.disconnect_button.text() == "Disconnect all components"
     assert not window.exposure_slider.isEnabled()

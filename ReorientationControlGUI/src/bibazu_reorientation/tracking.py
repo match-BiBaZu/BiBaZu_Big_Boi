@@ -66,24 +66,91 @@ class TrackerUpdate:
     fault: str = ""
 
 
+def snapshot_queue(
+    frame: InferenceFrame,
+    class_to_pose: dict[int, int],
+) -> TrackerUpdate:
+    """Freeze one camera frame into the physical left-to-right PLC queue order."""
+    height, width = frame.image.shape[:2]
+    ordered = sorted(frame.detections, key=lambda detection: _center(_bbox(detection))[0])
+    tracks: list[TrackedPart] = []
+    decisions: list[PartDecision] = []
+    for track_id, detection in enumerate(ordered, start=1):
+        box = _bbox(detection)
+        center = _center(box)
+        mapped_pose_id = class_to_pose.get(detection.class_id)
+        visible = fully_visible(detection, width, height)
+        pose_id = mapped_pose_id if visible else None
+        if mapped_pose_id is None:
+            reason = "snapshot_unmapped_class"
+        elif not visible:
+            reason = "snapshot_partially_visible"
+        else:
+            reason = "snapshot_confirmed"
+        observations = (
+            (
+                PoseObservation(
+                    pose_id,
+                    detection.class_id,
+                    detection.confidence,
+                    frame.timestamp,
+                ),
+            )
+            if pose_id is not None
+            else ()
+        )
+        tracks.append(
+            TrackedPart(
+                track_id,
+                box,
+                center,
+                detection.confidence,
+                1 if pose_id is not None else 0,
+                pose_id,
+                0,
+                True,
+                leftmost=track_id == 1,
+            )
+        )
+        decisions.append(
+            PartDecision(
+                track_id,
+                pose_id,
+                detection.confidence,
+                observations,
+                box,
+                frame.timestamp,
+                reason,
+            )
+        )
+    return TrackerUpdate(tuple(tracks), tuple(decisions))
+
+
 def draw_tracking_overlay(
     image: np.ndarray,
     tracks: tuple[TrackedPart, ...],
-    handoff_line_ratio: float,
+    handoff_line_ratio: float | None,
 ) -> np.ndarray:
     annotated = np.ascontiguousarray(image).copy()
-    line_x = round(annotated.shape[1] * handoff_line_ratio)
-    cv2.line(annotated, (line_x, 0), (line_x, annotated.shape[0] - 1), (6, 182, 212), 3)
-    cv2.putText(
-        annotated,
-        "PLC handoff",
-        (max(4, line_x + 8), 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (6, 182, 212),
-        2,
-        cv2.LINE_AA,
-    )
+    if handoff_line_ratio is not None:
+        line_x = round(annotated.shape[1] * handoff_line_ratio)
+        cv2.line(
+            annotated,
+            (line_x, 0),
+            (line_x, annotated.shape[0] - 1),
+            (6, 182, 212),
+            3,
+        )
+        cv2.putText(
+            annotated,
+            "PLC handoff",
+            (max(4, line_x + 8), 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (6, 182, 212),
+            2,
+            cv2.LINE_AA,
+        )
     for track in tracks:
         x1, y1, x2, y2 = (round(value) for value in track.bbox)
         color = (34, 197, 94) if track.confirmed_pose_id is not None else (250, 204, 21)
@@ -161,8 +228,6 @@ class MultiPartTracker:
             track = self._tracks[track_id]
             detection = detections[detection_index]
             new_center = centers[detection_index]
-            if new_center[0] > track.center[0] + width * 0.05:
-                fault = f"Track {track_id} moved against the conveyor direction"
             track.bbox = boxes[detection_index]
             track.center = new_center
             track.confidence = detection.confidence
@@ -181,8 +246,10 @@ class MultiPartTracker:
                 key=lambda row: row.center[0],
             )
         )
-        if current_matched_order != previous_matched_order:
-            fault = "Tracked parts overtook or their physical order became ambiguous"
+        # Queue-once production mode does not require tracking order validation at
+        # every frame. We only need stable track identity until the workpiece has
+        # passed the handoff line or been lost before it can be queued.
+        _ = previous_matched_order, current_matched_order
 
         for track_id in unmatched_tracks:
             track = self._tracks[track_id]

@@ -55,7 +55,6 @@ from bibazu_reorientation.profiles import (
     load_pressure_profile,
 )
 from bibazu_reorientation.settings import AppSettings
-from bibazu_reorientation.tracking import draw_tracking_overlay
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
 from bibazu_reorientation.ui.roadmap_setup_dialog import RoadmapSetupDialog
 from bibazu_reorientation.ui.setup_dialog import SetupDialog
@@ -249,10 +248,6 @@ class MainWindow(QMainWindow):
         )
         self.handoff_value = QLabel(f"{self.settings.handoff_line_percent} %")
         self.handoff_slider.valueChanged.connect(self._handoff_line_changed)
-        handoff_controls = QHBoxLayout()
-        handoff_controls.addWidget(QLabel("PLC handoff line"))
-        handoff_controls.addWidget(self.handoff_slider, 1)
-        handoff_controls.addWidget(self.handoff_value)
         self.connect_button = QPushButton("Connect all components")
         self.connect_button.clicked.connect(self.connect_all)
         self.disconnect_button = QPushButton("Disconnect all components")
@@ -262,7 +257,8 @@ class MainWindow(QMainWindow):
         hardware_layout.addWidget(self.plc_status)
         hardware_layout.addWidget(self.camera_status)
         hardware_layout.addLayout(camera_controls)
-        hardware_layout.addLayout(handoff_controls)
+        # Snapshot-queue production does not present the legacy moving handoff
+        # line. Its widgets/settings remain for backward-compatible settings.
         self.yolo_status = QLabel("YOLO: no model loaded")
         self.yolo_status.setWordWrap(True)
         self.load_yolo_button = QPushButton("Load YOLO model")
@@ -331,13 +327,13 @@ class MainWindow(QMainWindow):
         preflight_box = QGroupBox("Preflight")
         preflight_box.setLayout(self.preflight)
         self.batch_counters = QLabel(
-            "Visible 0 · confirmed 0 · queued 0 · LB1 0 · completed 0 · bypass 0 · PLC queue 0/128"
+            "Snapshot 0 · poses 0 · queued 0 · LB1 0 · completed 0 · bypass 0 · PLC queue 0/128"
         )
         self.batch_counters.setWordWrap(True)
         self.start_button = QPushButton("Start production run")
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self._start)
-        self.stop_button = QPushButton("Finish run (drain queue)")
+        self.stop_button = QPushButton("Cancel production start")
         self.stop_button.setStyleSheet("font-weight:bold;background:#d97706;color:white;padding:12px")
         self.stop_button.clicked.connect(self.controller.finish_run)
         self.cycle_status = QLabel("No configuration")
@@ -373,6 +369,7 @@ class MainWindow(QMainWindow):
         self.camera.error.connect(self._camera_error)
         self.controller.preflight_changed.connect(self._preflight)
         self.controller.state_changed.connect(self._cycle_state_changed)
+        self.controller.warning_raised.connect(self._production_warning)
         self.controller.counters_changed.connect(self._batch_counters_changed)
         self.light_panel1.confirm.toggled.connect(self._lights_changed)
         self.light_panel2.confirm.toggled.connect(self._lights_changed)
@@ -1058,9 +1055,7 @@ class MainWindow(QMainWindow):
     def _inference_frame(self, frame: InferenceFrame) -> None:
         update = self.controller.accept_inference(frame)
         tracks = () if update is None else update.tracks
-        self._show_image(
-            draw_tracking_overlay(frame.image, tracks, self.controller.handoff_line_ratio)
-        )
+        self._show_image(frame.image)
         leftmost = next((track for track in tracks if track.leftmost), None)
         if leftmost is None:
             detected = "none"
@@ -1244,12 +1239,15 @@ class MainWindow(QMainWindow):
         )
 
     def _batch_counters_changed(self, counters: dict[str, object]) -> None:
+        sensor_sequences = "/".join(str(value) for value in counters["sensor_sequences"])
+        barrier_states = "".join("1" if value else "0" for value in counters["barrier_states"])
         self.batch_counters.setText(
-            f"Visible {counters['visible']} · confirmed {counters['confirmed']} · "
+            f"Snapshot {counters['visible']} · poses {counters['confirmed']} · "
             f"queued {counters['queued']} · LB1 {counters['entered']} · "
             f"completed {counters['completed']} · bypass {counters['bypass']} · "
             f"PLC queue {counters['queue_depth']}/{counters['queue_capacity']} · "
-            f"next {counters['next']}"
+            f"next {counters['next']}\n"
+            f"LB sequences 1→8: {sensor_sequences} · normalized states: {barrier_states}"
         )
 
     def _cycle_state_changed(self, state, detail: str) -> None:
@@ -1284,8 +1282,14 @@ class MainWindow(QMainWindow):
                 and self._preflight_ok
             )
         )
-        self.stop_button.setEnabled(state in {BatchState.STARTING, BatchState.RUNNING})
+        self.stop_button.setEnabled(state is BatchState.STARTING)
         self._update_manual_conveyor_buttons()
+
+    def _production_warning(self, code: str, detail: str) -> None:
+        LOGGER.warning("Production warning %s: %s", code, detail)
+        self.cycle_status.setText(
+            f"{self.controller.state}: warning {code} – {detail} (run continues)"
+        )
 
     def _start(self) -> None:
         try:

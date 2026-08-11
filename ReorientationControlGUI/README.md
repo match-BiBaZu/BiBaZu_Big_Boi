@@ -1,11 +1,11 @@
 # BiBaZu Reorientation Control
 
-Continuous supervised control for any number of queued parts. Baumer images are
-evaluated by a latest-only YOLO Detect or OBB worker and every visible part is
-tracked independently from right to left. Legacy schema-v1 projects support Pose
-1/2; schema-v2 roadmap projects resolve either a direct transition or one unique
-path with one intermediate pose and combine its active PressureControl arrays into
-one immutable PLC queue record per part.
+Fixed-batch control from one frozen production snapshot. When **Start production
+run** is pressed, the latest Baumer/YOLO frame establishes every workpiece, its
+initial pose and its physical left-to-right queue order. Legacy schema-v1 projects
+support Pose 1/2; schema-v2 roadmap projects resolve either a direct transition or
+one unique path with one intermediate pose and combine its active PressureControl
+arrays into one immutable PLC queue record per part.
 All operator-facing labels, dialogs, status messages, and validation errors in the
 application are in English.
 
@@ -81,7 +81,7 @@ vorausgefüllt geöffnet. Sie kann am bisherigen Ort überschrieben oder im
 Speicherdialog unter einem neuen Namen abgelegt werden. Während eines laufenden
 Produktionslaufs sind Neu, Öffnen und Bearbeiten gesperrt.
 
-### Kontinuierlichen Produktionslauf starten
+### Produktionslauf aus einem Snapshot starten
 
 1. Konfiguration öffnen. Das YOLO-Modell wird automatisch in einem Worker geladen;
    **Load YOLO model** erlaubt einen manuellen Reload. Bei einer gemappten Klasse
@@ -95,24 +95,23 @@ Produktionslaufs sind Neu, Öffnen und Bearbeiten gesperrt.
    eingestellt werden; Verbindungsstatus und Zyklus-Checkboxen dienen nur noch als
    Bedienhinweis und blockieren den Start nicht. Falls UR aktiv ist, **Apply UR angle**
    drücken.
-4. Die vertikale **PLC handoff line** zwischen den Läufen positionieren (Standard
-   30 % der Bildbreite). Danach **Start production run** drücken. Kamera, Tracking,
-   SPS-Queue und Förderband bleiben bis zum Laufende aktiv.
-5. Jedes sichtbare Teil braucht fünf aufeinanderfolgende identische, vollständig
-   sichtbare und gemappte Erkennungen. Danach ist seine Pose gesperrt. Beim ersten
-   Überqueren der Linie entsteht genau ein Queue-Datensatz. Zielpose, unbekannte
-   Klasse, unvollständiger Konsens oder nicht eindeutiger Pfad werden mit Maske null
-   eingereiht und passieren ohne Düsen.
-6. **Finish run (drain queue)** beendet nicht abrupt: Sichtbare Teile werden noch
-   übernommen. Nach einer Sekunde ohne Track sendet die GUI `Finish` und wartet,
-   bis alle angenommenen Teile LB8 passiert haben, alle Array-FIFOs leer und alle
-   Ergebnisse protokolliert sind.
+4. Alle Werkstücke müssen im Kamerabild liegen. Danach **Start production run**
+   drücken. Genau der zu diesem Zeitpunkt letzte frische YOLO-Frame wird kopiert;
+   spätere Bilder ändern weder Reihenfolge noch Pose noch Profil.
+5. Die GUI sortiert alle Detektionen von links nach rechts (das führende Teil
+   zuerst), erzeugt pro Teil genau einen unveränderlichen Queue-Datensatz und wartet
+   auf jede SPS-Bestätigung. Erst danach wird das Förderband eingeschaltet.
+   Zielpose, unbekannte Klasse, angeschnittene Detektion oder nicht eindeutiger Pfad
+   werden mit Maske null eingereiht und passieren ohne Düsen; dies erzeugt eine
+   Warnung, stoppt den Lauf aber nicht.
+6. Direkt nach dem Förderbandstart sendet die GUI `Finish`. Die SPS bleibt im
+   Drain-Zustand und stoppt das Band erst, wenn jedes vorab eingereihte Teil LB8
+   passiert hat, alle Array-FIFOs leer und alle Ergebnisse protokolliert sind.
 
-Die SPS friert Düsenmaske, Druck, Delay, Puls und Offset je Teil ein. Ein später
-erkannter anderer Zustand kann einen wartenden oder laufenden Impuls deshalb nicht
-mehr verändern. Ein Verlust eines echten Tracks vor der Übergabe, Überholen bzw.
-uneindeutige Reihenfolge oder Kamera-/YOLO-Ausfall stoppt den Lauf, weil die
-physische Reihenfolge dann nicht zuverlässig zur SPS-Warteschlange passt.
+Die SPS friert Düsenmaske, Druck, Delay, Puls und Offset je Teil ein. Kamera- oder
+YOLO-Ausfall nach dem Start-Snapshot wird nur noch als Warnung angezeigt und
+protokolliert; der eingefrorene Lauf wird fortgesetzt. SPS-Watchdog-, Antriebs-,
+Ventil- und Queue-Vertragsfehler bleiben harte Stopbedingungen.
 
 ### Hardware einstellen
 
@@ -177,8 +176,13 @@ panels together; the preview ran at 15 FPS without an application hang.
 - Schema v1 requires exactly the model classes `0 = Pose 1`, `1 = Pose 2`.
   Schema v2 uses the explicit class mapping from YAML; extra model classes are
   permitted, but any detection of an unmapped class blocks consensus.
-- Every track requires one fully visible object in five fresh consecutive frames
-  with the same mapped class. A differing/missing class resets the unlocked streak.
+- Start requires one fresh inference frame containing at least one workpiece and no
+  more detections than the PLC queue capacity. Every detection is queued exactly
+  once from that frame; a mapped, fully visible detection supplies its initial pose.
+- The PLC enters state 20 with the conveyor disabled. All frozen records must be
+  acknowledged before the separate conveyor-enable command is sent.
+- Camera, YOLO and legacy tracking anomalies after snapshot acceptance are warnings
+  only. They cannot mutate the queue and do not abort the fixed batch.
 - Light connection, last confirmed commands, and the two operator checkboxes remain
   visible and are logged, but they no longer participate in start preflight.
 - A profile with an explicit `ur_ry_angle_deg` remains blocked until the separate
@@ -230,5 +234,5 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
-The current Reorientation offscreen suite contains 108 tests; the shared
+The current Reorientation offscreen suite contains 114 tests; the shared
 Pressure/Conveyor suite contains 54 tests.

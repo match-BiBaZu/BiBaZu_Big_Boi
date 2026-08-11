@@ -5,12 +5,18 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from bibazu_reorientation.batch_controller import BatchController
 from bibazu_reorientation.config import save_part_definition
 from bibazu_reorientation.journal import RunJournal
-from bibazu_reorientation.models import BatchState, Detection, InferenceFrame, PlcSnapshot
+from bibazu_reorientation.models import (
+    BatchState,
+    Detection,
+    InferenceFrame,
+    PlcSnapshot,
+)
 from bibazu_reorientation.profiles import load_pressure_profile
 
 
@@ -36,6 +42,17 @@ def configured(tmp_path: Path) -> tuple[BatchController, FakePressure]:
         json.dumps(
             {
                 "version": 9,
+                "light_barrier_debounce_ms": 17,
+                "light_barrier_debounce_enabled": [
+                    False,
+                    False,
+                    True,
+                    True,
+                    False,
+                    False,
+                    False,
+                    False,
+                ],
                 "conveyor_enabled": True,
                 "conveyor_speed_mm_per_sec": 100,
                 "conveyor_max_speed_mm_per_sec": 1000,
@@ -68,7 +85,6 @@ def configured(tmp_path: Path) -> tuple[BatchController, FakePressure]:
     controller = BatchController(pressure, RunJournal(tmp_path / "runs"))
     controller.set_configuration(part, load_pressure_profile(profile_path))
     controller.set_model_ready(True)
-    controller.set_camera_fresh(True)
     controller._on_snapshot(
         PlcSnapshot(
             connected=True,
@@ -77,6 +93,7 @@ def configured(tmp_path: Path) -> tuple[BatchController, FakePressure]:
             light_barriers_stable=(True,) * 8,
         )
     )
+    controller.accept_inference(frame(70, time.time()))
     assert controller.state == BatchState.READY
     return controller, pressure
 
@@ -92,27 +109,31 @@ def frame(x: float, timestamp: float, class_id: int = 1) -> InferenceFrame:
     return InferenceFrame(np.zeros((100, 100, 3), np.uint8), (detection,), 1.0, timestamp)
 
 
-def advance_to_running(controller: BatchController, pressure: FakePressure) -> None:
+def multi_frame(
+    *rows: tuple[float, int], timestamp: float | None = None
+) -> InferenceFrame:
+    detections = tuple(
+        Detection(
+            class_id,
+            f"class {class_id}",
+            0.9,
+            ((x - 5, 30), (x + 5, 30), (x + 5, 40), (x - 5, 40)),
+            "detect",
+        )
+        for x, class_id in rows
+    )
+    return InferenceFrame(
+        np.zeros((100, 100, 3), np.uint8),
+        detections,
+        1.0,
+        time.time() if timestamp is None else timestamp,
+    )
+
+
+def advance_to_queue_staging(controller: BatchController, pressure: FakePressure) -> None:
     pressure.operation_finished.emit("batch_safe_stop")
     pressure.operation_finished.emit("batch_configuration")
     pressure.operation_finished.emit("batch_reset")
-    controller._on_snapshot(
-        PlcSnapshot(
-            connected=True,
-            calibration_valid=True,
-            reorientation_state=10,
-            heartbeat_alive=True,
-        )
-    )
-    pressure.operation_finished.emit("batch_reset_end")
-    controller._on_snapshot(
-        PlcSnapshot(
-            connected=True,
-            calibration_valid=True,
-            reorientation_state=10,
-            heartbeat_alive=True,
-        )
-    )
     pressure.operation_finished.emit("batch_start")
     controller._on_snapshot(
         PlcSnapshot(
@@ -123,7 +144,62 @@ def advance_to_running(controller: BatchController, pressure: FakePressure) -> N
         )
     )
     pressure.operation_finished.emit("batch_start_end")
-    assert controller.state == BatchState.RUNNING
+    assert controller.state == BatchState.STARTING
+    assert pressure.writes[-1][0].startswith("batch_enqueue:")
+
+
+def test_start_uses_profile_debounce_and_single_plc_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    controller, pressure = configured(tmp_path)
+    controller.start_cycle()
+    pressure.operation_finished.emit("batch_safe_stop")
+    configuration = pressure.writes[-1][1]
+    assert configuration["MAIN.GuiBarrierCalibrationDebounceMs"] == 17
+    assert tuple(
+        configuration[f"MAIN.GuiLightBarrierDebounceEnabled{index}"]
+        for index in range(1, 9)
+    ) == (False, False, True, True, False, False, False, False)
+    pressure.operation_finished.emit("batch_configuration")
+    assert pressure.writes[-1][0] == "batch_reset"
+    assert pressure.writes[-1][2] is False
+
+    pressure.operation_finished.emit("batch_reset")
+    assert pressure.writes[-1][0] == "batch_start"
+    pressure.operation_finished.emit("batch_start")
+    assert controller._handshake_phase == "batch_start_ack"
+
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            reorientation_state=20,
+            reorientation_fault_code=0,
+            heartbeat_alive=False,
+        )
+    )
+    assert controller._handshake_phase is None
+    assert pressure.writes[-1][0] == "batch_start_end"
+
+
+def test_fault_96_reports_latched_sensor_context(tmp_path: Path) -> None:
+    controller, _pressure = configured(tmp_path)
+    controller.snapshot = PlcSnapshot(
+        reorientation_fault_detail=3,
+        reorientation_fault_sensor=4,
+        reorientation_fault_expected_sequence=7,
+        reorientation_fault_previous_sequence=6,
+        reorientation_fault_queue_ack=9,
+        reorientation_fault_queue_slot_sequence=7,
+        reorientation_fault_barrier_stable_mask=0xF3,
+    )
+
+    text = controller._plc_fault_text(96)
+
+    assert "LB4" in text
+    assert "previous sensor" in text
+    assert "expected part 7" in text
+    assert "queue_ack=9" in text
+    assert "stable_mask=0xF3" in text
 
 
 def test_batch_start_enqueue_ack_result_and_controlled_drain(tmp_path: Path) -> None:
@@ -134,13 +210,12 @@ def test_batch_start_enqueue_ack_result_and_controlled_drain(tmp_path: Path) -> 
     controller.part_result.connect(results.append)
 
     controller.start_cycle()
-    advance_to_running(controller, pressure)
-    started = time.time()
-    for index, x in enumerate((70, 60, 50, 40, 30)):
-        controller.accept_inference(frame(x, started + index * 0.01))
-
+    advance_to_queue_staging(controller, pressure)
     assert pressure.writes[-1][0] == "batch_enqueue:1"
     assert pressure.writes[-1][1]["MAIN.GuiReorientationQueueArrayMask"] == 2
+    assert not any(
+        name == "batch_conveyor_start" for name, _values, _verify in pressure.writes
+    )
     pressure.operation_finished.emit("batch_enqueue:1")
     controller._on_snapshot(
         PlcSnapshot(
@@ -152,6 +227,10 @@ def test_batch_start_enqueue_ack_result_and_controlled_drain(tmp_path: Path) -> 
         )
     )
     assert queued[0].sequence_id == 1
+    assert pressure.writes[-1][0] == "batch_conveyor_start"
+    pressure.operation_finished.emit("batch_conveyor_start")
+    assert controller.state == BatchState.DRAINING
+    assert pressure.writes[-1][0] == "batch_finish"
 
     controller._on_snapshot(
         PlcSnapshot(
@@ -166,18 +245,6 @@ def test_batch_start_enqueue_ack_result_and_controlled_drain(tmp_path: Path) -> 
     )
     assert results[0].sequence_id == 1
     assert pressure.writes[-1][0] == "batch_result_ack:1"
-
-    controller.stop()
-    for index in range(3):
-        controller.accept_inference(
-            InferenceFrame(
-                np.zeros((100, 100, 3), np.uint8), (), 1.0, started + 1 + index
-            )
-        )
-    controller._empty_since = time.monotonic() - 2.0
-    controller._finish_tick()
-    assert controller.state == BatchState.DRAINING
-    assert pressure.writes[-1][0] == "batch_finish"
 
     controller._on_snapshot(
         PlcSnapshot(
@@ -198,13 +265,46 @@ def test_batch_start_enqueue_ack_result_and_controlled_drain(tmp_path: Path) -> 
     assert controller.state == BatchState.COMPLETE
 
 
+def test_all_snapshot_records_are_acknowledged_before_conveyor_motion(tmp_path: Path) -> None:
+    controller, pressure = configured(tmp_path)
+    controller.accept_inference(multi_frame((70, 1), (30, 0)))
+    controller.start_cycle()
+    advance_to_queue_staging(controller, pressure)
+
+    assert pressure.writes[-1][0] == "batch_enqueue:1"
+    assert pressure.writes[-1][1]["MAIN.GuiReorientationQueuePoseId"] == 1
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            reorientation_state=20,
+            heartbeat_alive=True,
+            batch_enqueue_ack=1,
+            batch_queue_depth=1,
+        )
+    )
+    assert pressure.writes[-1][0] == "batch_enqueue:2"
+    assert pressure.writes[-1][1]["MAIN.GuiReorientationQueuePoseId"] == 2
+    assert not any(
+        name == "batch_conveyor_start" for name, _values, _verify in pressure.writes
+    )
+
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            reorientation_state=20,
+            heartbeat_alive=True,
+            batch_enqueue_ack=2,
+            batch_queue_depth=2,
+        )
+    )
+    assert pressure.writes[-1][0] == "batch_conveyor_start"
+
+
 def test_target_pose_is_queued_with_zero_mask(tmp_path: Path) -> None:
     controller, pressure = configured(tmp_path)
+    controller.accept_inference(frame(70, time.time(), class_id=0))
     controller.start_cycle()
-    advance_to_running(controller, pressure)
-    started = time.time()
-    for index, x in enumerate((70, 60, 50, 40, 30)):
-        controller.accept_inference(frame(x, started + index * 0.01, class_id=0))
+    advance_to_queue_staging(controller, pressure)
 
     assert pressure.writes[-1][0] == "batch_enqueue:1"
     assert pressure.writes[-1][1]["MAIN.GuiReorientationQueueArrayMask"] == 0
@@ -214,23 +314,75 @@ def test_target_pose_is_queued_with_zero_mask(tmp_path: Path) -> None:
     )
 
 
-def test_queue_backpressure_fail_stops_before_unacknowledged_handoff(tmp_path: Path) -> None:
+def test_snapshot_larger_than_plc_capacity_cannot_start(tmp_path: Path) -> None:
     controller, pressure = configured(tmp_path)
-    controller.start_run()
-    advance_to_running(controller, pressure)
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            calibration_valid=True,
+            arrays_idle=True,
+            batch_queue_capacity=1,
+        )
+    )
+    controller.accept_inference(multi_frame((70, 1), (30, 0)))
+
+    assert controller.state == BatchState.OFFLINE
+    with pytest.raises(RuntimeError, match="preflight"):
+        controller.start_run()
+    assert pressure.writes == []
+
+
+def test_camera_and_yolo_loss_after_snapshot_are_warnings(tmp_path: Path) -> None:
+    controller, pressure = configured(tmp_path)
+    warnings = []
+    controller.warning_raised.connect(lambda code, text: warnings.append((code, text)))
+    controller.start_cycle()
+    advance_to_queue_staging(controller, pressure)
     controller._on_snapshot(
         PlcSnapshot(
             connected=True,
             reorientation_state=20,
             heartbeat_alive=True,
-            batch_queue_depth=128,
-            batch_queue_capacity=128,
+            batch_enqueue_ack=1,
+            batch_queue_depth=1,
         )
     )
-    started = time.time()
-    for index, x in enumerate((70, 60, 50, 40, 30)):
-        controller.accept_inference(frame(x, started + index * 0.01))
+    pressure.operation_finished.emit("batch_conveyor_start")
+
+    controller.set_camera_fresh(False)
+    controller.set_model_ready(False)
+
+    assert controller.state == BatchState.DRAINING
+    assert [code for code, _text in warnings] == ["camera_lost", "yolo_lost"]
+    assert not any(name == "batch_abort" for name, _values, _verify in pressure.writes)
+
+
+def test_uncertain_snapshot_part_warns_and_remains_in_queue(tmp_path: Path) -> None:
+    controller, pressure = configured(tmp_path)
+    warnings = []
+    controller.warning_raised.connect(lambda code, text: warnings.append((code, text)))
+    controller.accept_inference(frame(3, time.time(), class_id=1))
+
+    controller.start_cycle()
+    advance_to_queue_staging(controller, pressure)
+
+    assert warnings[0][0] == "snapshot_uncertain"
+    assert pressure.writes[-1][1]["MAIN.GuiReorientationQueueArrayMask"] == 0
+    assert controller.state == BatchState.STARTING
+
+
+def test_plc_drive_fault_remains_a_hard_stop(tmp_path: Path) -> None:
+    controller, pressure = configured(tmp_path)
+    controller.start_cycle()
+    advance_to_queue_staging(controller, pressure)
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            reorientation_state=94,
+            reorientation_fault_code=94,
+            heartbeat_alive=True,
+        )
+    )
 
     assert controller.state == BatchState.FAULT
     assert pressure.writes[-1][0] == "batch_abort"
-    assert not any(name.startswith("batch_enqueue:") for name, _values, _verify in pressure.writes)

@@ -24,12 +24,13 @@ from bibazu_reorientation.profiles import build_write_plan, compose_pressure_pro
 from bibazu_reorientation.tracking import (
     MultiPartTracker,
     TrackerUpdate,
-    draw_tracking_overlay,
+    snapshot_queue,
 )
 
 
 class BatchController(QObject):
     state_changed = pyqtSignal(object, str)
+    warning_raised = pyqtSignal(str, str)
     preflight_changed = pyqtSignal(object)
     tracks_changed = pyqtSignal(object)
     counters_changed = pyqtSignal(object)
@@ -68,13 +69,12 @@ class BatchController(QObject):
         self._handshake_phase: str | None = None
         self._handshake_timer = QTimer(self)
         self._handshake_timer.setSingleShot(True)
-        self._handshake_timer.setInterval(3_000)
+        # ADS polling reads a large PLC snapshot and can occasionally take more
+        # than three seconds on the laboratory network. Only the final PLC
+        # running state is acknowledged, so this is a fault timeout rather than
+        # part of the normal command sequencing.
+        self._handshake_timer.setInterval(10_000)
         self._handshake_timer.timeout.connect(self._handshake_timeout)
-        self._finish_timer = QTimer(self)
-        self._finish_timer.setInterval(100)
-        self._finish_timer.timeout.connect(self._finish_tick)
-        self._finish_requested = False
-        self._empty_since: float | None = None
         self._run_id = ""
         self._session = None
         self._sequence = 0
@@ -89,6 +89,12 @@ class BatchController(QObject):
         self._enqueue_ack_times: dict[int, float] = {}
         self._last_result_sequence = 0
         self._last_tracks = ()
+        self._latest_frame: InferenceFrame | None = None
+        self._initial_decisions: tuple[PartDecision, ...] = ()
+        self._initial_snapshot_image: np.ndarray | None = None
+        self._initial_queue_staged = False
+        self._conveyor_start_pending = False
+        self._plc_reset_acknowledged = False
         self._release_pending = False
         self._light_addresses = ("", "")
         self._config_hash = ""
@@ -115,6 +121,7 @@ class BatchController(QObject):
 
     def set_configuration(self, part: PartDefinition, profile: PressureProfile) -> None:
         self._assert_configurable()
+        self._clear_detection_snapshot()
         self.part = part
         self.profile = profile
         self._transport_profile = profile
@@ -132,6 +139,7 @@ class BatchController(QObject):
         ur_ry_angle_deg: float | None,
     ) -> None:
         self._assert_configurable()
+        self._clear_detection_snapshot()
         if not profiles_by_edge:
             raise ValueError("Assign at least one pressure profile before execution")
         first = next(iter(profiles_by_edge.values()))
@@ -152,6 +160,7 @@ class BatchController(QObject):
 
     def clear_configuration(self) -> None:
         self._assert_configurable()
+        self._clear_detection_snapshot()
         self.part = None
         self.profile = None
         self._transport_profile = None
@@ -159,6 +168,12 @@ class BatchController(QObject):
         self._planner = None
         self._set_state(BatchState.NO_CONFIG)
         self._refresh_preflight()
+
+    def _clear_detection_snapshot(self) -> None:
+        self._latest_frame = None
+        self._initial_decisions = ()
+        self._initial_snapshot_image = None
+        self._last_tracks = ()
 
     def _assert_configurable(self) -> None:
         if self.state not in {
@@ -173,22 +188,32 @@ class BatchController(QObject):
     def set_model_ready(self, ready: bool) -> None:
         changed = self.model_ready != ready
         self.model_ready = ready
-        if not ready and self.state in {
+        if changed and not ready and self.state in {
+            BatchState.STARTING,
             BatchState.RUNNING,
             BatchState.FINISHING,
+            BatchState.DRAINING,
         }:
-            self._fault("yolo_lost", "YOLO became unavailable during the production run")
+            self._warn(
+                "yolo_lost",
+                "YOLO became unavailable after the production snapshot was frozen",
+            )
         elif changed:
             self._refresh_preflight()
 
     def set_camera_fresh(self, ready: bool) -> None:
         changed = self.camera_fresh != ready
         self.camera_fresh = ready
-        if not ready and self.state in {
+        if changed and not ready and self.state in {
+            BatchState.STARTING,
             BatchState.RUNNING,
             BatchState.FINISHING,
+            BatchState.DRAINING,
         }:
-            self._fault("camera_lost", "Camera frames became stale during the production run")
+            self._warn(
+                "camera_lost",
+                "Camera frames became stale after the production snapshot was frozen",
+            )
         elif changed:
             self._refresh_preflight()
 
@@ -205,12 +230,24 @@ class BatchController(QObject):
     def preflight(self) -> dict[str, bool]:
         snapshot = self.snapshot
         profile = self.profile
+        frame = self._latest_frame
+        snapshot_part_count = len(frame.detections) if frame is not None else 0
+        fresh_snapshot = (
+            frame is not None
+            and time.time() - frame.timestamp <= 1.0
+            and snapshot_part_count > 0
+        )
         return {
             "Configuration and at least one profile loaded": (
                 self.part is not None and profile is not None and self._planner is not None
             ),
             "YOLO model warmed up": self.model_ready,
             "Fresh camera frame": self.camera_fresh,
+            "Fresh production snapshot contains workpieces": fresh_snapshot,
+            "Snapshot fits PLC queue": (
+                snapshot_part_count > 0
+                and snapshot_part_count <= snapshot.batch_queue_capacity
+            ),
             "PLC batch contract connected": snapshot.connected,
             "Conveyor stopped": snapshot.conveyor_motion_state == 0 and not snapshot.stepper_busy,
             "Calibration valid": snapshot.calibration_valid,
@@ -236,6 +273,15 @@ class BatchController(QObject):
     def start_cycle(self) -> None:
         if self.state != BatchState.READY or self.part is None or self.profile is None:
             raise RuntimeError("Production-run preflight is incomplete")
+        frame = self._latest_frame
+        if frame is None or time.time() - frame.timestamp > 1.0:
+            raise RuntimeError("No fresh YOLO snapshot is available")
+        mapping = {pose.model_class_id: pose.id for pose in self.part.poses}
+        frozen = snapshot_queue(frame, mapping)
+        if not frozen.handoffs:
+            raise RuntimeError("The production snapshot contains no workpieces")
+        if len(frozen.handoffs) > self.snapshot.batch_queue_capacity:
+            raise RuntimeError("The production snapshot exceeds the PLC queue capacity")
         self._run_id = f"run-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
         profiles = tuple(self._roadmap_profiles.values()) or (self.profile,)
         self._session = self.journal.begin_batch(self._run_id, self.part, profiles)
@@ -251,12 +297,17 @@ class BatchController(QObject):
         self._logged_sequences.clear()
         self._enqueue_ack_times.clear()
         self._last_result_sequence = 0
-        self._last_tracks = ()
-        self._finish_requested = False
-        self._empty_since = None
+        self._last_tracks = frozen.tracks
+        self._initial_decisions = frozen.handoffs
+        self._initial_snapshot_image = np.ascontiguousarray(frame.image).copy()
+        self._initial_queue_staged = False
+        self._conveyor_start_pending = False
+        self._plc_reset_acknowledged = False
         self._release_pending = False
         plan = build_write_plan(self.profile, actuate=False)
         self._set_state(BatchState.STARTING)
+        self.tracks_changed.emit(self._last_tracks)
+        self._emit_counters()
         self.pressure.write("batch_safe_stop", plan.safe_stop, True)
 
     def start_run(self) -> None:
@@ -271,23 +322,22 @@ class BatchController(QObject):
         self._refresh_preflight()
 
     def accept_inference(self, frame: InferenceFrame) -> TrackerUpdate | None:
+        self._latest_frame = frame
         self.set_camera_fresh(time.time() - frame.timestamp <= 1.0)
-        if self.state not in {BatchState.RUNNING, BatchState.FINISHING} or self.part is None:
+        if self.state not in {
+            BatchState.NO_CONFIG,
+            BatchState.OFFLINE,
+            BatchState.READY,
+            BatchState.COMPLETE,
+            BatchState.FAULT,
+        } or self.part is None:
             return None
         mapping = {pose.model_class_id: pose.id for pose in self.part.poses}
-        update = self.tracker.update(frame, mapping)
+        update = snapshot_queue(frame, mapping)
         self._last_tracks = update.tracks
         self.tracks_changed.emit(update.tracks)
-        if update.fault:
-            self._fault("tracking_order", update.fault)
-            return update
-        if update.tracks:
-            self._empty_since = None
-        elif self._finish_requested and self._empty_since is None:
-            self._empty_since = time.monotonic()
-        for decision in update.handoffs:
-            self._queue_decision(decision, frame.image)
         self._emit_counters()
+        self._refresh_preflight()
         return update
 
     def _queue_decision(self, decision: PartDecision, image: np.ndarray) -> None:
@@ -305,11 +355,8 @@ class BatchController(QObject):
         self._sequence += 1
         record = self._planner.build(self._sequence, decision)
         try:
-            annotated = draw_tracking_overlay(
-                image, self._last_tracks, self.tracker.handoff_line_ratio
-            )
             image_path = self.journal.save_part_image(
-                self._session, record.sequence_id, annotated
+                self._session, record.sequence_id, image
             )
         except Exception as exc:
             self._fault("part_image", f"Part image could not be saved: {exc}")
@@ -329,45 +376,57 @@ class BatchController(QObject):
             False,
         )
 
-    def stop(self) -> None:
-        if self.state not in {BatchState.STARTING, BatchState.RUNNING}:
+    def _stage_initial_queue(self) -> None:
+        image = self._initial_snapshot_image
+        if image is None or not self._initial_decisions:
+            self._fault("snapshot_missing", "The frozen production snapshot is unavailable")
             return
-        was_starting = self.state == BatchState.STARTING
-        self._finish_requested = True
-        self._set_state(BatchState.FINISHING, "Stop feeding parts; finishing visible tracks")
-        if not self._last_tracks:
-            self._empty_since = time.monotonic()
-        if not was_starting:
-            self._finish_timer.start()
+        for decision in self._initial_decisions:
+            if decision.pose_id is None:
+                self._warn(
+                    "snapshot_uncertain",
+                    f"Workpiece {decision.track_id} has no usable initial pose; "
+                    "it remains in the fixed queue and will pass without actuation",
+                )
+            self._queue_decision(decision, image)
+            if self.state == BatchState.FAULT:
+                return
+        self._initial_queue_staged = True
+        self._start_conveyor_when_queue_is_acknowledged()
+
+    def _start_conveyor_when_queue_is_acknowledged(self) -> None:
+        if (
+            self.state != BatchState.STARTING
+            or not self._initial_queue_staged
+            or self._pending_enqueue is not None
+            or self._handoff_queue
+            or self._conveyor_start_pending
+        ):
+            return
+        self._conveyor_start_pending = True
+        self.pressure.write(
+            "batch_conveyor_start",
+            {"MAIN.GuiConveyorEnabled": True},
+            True,
+        )
+
+    def stop(self) -> None:
+        if self.state == BatchState.STARTING: 
+            self._fault("operator_stop", "Production start was cancelled by the operator")
+            return
+        if self.state != BatchState.RUNNING:
+            return
+        self._set_state(BatchState.DRAINING, "Waiting for all queued parts to pass LB8")
+        self.pressure.write("batch_finish", {"MAIN.GuiReorientationFinish": True}, True)
 
     def finish_run(self) -> None:
         self.stop()
 
-    def _finish_tick(self) -> None:
-        if self.state != BatchState.FINISHING:
-            self._finish_timer.stop()
-            return
-        if self._last_tracks:
-            self._empty_since = None
-            return
-        if self._empty_since is None:
-            self._empty_since = time.monotonic()
-            return
-        if (
-            time.monotonic() - self._empty_since >= 1.0
-            and not self._handoff_queue
-            and self._pending_enqueue is None
-        ):
-            self._finish_timer.stop()
-            self._set_state(BatchState.DRAINING, "Waiting for all queued parts to pass LB8")
-            self.pressure.write(
-                "batch_finish", {"MAIN.GuiReorientationFinish": True}, True
-            )
-
     def _operation_finished(self, name: str) -> None:
         if name == "batch_safe_stop" and self.profile is not None:
             plan = build_write_plan(self.profile, actuate=False)
-            self.pressure.write("batch_configuration", plan.configuration, True)
+            batch_configuration = dict(plan.configuration)
+            self.pressure.write("batch_configuration", batch_configuration, True)
         elif name == "batch_configuration":
             self._heartbeat = (int(self.snapshot.heartbeat_ack) + 1) & 0xFFFFFFFF
             self.pressure.write(
@@ -380,31 +439,39 @@ class BatchController(QObject):
                     "MAIN.GuiReorientationStart": False,
                     "MAIN.GuiReorientationFinish": False,
                 },
-                True,
+                False,
             )
         elif name == "batch_reset":
             self._heartbeat_timer.start()
-            self._begin_handshake("batch_reset_ack")
-        elif name == "batch_reset_end":
-            self._begin_handshake("batch_ready_ack")
+            self.pressure.write(
+                "batch_start",
+                {
+                    "MAIN.GuiReorientationStart": True,
+                    # The frozen queue is committed before physical motion.
+                    "MAIN.GuiConveyorEnabled": False,
+                },
+                True,
+            )
         elif name == "batch_start":
             self._begin_handshake("batch_start_ack")
         elif name == "batch_start_end":
-            if self._finish_requested:
-                self._set_state(
-                    BatchState.FINISHING,
-                    "Stop feeding parts; finishing visible tracks",
-                )
-                if not self._last_tracks:
-                    self._empty_since = time.monotonic()
-                self._finish_timer.start()
-            else:
-                self._set_state(BatchState.RUNNING)
+            self._stage_initial_queue()
         elif name.startswith("batch_enqueue:"):
             # The PLC acknowledgement is authoritative; a successful ADS write
             # alone must never release the next staging record.
             pass
         elif name.startswith("batch_result_ack:"):
+            pass
+        elif name == "batch_conveyor_start":
+            self._conveyor_start_pending = False
+            self._set_state(
+                BatchState.DRAINING,
+                "Frozen queue running; conveyor stops after every part passes LB8",
+            )
+            self.pressure.write(
+                "batch_finish", {"MAIN.GuiReorientationFinish": True}, True
+            )
+        elif name == "batch_finish":
             pass
         elif name == "batch_release_safe":
             self.pressure.write(
@@ -431,31 +498,12 @@ class BatchController(QObject):
     def _on_snapshot(self, snapshot: PlcSnapshot) -> None:
         self.snapshot = snapshot
         self._emit_counters()
-        if self._handshake_phase == "batch_reset_ack":
-            if (
-                snapshot.reorientation_state == 10
-                and snapshot.reorientation_fault_code == 0
-                and snapshot.heartbeat_alive
-            ):
-                self._clear_handshake()
-                self.pressure.write(
-                    "batch_reset_end", {"MAIN.GuiReorientationReset": False}, True
-                )
-            return
-        if self._handshake_phase == "batch_ready_ack":
-            if snapshot.reorientation_state == 10 and snapshot.heartbeat_alive:
-                self._clear_handshake()
-                self.pressure.write(
-                    "batch_start",
-                    {
-                        "MAIN.GuiReorientationStart": True,
-                        "MAIN.GuiConveyorEnabled": True,
-                    },
-                    True,
-                )
-            return
         if self._handshake_phase == "batch_start_ack":
-            if snapshot.reorientation_state == 20 and snapshot.heartbeat_alive:
+            if (
+                snapshot.reorientation_state == 20
+                and snapshot.reorientation_fault_code == 0
+            ):
+                self._plc_reset_acknowledged = True
                 self._clear_handshake()
                 self.pressure.write(
                     "batch_start_end", {"MAIN.GuiReorientationStart": False}, True
@@ -470,6 +518,7 @@ class BatchController(QObject):
             self._pending_enqueue = None
             self.part_queued.emit(record)
             self._send_next_enqueue()
+            self._start_conveyor_when_queue_is_acknowledged()
             self._emit_counters()
         if (
             snapshot.batch_result_available
@@ -485,12 +534,12 @@ class BatchController(QObject):
         if self.state in {BatchState.NO_CONFIG, BatchState.OFFLINE, BatchState.READY}:
             self._refresh_preflight()
             return
-        if snapshot.reorientation_fault_code and self.state not in {
-            BatchState.STARTING,
-        }:
+        if snapshot.reorientation_fault_code and (
+            self.state != BatchState.STARTING or self._plc_reset_acknowledged
+        ):
             self._fault(
                 f"plc_{snapshot.reorientation_fault_code}",
-                "PLC batch execution fault",
+                self._plc_fault_text(snapshot.reorientation_fault_code),
             )
         elif (
             self.state == BatchState.DRAINING
@@ -622,6 +671,8 @@ class BatchController(QObject):
                 "bypass": self.snapshot.batch_bypass_count,
                 "queue_depth": self.snapshot.batch_queue_depth,
                 "queue_capacity": self.snapshot.batch_queue_capacity,
+                "sensor_sequences": self.snapshot.batch_sensor_sequences,
+                "barrier_states": self.snapshot.light_barriers_stable,
                 "next": (
                     f"#{next_record.sequence_id} Pose {next_record.pose_id or '?'} · "
                     f"mask 0x{next_record.expected_array_mask:X}"
@@ -648,7 +699,14 @@ class BatchController(QObject):
     def _handshake_timeout(self) -> None:
         phase = self._handshake_phase or "unknown"
         self._clear_handshake()
-        self._fault("plc_handshake", f"PLC handshake timed out: {phase}")
+        self._fault(
+            "plc_handshake",
+            "PLC start timed out: "
+            f"{phase}; state={self.snapshot.reorientation_state}, "
+            f"fault={self.snapshot.reorientation_fault_code}, "
+            f"heartbeat_alive={self.snapshot.heartbeat_alive}, "
+            f"heartbeat_ack={self.snapshot.heartbeat_ack}",
+        )
 
     def _connection_changed(self, connected: bool, detail: str) -> None:
         if not connected:
@@ -663,11 +721,40 @@ class BatchController(QObject):
         elif self.state in {BatchState.NO_CONFIG, BatchState.OFFLINE, BatchState.READY}:
             self._refresh_preflight()
 
+    def _plc_fault_text(self, code: int) -> str:
+        if code == 96:
+            detail = {
+                1: "sensor did not clear",
+                2: "queue entry missing/mismatched",
+                3: "previous sensor has not seen this part",
+            }.get(self.snapshot.reorientation_fault_detail, "unknown legacy detail")
+            sequences = "/".join(str(value) for value in self.snapshot.batch_sensor_sequences)
+            return (
+                f"PLC LB{self.snapshot.reorientation_fault_sensor} fault: {detail}; "
+                f"expected part {self.snapshot.reorientation_fault_expected_sequence}, "
+                f"previous={self.snapshot.reorientation_fault_previous_sequence}, "
+                f"queue_ack={self.snapshot.reorientation_fault_queue_ack}, "
+                f"slot={self.snapshot.reorientation_fault_queue_slot_sequence}, "
+                f"LB1→8={sequences}, "
+                "stable_mask="
+                f"0x{self.snapshot.reorientation_fault_barrier_stable_mask:02X}"
+            )
+        return {
+            90: "PLC latched an operator/GUI abort",
+            91: "PLC heartbeat watchdog expired",
+            92: "PLC rejected an invalid queue or result handshake",
+            93: "PLC part queue capacity was exhausted",
+            94: "PLC reported an EL7047 or VTEM drive fault",
+            95: "PLC per-array job FIFO overflowed",
+        }.get(code, "PLC batch execution fault")
+
+    def _warn(self, code: str, text: str) -> None:
+        self.warning_raised.emit(code, text)
+
     def _fault(self, code: str, text: str) -> None:
         if self.state == BatchState.FAULT:
             return
         self._clear_handshake()
-        self._finish_timer.stop()
         self._heartbeat_timer.stop()
         self.pressure.write(
             "batch_abort",

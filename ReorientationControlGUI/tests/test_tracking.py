@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from bibazu_reorientation.models import Detection, InferenceFrame
-from bibazu_reorientation.tracking import MultiPartTracker
+from bibazu_reorientation.tracking import MultiPartTracker, snapshot_queue
 
 
 def frame(*rows: tuple[int, float, int], timestamp: float) -> InferenceFrame:
@@ -48,6 +48,16 @@ def test_tracks_multiple_parts_and_hands_each_off_once() -> None:
     assert [(item.track_id, item.pose_id) for item in decisions] == [(1, 5), (2, 10)]
 
 
+def test_snapshot_queue_freezes_every_detection_in_leading_order() -> None:
+    update = snapshot_queue(
+        frame((1, 70, 30), (0, 25, 70), timestamp=1.0),
+        {0: 10, 1: 5},
+    )
+
+    assert [(item.track_id, item.pose_id) for item in update.handoffs] == [(1, 10), (2, 5)]
+    assert all(item.reason == "snapshot_confirmed" for item in update.handoffs)
+
+
 def test_wrong_class_resets_five_frame_streak() -> None:
     tracker = MultiPartTracker(handoff_line_ratio=0.20)
     mapping = {0: 10, 1: 5}
@@ -87,10 +97,19 @@ def test_lost_real_track_before_line_is_fault() -> None:
     assert "lost before the handoff line" in update.fault
 
 
-def test_overtaking_or_order_inversion_is_a_tracking_fault() -> None:
+def test_part_exiting_left_edge_is_not_a_direction_fault() -> None:
+    tracker = MultiPartTracker(handoff_line_ratio=0.20)
+    mapping = {0: 10}
+    tracker.update(frame((0, 8, 50), timestamp=1.0), mapping)
+    update = tracker.update(frame((0, 25, 50), timestamp=2.0), mapping)
+
+    assert not update.fault
+
+
+def test_order_inversion_does_not_fault_in_queue_once_mode() -> None:
     tracker = MultiPartTracker(handoff_line_ratio=0.20)
     mapping = {0: 10}
     tracker.update(frame((0, 40, 30), (0, 60, 70), timestamp=1.0), mapping)
     update = tracker.update(frame((0, 55, 30), (0, 45, 70), timestamp=2.0), mapping)
 
-    assert "order became ambiguous" in update.fault
+    assert not update.fault
