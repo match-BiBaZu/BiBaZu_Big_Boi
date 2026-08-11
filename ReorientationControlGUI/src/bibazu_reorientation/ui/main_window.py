@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -95,9 +95,11 @@ class LightPanel(QGroupBox):
         form.addRow(power_off)
         form.addRow(hsi)
         form.addRow(self.confirm)
-        adapter.state_changed.connect(
-            lambda state, detail: self.status.setText(f"{state}: {detail}")
-        )
+        adapter.state_changed.connect(self._adapter_state_changed)
+
+    @pyqtSlot(object, str)
+    def _adapter_state_changed(self, state: object, detail: str) -> None:
+        self.status.setText(f"{state}: {detail}")
 
 
 class MainWindow(QMainWindow):
@@ -131,15 +133,14 @@ class MainWindow(QMainWindow):
         self._exposure_max_us = 1.0
         self._updating_exposure_ui = False
         self._preflight_ok = False
+        self._displayed_preflight_checks: dict[str, bool] | None = None
         self._roadmap_config_only = False
         self._light_connect_task: asyncio.Task[None] | None = None
         self._build_ui()
         self._wire()
         self.freshness_timer = QTimer(self)
         self.freshness_timer.setInterval(250)
-        self.freshness_timer.timeout.connect(
-            lambda: self.controller.set_camera_fresh(time.time() - self._last_camera_frame <= 1.0)
-        )
+        self.freshness_timer.timeout.connect(self._update_camera_freshness)
         self.freshness_timer.start()
         self.exposure_apply_timer = QTimer(self)
         self.exposure_apply_timer.setSingleShot(True)
@@ -273,19 +274,17 @@ class MainWindow(QMainWindow):
         self.camera.state_changed.connect(self._camera_state_changed)
         self.camera.status_changed.connect(self._camera_status_changed)
         self.camera.exposure_applied.connect(self._camera_exposure_applied)
-        self.camera.exposure_failed.connect(
-            lambda detail: self._hardware_error("Camera exposure", detail)
-        )
+        self.camera.exposure_failed.connect(self._camera_exposure_error)
         self.camera.frame_ready.connect(self._camera_frame)
-        self.camera.error.connect(lambda detail: self._hardware_error("Camera", detail))
+        self.camera.error.connect(self._camera_error)
         self.controller.preflight_changed.connect(self._preflight)
         self.controller.state_changed.connect(self._cycle_state_changed)
         self.light_panel1.confirm.toggled.connect(self._lights_changed)
         self.light_panel2.confirm.toggled.connect(self._lights_changed)
-        self.light1.status_changed.connect(lambda _: self._lights_changed())
-        self.light2.status_changed.connect(lambda _: self._lights_changed())
-        self.light1.error.connect(lambda detail: self._hardware_error("Light 1", detail))
-        self.light2.error.connect(lambda detail: self._hardware_error("Light 2", detail))
+        self.light1.status_changed.connect(self._light_status_changed)
+        self.light2.status_changed.connect(self._light_status_changed)
+        self.light1.error.connect(self._light1_error)
+        self.light2.error.connect(self._light2_error)
 
     def _plc_connection_changed(self, connected: bool, detail: str) -> None:
         self.plc_status.setText(f"PLC: {'connected' if connected else 'disconnected'} – {detail}")
@@ -299,6 +298,26 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _hardware_error(component: str, detail: str) -> None:
         LOGGER.error("%s: %s", component, detail)
+
+    @pyqtSlot(object)
+    def _light_status_changed(self, _status: object) -> None:
+        self._lights_changed()
+
+    @pyqtSlot(str)
+    def _light1_error(self, detail: str) -> None:
+        self._hardware_error("Light 1", detail)
+
+    @pyqtSlot(str)
+    def _light2_error(self, detail: str) -> None:
+        self._hardware_error("Light 2", detail)
+
+    @pyqtSlot(str)
+    def _camera_exposure_error(self, detail: str) -> None:
+        self._hardware_error("Camera exposure", detail)
+
+    @pyqtSlot(str)
+    def _camera_error(self, detail: str) -> None:
+        self._hardware_error("Camera", detail)
 
     def _camera_state_changed(self, state: ConnectionState, detail: str) -> None:
         self.camera_status.setText(f"Camera: {state} {detail}")
@@ -448,6 +467,7 @@ class MainWindow(QMainWindow):
 
     def _load(self, part) -> None:
         self.part = part
+        self._displayed_preflight_checks = None
         self.edit_config_action.setEnabled(True)
         self.edit_config_button.setEnabled(True)
         self._roadmap_config_only = part.schema_version == 2
@@ -497,8 +517,8 @@ class MainWindow(QMainWindow):
             self.inference.stop()
         self.inference = InferenceWorker(InferenceConfig(part.model_path))
         self.inference.frame_ready.connect(self._inference_frame)
-        self.inference.model_ready.connect(lambda _: self.controller.set_model_ready(True))
-        self.inference.error.connect(lambda error: QMessageBox.critical(self, "YOLO", error))
+        self.inference.model_ready.connect(self._inference_model_ready)
+        self.inference.error.connect(self._inference_error)
         self.inference.start()
 
     def _load_roadmap_configuration(self, part) -> None:
@@ -615,13 +635,15 @@ class MainWindow(QMainWindow):
 
     def _camera_frame(self, frame: CameraFrame) -> None:
         self._last_camera_frame = frame.timestamp
-        self.controller.set_camera_fresh(time.time() - frame.timestamp <= 1.0)
         if self.inference:
             self.inference.submit(frame.image, frame.timestamp)
         else:
             # A live preview is useful while setting up hardware, before a part/model
             # configuration has been selected.
             self._show_image(frame.image)
+
+    def _update_camera_freshness(self) -> None:
+        self.controller.set_camera_fresh(time.time() - self._last_camera_frame <= 1.0)
 
     def _inference_frame(self, frame: InferenceFrame) -> None:
         self._show_image(frame.image)
@@ -634,6 +656,14 @@ class MainWindow(QMainWindow):
             )
         self.controller.accept_inference(frame)
 
+    @pyqtSlot(object)
+    def _inference_model_ready(self, _details: object) -> None:
+        self.controller.set_model_ready(True)
+
+    @pyqtSlot(str)
+    def _inference_error(self, error: str) -> None:
+        QMessageBox.critical(self, "YOLO", error)
+
     def _show_image(self, image: np.ndarray) -> None:
         height, width = image.shape[:2]
         qimage = QImage(image.data, width, height, image.strides[0], QImage.Format.Format_RGB888)
@@ -642,7 +672,7 @@ class MainWindow(QMainWindow):
             pixmap.scaled(
                 self.video.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+                Qt.TransformationMode.FastTransformation,
             )
         )
 
@@ -679,14 +709,25 @@ class MainWindow(QMainWindow):
         if not self.profile or self.profile.ur_ry_angle_deg is None:
             return
         self.ur_worker = UrAngleWorker(self.profile.ur_ry_angle_deg, self)
-        self.ur_worker.applied.connect(lambda angle, _: self.controller.set_ur_applied(angle))
-        self.ur_worker.failed.connect(lambda error: QMessageBox.critical(self, "UR", error))
+        self.ur_worker.applied.connect(self._ur_applied)
+        self.ur_worker.failed.connect(self._ur_failed)
         self.ur_worker.start()
+
+    @pyqtSlot(float, int)
+    def _ur_applied(self, angle: float, _command: int) -> None:
+        self.controller.set_ur_applied(angle)
+
+    @pyqtSlot(str)
+    def _ur_failed(self, error: str) -> None:
+        QMessageBox.critical(self, "UR", error)
 
     def _preflight(self, checks: dict[str, bool]) -> None:
         if self._roadmap_config_only:
             self.start_button.setEnabled(False)
             return
+        if checks == self._displayed_preflight_checks:
+            return
+        self._displayed_preflight_checks = checks.copy()
         while self.preflight.count():
             item = self.preflight.takeAt(0)
             if item.widget():

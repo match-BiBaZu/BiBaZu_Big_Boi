@@ -45,6 +45,7 @@ class ReorientationController(QObject):
         self.camera_fresh = False
         self.lights_ready = (False, False)
         self.ur_applied: float | None = None
+        self._last_preflight_checks: dict[str, bool] | None = None
         self._decision_frame: InferenceFrame | None = None
         self._observations = ()
         self._decision_at: datetime | None = None
@@ -78,10 +79,13 @@ class ReorientationController(QObject):
         self._refresh_preflight()
 
     def set_model_ready(self, ready: bool) -> None:
+        if self.model_ready == ready:
+            return
         self.model_ready = ready
         self._refresh_preflight()
 
     def set_camera_fresh(self, ready: bool) -> None:
+        changed = self.camera_fresh != ready
         self.camera_fresh = ready
         if not ready and self.state not in {
             CycleState.NO_CONFIG,
@@ -93,9 +97,11 @@ class ReorientationController(QObject):
             CycleState.FAULT,
         }:
             self._camera_lost_after_decision = True
-        self._refresh_preflight()
+        if changed:
+            self._refresh_preflight()
 
     def set_lights_ready(self, first: bool, second: bool) -> None:
+        changed = self.lights_ready != (first, second)
         self.lights_ready = (first, second)
         if not (first and second) and self.state not in {
             CycleState.NO_CONFIG,
@@ -107,12 +113,15 @@ class ReorientationController(QObject):
             CycleState.FAULT,
         }:
             self._lights_lost_after_decision = True
-        self._refresh_preflight()
+        if changed:
+            self._refresh_preflight()
 
     def set_light_addresses(self, first: str, second: str) -> None:
         self._light_addresses = (first, second)
 
     def set_ur_applied(self, angle: float | None) -> None:
+        if self.ur_applied == angle:
+            return
         self.ur_applied = angle
         self._refresh_preflight()
 
@@ -139,7 +148,9 @@ class ReorientationController(QObject):
 
     def _refresh_preflight(self) -> None:
         checks = self.preflight()
-        self.preflight_changed.emit(checks)
+        if checks != self._last_preflight_checks:
+            self._last_preflight_checks = checks.copy()
+            self.preflight_changed.emit(checks)
         if self.state in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
             self._set_state(CycleState.READY if all(checks.values()) else CycleState.OFFLINE)
 

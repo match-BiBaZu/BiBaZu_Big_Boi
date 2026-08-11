@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import re
+import threading
 import time
 from typing import Any
 
@@ -15,6 +16,8 @@ from bibazu_reorientation.settings import AppSettings
 
 FETCH_TIMEOUT_SECONDS = 1.0
 FETCH_TIMEOUT_MARGIN_SECONDS = 0.5
+PREVIEW_MAX_WIDTH = 1280
+PREVIEW_MAX_HEIGHT = 720
 
 
 def advance_frame_deadline(deadline: float, interval: float, now: float) -> float:
@@ -115,6 +118,24 @@ def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.
     raise ValueError(f"Unsupported pixel format: {original_format}")
 
 
+def resize_preview(
+    image: np.ndarray,
+    max_width: int = PREVIEW_MAX_WIDTH,
+    max_height: int = PREVIEW_MAX_HEIGHT,
+) -> np.ndarray:
+    """Downscale a live preview before it crosses into the Qt GUI thread."""
+    height, width = image.shape[:2]
+    scale = min(1.0, max_width / width, max_height / height)
+    if scale >= 1.0:
+        return np.ascontiguousarray(image)
+    resized = cv2.resize(
+        image,
+        (max(1, round(width * scale)), max(1, round(height * scale))),
+        interpolation=cv2.INTER_AREA,
+    )
+    return np.ascontiguousarray(resized)
+
+
 class _CameraWorker(QObject):
     frame = pyqtSignal(object)
     connected = pyqtSignal(object)
@@ -129,9 +150,21 @@ class _CameraWorker(QObject):
         self.settings = settings
         self._running = False
         self._exposure_commands: queue.Queue[float] = queue.Queue()
+        self._preview_slot_available = threading.Event()
+        self._preview_slot_available.set()
 
     def enqueue_exposure(self, exposure_time_us: float) -> None:
         self._exposure_commands.put(float(exposure_time_us))
+
+    def take_preview_slot(self) -> bool:
+        """Allow at most one queued full-size preview frame in the GUI thread."""
+        if not self._preview_slot_available.is_set():
+            return False
+        self._preview_slot_available.clear()
+        return True
+
+    def acknowledge_preview(self) -> None:
+        self._preview_slot_available.set()
 
     @pyqtSlot()
     def run(self) -> None:
@@ -235,21 +268,30 @@ class _CameraWorker(QObject):
                 with acquisition.fetch(timeout=fetch_timeout) as buffer:
                     now = time.monotonic()
                     stream_frames += 1
-                    if now < next_preview:
+                    if now < next_preview or not self.take_preview_slot():
                         # Fetching still returns the GenTL buffer immediately, so the
                         # camera stream is drained without flooding Qt with old frames.
                         component = None
                     else:
-                        component = buffer.payload.components[0]
-                        image = convert_to_rgb(
-                            component.data,
-                            int(component.width),
-                            int(component.height),
-                            str(component.data_format),
-                        )
-                        self.frame.emit(CameraFrame(image, str(component.data_format), time.time()))
-                        preview_frames += 1
-                        next_preview = advance_frame_deadline(next_preview, preview_interval, now)
+                        try:
+                            component = buffer.payload.components[0]
+                            image = convert_to_rgb(
+                                component.data,
+                                int(component.width),
+                                int(component.height),
+                                str(component.data_format),
+                            )
+                            image = resize_preview(image)
+                            self.frame.emit(
+                                CameraFrame(image, str(component.data_format), time.time())
+                            )
+                            preview_frames += 1
+                            next_preview = advance_frame_deadline(
+                                next_preview, preview_interval, now
+                            )
+                        except Exception:
+                            self.acknowledge_preview()
+                            raise
                 elapsed = now - fps_window_start
                 if elapsed >= 1.0:
                     status.stream_fps = stream_frames / elapsed
@@ -336,7 +378,7 @@ class CameraAdapter(DeviceAdapter):
         worker.moveToThread(self.thread)
         self.thread.started.connect(worker.run)
         self._stop_requested.connect(worker.stop)
-        worker.frame.connect(self.frame_ready)
+        worker.frame.connect(self._forward_frame)
         worker.connected.connect(self._connected)
         worker.status_changed.connect(self._status_changed)
         worker.exposure_applied.connect(self.exposure_applied)
@@ -351,6 +393,15 @@ class CameraAdapter(DeviceAdapter):
         self.status = status
         self._set_state(ConnectionState.CONNECTED, status.serial_number)
         self.status_changed.emit(status)
+
+    @pyqtSlot(object)
+    def _forward_frame(self, frame: object) -> None:
+        try:
+            self.frame_ready.emit(frame)
+        finally:
+            worker = self.worker
+            if worker is not None:
+                worker.acknowledge_preview()
 
     def _status_changed(self, status: CameraStatus) -> None:
         self.status = status

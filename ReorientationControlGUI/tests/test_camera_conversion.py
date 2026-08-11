@@ -3,10 +3,13 @@ from __future__ import annotations
 import numpy as np
 
 from bibazu_reorientation.hardware.camera import (
+    _CameraWorker,
     advance_frame_deadline,
     camera_fetch_timeout_seconds,
     convert_to_rgb,
+    resize_preview,
 )
+from bibazu_reorientation.settings import AppSettings
 
 
 def test_mono12_is_scaled_to_rgb8() -> None:
@@ -33,3 +36,21 @@ def test_fetch_timeout_includes_long_exposure() -> None:
     assert camera_fetch_timeout_seconds(None) == 1.0
     assert camera_fetch_timeout_seconds(100_000) == 1.0
     assert np.isclose(camera_fetch_timeout_seconds(2_000_000), 2.5)
+
+
+def test_preview_backpressure_allows_only_one_outstanding_frame() -> None:
+    worker = _CameraWorker(AppSettings())
+
+    assert worker.take_preview_slot()
+    assert not worker.take_preview_slot()
+    worker.acknowledge_preview()
+    assert worker.take_preview_slot()
+
+
+def test_large_preview_is_downscaled_before_entering_qt() -> None:
+    source = np.zeros((3000, 4000, 3), dtype=np.uint8)
+
+    result = resize_preview(source)
+
+    assert result.shape == (720, 960, 3)
+    assert result.flags.c_contiguous

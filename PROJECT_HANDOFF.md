@@ -689,6 +689,9 @@ seriell. Jeder Paneladapter fuehrt Scan, GATT-Verbindung und Befehle in einem
 eigenen langlebigen Asyncio-Worker-Thread aus. Connect, BLE-Cancel und Shutdown
 haben harte Zeitgrenzen, damit ein haengender WinRT-Callback weder die Qt-GUI noch
 das Beenden der Anwendung blockiert.
+Signale aus BLE-, YOLO- und UR-Threads sind ausschliesslich mit gebundenen
+`QObject`-/`pyqtSlot`-Methoden verbunden. Keine anonyme Python-Lambda darf aus
+einem Worker heraus Labels, Dialoge oder MainWindow-Zustand anfassen.
 
 YAML-Schema v2 (gekuerzt):
 
@@ -828,6 +831,21 @@ erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywer
 - Der Qt-Eventloop blieb waehrend jeder Messsekunde responsiv. Scan und GATT-
   Verbindung laufen nun ausserhalb des Qt-Hauptthreads; ein zusaetzlicher Test
   bildet einen intern synchron blockierenden WinRT-Connect nach.
+- Ein weiterer realer `AppHangB1` um 12:37 wurde nicht durch einen zweiten
+  Hardwareprozess verursacht. Ursache waren noch vorhandene Lambda-Verbindungen,
+  die BLE-Worker-Signale unmittelbar in Qt-Widgets weiterleiten konnten. Diese
+  sowie die entsprechenden YOLO-/UR-Verbindungen wurden durch GUI-Thread-Slots
+  ersetzt und mit einem echten Fremdthread-Signaltest abgesichert.
+- Der danach noch ruckelnde Kamerapfad hatte zwei weitere Ursachen: ungebremste
+  Qt-Preview-Queues und einen vollstaendigen Neuaufbau der Preflight-Widgets bei
+  jedem Frame. Es darf nun hoechstens ein Previewframe auf Qt warten, grosse
+  Bilder werden bereits im Kameraworker auf maximal 1280 x 720 reduziert, und
+  unveraenderte Freshness-/Preflight-Werte erzeugen keine UI-Arbeit mehr.
+- Der reale Kamera-Dauerlauf erreichte danach `14 view FPS`; nach dem Connect lag
+  die groesste gemessene Qt-Timerpause bei `125 ms` statt zuvor etwa `1,8 s`.
+  Ein anschliessender Gesamtlauf verband Kamera, ADS und beide Panels gleichzeitig
+  und hielt die Vorschau mit `15 view FPS` ohne Hang aktiv. Die einmalige Pause
+  waehrend der Hardwareinitialisierung lag bei etwa `1,2 s`.
 - Die Desktop-Verknuepfung zeigt auf die aktuelle `.venv\Scripts\pythonw.exe` mit
   `-m bibazu_reorientation`; sie verwendet keine kopierte oder veraltete GUI.
 - Der reale Baumer-Test mit Seriennummer `700006383255` bestaetigte
@@ -837,7 +855,7 @@ erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywer
   die Kamera sauber getrennt und der Ausgangswert wiederhergestellt.
 - Automated Image Capture erreicht Kamera und uebrige Hardware auf diesem PC.
   Der Reorientation-Kameraadapter wurde danach an dessen robuste Windows-/Baumer-
-  Behandlung angenaehert; der reale Dauerlauf muss noch bestaetigt werden.
+  Behandlung angenaehert; Kamera- und Gesamtdauerlauf wurden erfolgreich bestaetigt.
 - SPS-IP `192.168.0.23` ist vom Betreiber bestaetigt. AMS bleibt
   `10.145.4.14.1.1`. Die GUI validiert nun auch `MAIN.ReorientationState`, statt
   fehlende Vertragssymbole still durch Defaultwerte zu ersetzen.
@@ -1031,7 +1049,7 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `73` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `78` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..9, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
@@ -1040,7 +1058,8 @@ Mehrposen-Ausfuehrungssperre sowie die animierte Uebergangsvorschau mit
 Bild-Fallback ab. Zusaetzlich sind SPS-IP-Migration, BLE-Auswahl, Timeout-Cleanup,
 Connect-Cancel, serielle Doppelverbindung, Connect-Timeout, Isolation eines
 blockierenden WinRT-Aufrufs, Exposure-/FPS-UI, Langzeit-Exposure-Fetch-Timeout und
-`Disconnect all components` abgedeckt. Sie ersetzen keine Hardwareabnahme.
+Qt-Thread-Affinität der Worker-Signale sowie `Disconnect all components`
+abgedeckt. Sie ersetzen keine Hardwareabnahme.
 
 ## 13. Empfohlene Wiederinbetriebnahme
 
@@ -1155,7 +1174,7 @@ Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
 Legacy-Tests:       python -m unittest test_pressure_control_gui.py (47)
-Reorientation-Test: uv run pytest (73), uv run ruff check src tests
+Reorientation-Test: uv run pytest (78), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004

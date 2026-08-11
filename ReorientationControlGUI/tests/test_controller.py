@@ -106,6 +106,24 @@ def inference_frame(pose: int, timestamp: float | None = None) -> InferenceFrame
     )
 
 
+def test_preflight_is_only_emitted_when_a_check_changes(tmp_path: Path) -> None:
+    controller, _pressure = configured_controller(tmp_path)
+    emissions: list[dict[str, bool]] = []
+    controller.preflight_changed.connect(emissions.append)
+
+    controller.set_camera_fresh(True)
+    controller._refresh_preflight()
+    assert emissions == []
+
+    controller.set_camera_fresh(False)
+    assert len(emissions) == 1
+    assert emissions[0]["Fresh camera frame"] is False
+
+    controller.set_camera_fresh(False)
+    controller._refresh_preflight()
+    assert len(emissions) == 1
+
+
 def test_staging_order_and_no_enable_before_readback(tmp_path: Path) -> None:
     controller, pressure = configured_controller(tmp_path)
     controller.start_cycle()

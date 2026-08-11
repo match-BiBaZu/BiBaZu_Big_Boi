@@ -109,6 +109,16 @@ performs no hardware connection. The two panel connections use one central seria
 retry sequence; individual panel reconnect loops are disabled to prevent
 overlapping WinRT scans. Connect, cancel, and BLE shutdown work is bounded so a
 faulty driver cannot freeze Qt or hold the application open indefinitely.
+All BLE, YOLO, and UR worker results cross into the UI through QObject slots;
+worker-thread signals never call labels, dialogs, or MainWindow state through
+anonymous Python callbacks.
+
+The Baumer preview has explicit backpressure: at most one converted frame may be
+waiting for Qt, and large sensor images are reduced in the camera worker before
+they enter the GUI thread. Repeated camera-fresh/preflight values are suppressed,
+so the checklist is rebuilt only when a check really changes rather than once per
+frame. A real four-device soak on 2026-08-11 connected ADS, the camera, and both
+panels together; the preview ran at 15 FPS without an application hang.
 
 ## Operating contract
 
@@ -157,3 +167,4 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
+The current offscreen suite contains 78 tests.

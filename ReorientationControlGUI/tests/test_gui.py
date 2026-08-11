@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PyQt6.QtCore import QThread
+from PyQt6.QtWidgets import QApplication
 
 from bibazu_reorientation.config import save_roadmap_part_definition
 from bibazu_reorientation.models import CameraStatus, ConnectionState
@@ -105,6 +108,54 @@ def test_camera_status_enables_log_exposure_slider_and_shows_fps(
     window._apply_camera_exposure()
     assert requested[-1] == pytest.approx(25_000.0, rel=0.02)
 
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_identical_preflight_update_keeps_existing_widgets(qtbot, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    checks = {"Camera": True, "PLC": False}
+
+    window._preflight(checks)
+    widgets = [window.preflight.itemAt(index).widget() for index in range(2)]
+    window._preflight(checks.copy())
+
+    assert [window.preflight.itemAt(index).widget() for index in range(2)] == widgets
+    window.close()
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_light_worker_signals_are_queued_to_the_gui_thread(qtbot, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    observed_threads: list[QThread] = []
+    monkeypatch.setattr(
+        window,
+        "_lights_changed",
+        lambda: observed_threads.append(QThread.currentThread()),
+    )
+
+    emitter = threading.Thread(
+        target=lambda: (
+            window.light1._set_state(ConnectionState.CONNECTING, "worker test"),
+            window.light1.status_changed.emit(window.light1.status),
+        )
+    )
+    emitter.start()
+    emitter.join(timeout=1.0)
+
+    assert not emitter.is_alive()
+    assert window.light_panel1.status.text() == "Disconnected"
+    assert observed_threads == []
+    qtbot.waitUntil(lambda: "worker test" in window.light_panel1.status.text())
+    qtbot.waitUntil(lambda: bool(observed_threads))
+    assert observed_threads == [QApplication.instance().thread()]
+
+    window.close()
     window.camera.shutdown()
     window.pressure.shutdown()
 
