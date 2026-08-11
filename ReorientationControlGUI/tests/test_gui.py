@@ -21,6 +21,8 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     assert window.stop_button.text() == "STOP"
     assert window.connect_button.text() == "Connect all components"
     assert window.disconnect_button.text() == "Disconnect all components"
+    assert not window.light1._auto_reconnect
+    assert not window.light2._auto_reconnect
     roadmap_path = (
         Path(__file__).resolve().parents[3]
         / "bibazu_geometry_to_pose"
@@ -68,13 +70,37 @@ async def test_light_connections_are_serialized() -> None:
     class FakeLight:
         def __init__(self, name: str) -> None:
             self.name = name
+            self.status = SimpleNamespace(connected=False)
 
         async def connect_async(self) -> None:
             order.append(f"{self.name}-start")
             await asyncio.sleep(0)
             order.append(f"{self.name}-end")
+            self.status.connected = True
 
-    holder = SimpleNamespace(light1=FakeLight("one"), light2=FakeLight("two"))
+    class FakeButton:
+        def setEnabled(self, _enabled: bool) -> None:  # noqa: N802 - Qt-compatible fake
+            pass
+
+        def setText(self, _text: str) -> None:  # noqa: N802 - Qt-compatible fake
+            pass
+
+    holder = SimpleNamespace(
+        light1=FakeLight("one"),
+        light2=FakeLight("two"),
+        connect_button=FakeButton(),
+    )
     await MainWindow._connect_lights_sequentially(holder)
 
     assert order == ["one-start", "one-end", "two-start", "two-end"]
+
+
+def test_cancelled_light_connection_task_is_safely_consumed() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(asyncio.sleep(1.0))
+        task.cancel()
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        MainWindow._light_connection_finished(task)
+    finally:
+        loop.close()

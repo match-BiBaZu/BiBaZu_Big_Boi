@@ -92,7 +92,14 @@ gefundenen Adressen.
 the camera, and ADS without waiting in the GUI thread. Light connections are made
 one after another because simultaneous WinRT/Bleak discovery and GATT connection
 can be unreliable. A timed-out light command releases its stale BLE client and
-reconnects with exponential backoff.
+leaves a clean, retryable error instead of retaining a stale connection.
+
+Reorientation Control and Automated Image Capture share a Windows hardware lease.
+Starting either application while the other is open now shows a clear message and
+performs no hardware connection. The two panel connections use one central serial
+retry sequence; individual panel reconnect loops are disabled to prevent
+overlapping WinRT scans. Pending BLE shutdown work is bounded so a faulty driver
+cannot hold the Qt application open indefinitely.
 
 ## Operating contract
 

@@ -103,11 +103,13 @@ class MainWindow(QMainWindow):
             "Neewer light 1",
             settings.light_1_address,
             excluded_addresses=lambda: {self.light2.address},
+            auto_reconnect=False,
         )
         self.light2 = LightAdapter(
             "Neewer light 2",
             settings.light_2_address,
             excluded_addresses=lambda: {self.light1.address},
+            auto_reconnect=False,
         )
         self.controller = ReorientationController(self.pressure)
         self.inference: InferenceWorker | None = None
@@ -448,6 +450,16 @@ class MainWindow(QMainWindow):
             self._light_connect_task = asyncio.get_running_loop().create_task(
                 self._connect_lights_sequentially()
             )
+            self._light_connect_task.add_done_callback(self._light_connection_finished)
+
+    @staticmethod
+    def _light_connection_finished(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            LOGGER.exception("Unexpected error in the serial light connection task")
 
     def disconnect_all(self) -> None:
         if self._light_connect_task is not None and not self._light_connect_task.done():
@@ -466,9 +478,22 @@ class MainWindow(QMainWindow):
         # WinRT/Bleak discovery and GATT connection are not reliably re-entrant.
         # Serial connection also guarantees that panel 2 can exclude panel 1's
         # freshly discovered address, even when stored BLE addresses are stale.
-        await self.light1.connect_async()
-        await asyncio.sleep(0.25)
-        await self.light2.connect_async()
+        self.connect_button.setEnabled(False)
+        self.connect_button.setText("Connecting components …")
+        try:
+            for attempt in range(2):
+                if not self.light1.status.connected:
+                    await self.light1.connect_async()
+                await asyncio.sleep(0.5)
+                if not self.light2.status.connected:
+                    await self.light2.connect_async()
+                if self.light1.status.connected and self.light2.status.connected:
+                    return
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+        finally:
+            self.connect_button.setText("Connect all components")
+            self.connect_button.setEnabled(True)
 
     def _camera_frame(self, frame: CameraFrame) -> None:
         self._last_camera_frame = frame.timestamp
@@ -600,8 +625,12 @@ class MainWindow(QMainWindow):
     async def shutdown_async(self) -> None:
         if self._light_connect_task and not self._light_connect_task.done():
             self._light_connect_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._light_connect_task
+            done, pending = await asyncio.wait({self._light_connect_task}, timeout=1.0)
+            if pending:
+                LOGGER.error("BLE connection task did not stop within one second")
+            for task in done:
+                with contextlib.suppress(asyncio.CancelledError):
+                    task.result()
         if self.inference:
             self.inference.stop()
         self.camera.shutdown()

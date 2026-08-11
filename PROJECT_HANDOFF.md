@@ -664,9 +664,16 @@ Hardware-Robustheit: Die Reorientation-GUI migriert die alte SPS-IP
 die beiden Neewer-Panels bewusst seriell, uebergibt das beim Scan erhaltene
 Windows-BLEDevice und verhindert per gegenseitigem Adressausschluss eine doppelte
 Panelwahl. BLE-Befehle sind serialisiert; Timeout oder Verbindungsverlust loesen
-den Client und starten einen exponentiellen Reconnect. Mit
+den Client und hinterlassen einen sauber wiederholbaren Fehlerzustand. Mit
 `Disconnect all components` werden laufende BLE-Tasks abgebrochen sowie beide
 Leuchten, Kamera und ADS ohne blockierendes Warten im GUI-Thread getrennt.
+Reorientation Control und Automated Image Capture halten beim Programmstart
+zusaetzlich denselben Windows-Named-Mutex `Local\BiBaZuCameraAndLights`. Eine
+zweite Hardware-GUI beendet ihren Start mit klarer Meldung, bevor Adapter erzeugt
+werden. In der Reorientation-GUI sind einzelne Auto-Reconnect-Loops deaktiviert;
+ein zentraler Ablauf verbindet und wiederholt beide Panels ausschliesslich
+seriell. BLE-Cancel und Shutdown haben harte Zeitgrenzen, damit ein haengender
+WinRT-Callback das Beenden der Qt-Anwendung nicht endlos blockiert.
 
 YAML-Schema v2 (gekuerzt):
 
@@ -999,7 +1006,7 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `66` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `68` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -18,6 +19,7 @@ from bibazu_reorientation.models import (
 )
 
 LIGHT_COMMAND_TIMEOUT_SECONDS = 3.0
+LOGGER = logging.getLogger(__name__)
 
 
 def _attribute(value: Any, name: str, default: Any = None) -> Any:
@@ -340,9 +342,15 @@ class LightAdapter(DeviceAdapter):
         ]
         for task in tasks:
             task.cancel()
-        for task in tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=1.0)
+            if pending:
+                LOGGER.error("%s BLE task(s) did not stop during shutdown", len(pending))
         self._operation_task = None
         self._reconnect_task = None
-        await self.disconnect_async()
+        disconnect_task = asyncio.create_task(self.disconnect_async())
+        _done, pending = await asyncio.wait({disconnect_task}, timeout=1.0)
+        if pending:
+            disconnect_task.cancel()
+            self.status.connected = False
+            self._set_state(ConnectionState.DISCONNECTED, "Forced local disconnect")
