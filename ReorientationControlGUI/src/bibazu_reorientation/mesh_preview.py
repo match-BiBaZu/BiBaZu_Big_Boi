@@ -62,6 +62,38 @@ def _quaternion_matrix(
     )
 
 
+def slerp_quaternion(
+    start_xyzw: tuple[float, float, float, float],
+    end_xyzw: tuple[float, float, float, float],
+    progress: float,
+) -> tuple[float, float, float, float]:
+    """Interpolate normalized XYZW quaternions along the shortest rotation."""
+    start = np.asarray(start_xyzw, dtype=np.float64)
+    end = np.asarray(end_xyzw, dtype=np.float64)
+    start_norm = float(np.linalg.norm(start))
+    end_norm = float(np.linalg.norm(end))
+    if start_norm < 1e-12 or end_norm < 1e-12:
+        raise ValueError("Cannot interpolate a zero-length quaternion")
+    start /= start_norm
+    end /= end_norm
+    dot = float(np.dot(start, end))
+    if dot < 0.0:
+        end = -end
+        dot = -dot
+    amount = min(1.0, max(0.0, float(progress)))
+    if dot > 0.9995:
+        result = start + amount * (end - start)
+        result /= np.linalg.norm(result)
+    else:
+        angle = float(np.arccos(np.clip(dot, -1.0, 1.0)))
+        denominator = np.sin(angle)
+        result = (
+            np.sin((1.0 - amount) * angle) / denominator * start
+            + np.sin(amount * angle) / denominator * end
+        )
+    return tuple(float(value) for value in result)  # type: ignore[return-value]
+
+
 def render_mesh_preview(
     path: Path,
     width: int = 250,
@@ -69,7 +101,26 @@ def render_mesh_preview(
     quaternion_xyzw: tuple[float, float, float, float] | None = None,
     caption: str = "Target orientation · model view",
 ) -> QPixmap:
-    triangles = load_mesh_triangles(path)
+    return render_triangles_preview(
+        load_mesh_triangles(path),
+        width,
+        height,
+        quaternion_xyzw=quaternion_xyzw,
+        caption=caption,
+    )
+
+
+def render_triangles_preview(
+    triangles: np.ndarray,
+    width: int = 250,
+    height: int = 175,
+    quaternion_xyzw: tuple[float, float, float, float] | None = None,
+    caption: str = "Target orientation · model view",
+) -> QPixmap:
+    """Render already-loaded triangles, suitable for lightweight animation frames."""
+    triangles = np.asarray(triangles, dtype=np.float64)
+    if triangles.ndim != 3 or triangles.shape[1:] != (3, 3) or len(triangles) == 0:
+        raise ValueError("Triangle data must have shape (N, 3, 3)")
     points = triangles.reshape(-1, 3)
     center = (points.min(axis=0) + points.max(axis=0)) * 0.5
     centered = triangles - center

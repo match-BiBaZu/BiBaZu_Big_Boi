@@ -39,6 +39,14 @@ edge. The generated schema-v2 YAML stores all paths relative to its own location
 Legacy pressure profiles resolve omitted machine values only after the first PLC
 baseline read. Selecting a YAML or profile never writes to the PLC.
 
+Each profile-eligible transition has a **Preview …** button. The preview loads the
+selected STL/OBJ once and animates the directed change from the source-pose
+quaternion to the target-pose quaternion. It also shows both endpoint views, the
+commanded signed angle, and the edge ID. Playback can be paused, scrubbed, or
+restarted. If CAD rendering is unavailable, the dialog keeps the roadmap's start
+and target images with a direction arrow. This is an orientation aid, not a
+simulation of the physical trajectory through the chute.
+
 ### Bauteil, YOLO-Modell und Pressure-Profil auswählen
 
 In der Anwendung gibt es dafür zwei gleichwertige Wege: die Schaltflächen oberhalb

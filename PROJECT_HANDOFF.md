@@ -68,6 +68,7 @@ Die relevanten Dateien liegen unter `CSVSaver`:
 | `ReorientationControlGUI/src/bibazu_reorientation/roadmap.py` | Handover-YAML und internen JSON-Export validieren und in Posen/Kanten normalisieren |
 | `ReorientationControlGUI/src/bibazu_reorientation/ui/roadmap_pose_dialog.py` | Anklickbare Bildauswahl fuer die physische Zielpose |
 | `ReorientationControlGUI/src/bibazu_reorientation/ui/roadmap_setup_dialog.py` | Roadmap-v2-Konfiguration, Klassenmapping, Zielbild und Profile je Kante |
+| `ReorientationControlGUI/src/bibazu_reorientation/ui/transition_preview_dialog.py` | Animierte CAD-Orientierungsvorschau und Bild-Fallback je gerichteter Kante |
 | `ReorientationControlGUI/tests/` | Unit- und Offscreen-GUI-Tests der neuen Anwendung |
 | `WindowsLaunchers/` | Desktop-/Startmenue-Installer und vier anwendungsspezifische Icons |
 
@@ -612,6 +613,14 @@ einer separaten Infotabelle. Df1a ergibt 11 Posen, 23 Kanten, 4 robuste Posen un
 die sechs Profilzeilen `9->35`, `9->60`, `24->35`, `24->60`, `35->24`, `60->9`.
 Parallele Kanten werden ausschliesslich ueber `edge_id` unterschieden.
 
+Jede editierbare Robust-zu-Robust-Kante besitzt `Preview ...`. Der Dialog laedt
+das aktuell im Setup eingetragene STL/OBJ genau einmal und rendert Startpose,
+Zielpose sowie eine per Quaternion-SLERP interpolierte Endlosschleife. Pause,
+Scrubbing und Neustart sind moeglich; Vorzeichen des Sollwinkels und `edge_id`
+bleiben sichtbar. Wenn das CAD fehlt oder nicht gerendert werden kann, zeigt der
+Dialog die Roadmap-Vorschaubilder mit Richtungspfeil. Die Interpolation ist nur
+eine Orientierungshilfe und keine physikalische Simulation der Rutschenbahn.
+
 Schema-v2-Dateien duerfen ohne Profile als Entwurf gespeichert werden. Die
 Readiness zeigt fehlende Profile, Erreichbarkeit zum Ziel, Klassenmapping,
 Roadmap-Hash und bewusst abweichende Stammdaten. Beim Laden wird SHA-256 geprueft;
@@ -981,12 +990,13 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `54` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `59` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
 Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen und die harte
-Mehrposen-Ausfuehrungssperre ab. Sie ersetzen keine Hardwareabnahme.
+Mehrposen-Ausfuehrungssperre sowie die animierte Uebergangsvorschau mit
+Bild-Fallback ab. Sie ersetzen keine Hardwareabnahme.
 
 ## 13. Empfohlene Wiederinbetriebnahme
 

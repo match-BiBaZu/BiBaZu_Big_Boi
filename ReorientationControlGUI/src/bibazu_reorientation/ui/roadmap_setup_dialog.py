@@ -27,6 +27,7 @@ from bibazu_reorientation.models import PartDefinition
 from bibazu_reorientation.profiles import load_pressure_profile
 from bibazu_reorientation.roadmap import PoseRoadmap, RoadmapTransition, load_pose_roadmap
 from bibazu_reorientation.ui.roadmap_pose_dialog import RoadmapPoseDialog
+from bibazu_reorientation.ui.transition_preview_dialog import TransitionPreviewDialog
 
 
 class RoadmapSetupDialog(QDialog):
@@ -80,7 +81,7 @@ class RoadmapSetupDialog(QDialog):
         self.mapping_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.mapping_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
-        self.profile_table = QTableWidget(0, 8)
+        self.profile_table = QTableWidget(0, 9)
         self.profile_table.setHorizontalHeaderLabels(
             (
                 "Direction",
@@ -88,6 +89,7 @@ class RoadmapSetupDialog(QDialog):
                 "Target angle",
                 "Geometric score",
                 "Experiment",
+                "Motion",
                 "Pressure profile",
                 "Status",
                 "Selection",
@@ -97,7 +99,7 @@ class RoadmapSetupDialog(QDialog):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.profile_table.horizontalHeader().setSectionResizeMode(
-            5, QHeaderView.ResizeMode.Stretch
+            6, QHeaderView.ResizeMode.Stretch
         )
         self.profile_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
@@ -291,18 +293,25 @@ class RoadmapSetupDialog(QDialog):
                 ),
             )
             self.profile_table.setItem(row, 4, QTableWidgetItem(edge.experimental_status))
+            preview = QPushButton("Preview …")
+            preview.setObjectName(f"transition_preview_{row}")
+            preview.setToolTip(f"Show the orientation change for {edge.from_pose} → {edge.to_pose}")
+            preview.clicked.connect(
+                lambda _=False, selected=edge: self._show_transition_preview(selected)
+            )
+            self.profile_table.setCellWidget(row, 5, preview)
             edit = QLineEdit(str(previous.get(edge.edge_id) or ""))
             edit.setToolTip(edge.edge_id)
             edit.textChanged.connect(
                 lambda _=None, e=edge, widget=edit, row=row: self._validate_profile(e, widget, row)
             )
-            self.profile_table.setCellWidget(row, 5, edit)
-            self.profile_table.setItem(row, 6, QTableWidgetItem("optional / missing"))
+            self.profile_table.setCellWidget(row, 6, edit)
+            self.profile_table.setItem(row, 7, QTableWidgetItem("optional / missing"))
             choose = QPushButton("JSON …")
             choose.clicked.connect(
                 lambda _=False, widget=edit: self._browse(widget, "Pressure profile (*.json)")
             )
-            self.profile_table.setCellWidget(row, 7, choose)
+            self.profile_table.setCellWidget(row, 8, choose)
             self.profile_inputs[edge.edge_id] = edit
             self._validate_profile(edge, edit, row)
 
@@ -319,11 +328,23 @@ class RoadmapSetupDialog(QDialog):
                 )
             except Exception as exc:
                 status = f"invalid: {exc}"
-        item = self.profile_table.item(row, 6)
+        item = self.profile_table.item(row, 7)
         if item is not None:
             item.setText(status)
             item.setToolTip(status)
         self._update_readiness()
+
+    def _show_transition_preview(self, edge: RoadmapTransition) -> None:
+        if self.roadmap is None:
+            return
+        configured_mesh = self.mesh.text().strip()
+        mesh_path = Path(configured_mesh) if configured_mesh else self.roadmap.mesh_path
+        TransitionPreviewDialog(
+            self.roadmap,
+            edge,
+            self,
+            mesh_path=mesh_path,
+        ).exec()
 
     def _populate_information(self) -> None:
         assert self.roadmap is not None
