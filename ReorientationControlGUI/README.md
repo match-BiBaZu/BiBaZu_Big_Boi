@@ -29,6 +29,8 @@ The first start uses camera IP `169.254.117.70`, ADS target
 `10.145.4.14.1.1:851` at `192.168.0.23`, and the standard Baumer CTI path.
 Device settings are stored with `QSettings` under
 `LeibnizUniversitaetHannover/BiBaZuReorientationControl`.
+The former PLC address `192.168.10.23` is automatically migrated to the current
+`192.168.0.23` when the application starts.
 
 Use **Configuration → New part configuration (roadmap) …** to select a pose roadmap first.
 The dialog accepts the handover YAML (`part`, `poses`, `transitions`) and the
@@ -85,6 +87,12 @@ Nach dem Speichern muss die Anwendung einmal über das Desktop-Symbol neu gestar
 werden. Bleiben beide Lichtadressen leer, sucht die Anwendung beim nächsten
 Verbindungsaufbau nacheinander zwei unterschiedliche Panels und speichert die
 gefundenen Adressen.
+
+**Disconnect all components** cancels pending BLE work and releases both panels,
+the camera, and ADS without waiting in the GUI thread. Light connections are made
+one after another because simultaneous WinRT/Bleak discovery and GATT connection
+can be unreliable. A timed-out light command releases its stale BLE client and
+reconnects with exponential backoff.
 
 ## Operating contract
 

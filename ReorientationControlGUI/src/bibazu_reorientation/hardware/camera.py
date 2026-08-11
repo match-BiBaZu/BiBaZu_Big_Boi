@@ -155,10 +155,12 @@ class CameraAdapter(DeviceAdapter):
         self.settings = settings
         self.thread: QThread | None = None
         self.worker: _CameraWorker | None = None
+        self._disconnect_requested = False
 
     def connect_device(self) -> None:
         if self.thread and self.thread.isRunning():
             return
+        self._disconnect_requested = False
         self._set_state(ConnectionState.CONNECTING)
         self.thread = QThread(self)
         worker = _CameraWorker(self.settings)
@@ -171,6 +173,7 @@ class CameraAdapter(DeviceAdapter):
         worker.error.connect(self._emit_error)
         worker.finished.connect(self.thread.quit)
         self.thread.finished.connect(worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
         self.thread.start()
 
     def _connected(self, status: CameraStatus) -> None:
@@ -178,10 +181,16 @@ class CameraAdapter(DeviceAdapter):
         self.status_changed.emit(status)
 
     def disconnect_device(self) -> None:
+        self._disconnect_requested = True
         if self.thread:
             self.thread.requestInterruption()
         if self.worker:
             self.worker.stop()
+
+    def _thread_finished(self) -> None:
+        self.worker = None
+        if self._disconnect_requested or self.state is ConnectionState.CONNECTED:
+            self._set_state(ConnectionState.DISCONNECTED, "Disconnected by operator")
 
     def shutdown(self) -> None:
         self.disconnect_device()

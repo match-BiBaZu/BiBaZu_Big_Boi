@@ -659,6 +659,15 @@ Zielorientierung. Der Dateidialog startet im Workspace unter
 `bibazu_geometry_to_pose/Werkstücke_STL_grob`. Spaetere Pose-/Sequenzdaten sollen
 Rotationen liefern, ohne dieses Config-Modell zu ersetzen.
 
+Hardware-Robustheit: Die Reorientation-GUI migriert die alte SPS-IP
+`192.168.10.23` beim Laden auf `192.168.0.23`. `Connect all components` verbindet
+die beiden Neewer-Panels bewusst seriell, uebergibt das beim Scan erhaltene
+Windows-BLEDevice und verhindert per gegenseitigem Adressausschluss eine doppelte
+Panelwahl. BLE-Befehle sind serialisiert; Timeout oder Verbindungsverlust loesen
+den Client und starten einen exponentiellen Reconnect. Mit
+`Disconnect all components` werden laufende BLE-Tasks abgebrochen sowie beide
+Leuchten, Kamera und ADS ohne blockierendes Warten im GUI-Thread getrennt.
+
 YAML-Schema v2 (gekuerzt):
 
 ```yaml
@@ -990,13 +999,15 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `59` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `66` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
 Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen und die harte
 Mehrposen-Ausfuehrungssperre sowie die animierte Uebergangsvorschau mit
-Bild-Fallback ab. Sie ersetzen keine Hardwareabnahme.
+Bild-Fallback ab. Zusaetzlich sind SPS-IP-Migration, BLE-Auswahl, Timeout-Cleanup,
+Connect-Cancel, serielle Doppelverbindung und `Disconnect all components`
+abgedeckt. Sie ersetzen keine Hardwareabnahme.
 
 ## 13. Empfohlene Wiederinbetriebnahme
 

@@ -99,7 +99,11 @@ class MainWindow(QMainWindow):
         self.resize(1450, 900)
         self.pressure = PressureAdapter(settings)
         self.camera = CameraAdapter(settings)
-        self.light1 = LightAdapter("Neewer light 1", settings.light_1_address)
+        self.light1 = LightAdapter(
+            "Neewer light 1",
+            settings.light_1_address,
+            excluded_addresses=lambda: {self.light2.address},
+        )
         self.light2 = LightAdapter(
             "Neewer light 2",
             settings.light_2_address,
@@ -178,13 +182,16 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.pose_label)
         self.plc_status = QLabel("PLC: disconnected")
         self.camera_status = QLabel("Camera: disconnected")
-        connect = QPushButton("Connect all components")
-        connect.clicked.connect(self.connect_all)
+        self.connect_button = QPushButton("Connect all components")
+        self.connect_button.clicked.connect(self.connect_all)
+        self.disconnect_button = QPushButton("Disconnect all components")
+        self.disconnect_button.clicked.connect(self.disconnect_all)
         hardware = QGroupBox("Hardware")
         hardware_layout = QVBoxLayout(hardware)
         hardware_layout.addWidget(self.plc_status)
         hardware_layout.addWidget(self.camera_status)
-        hardware_layout.addWidget(connect)
+        hardware_layout.addWidget(self.connect_button)
+        hardware_layout.addWidget(self.disconnect_button)
         self.light_panel1 = LightPanel(self.light1)
         self.light_panel2 = LightPanel(self.light2)
         self.ur_button = QPushButton("Apply UR angle")
@@ -442,16 +449,26 @@ class MainWindow(QMainWindow):
                 self._connect_lights_sequentially()
             )
 
+    def disconnect_all(self) -> None:
+        if self._light_connect_task is not None and not self._light_connect_task.done():
+            self._light_connect_task.cancel()
+        self._light_connect_task = None
+        self.light1.disconnect_device()
+        self.light2.disconnect_device()
+        self.camera.disconnect_device()
+        self.pressure.disconnect_device()
+        self.light_panel1.confirm.setChecked(False)
+        self.light_panel2.confirm.setChecked(False)
+        self.controller.set_camera_fresh(False)
+        self.controller.set_lights_ready(False, False)
+
     async def _connect_lights_sequentially(self) -> None:
-        first = self.settings.light_1_address.strip()
-        second = self.settings.light_2_address.strip()
-        if first and second and first.casefold() != second.casefold():
-            await asyncio.gather(self.light1.connect_async(), self.light2.connect_async())
-        else:
-            # During first discovery, connect one after the other so that panel 2 can
-            # exclude the address selected for panel 1.
-            await self.light1.connect_async()
-            await self.light2.connect_async()
+        # WinRT/Bleak discovery and GATT connection are not reliably re-entrant.
+        # Serial connection also guarantees that panel 2 can exclude panel 1's
+        # freshly discovered address, even when stored BLE addresses are stale.
+        await self.light1.connect_async()
+        await asyncio.sleep(0.25)
+        await self.light2.connect_async()
 
     def _camera_frame(self, frame: CameraFrame) -> None:
         self._last_camera_frame = frame.timestamp

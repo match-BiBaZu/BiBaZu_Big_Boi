@@ -39,6 +39,9 @@ class _AdsWorker(QObject):
 
     @pyqtSlot()
     def connect_plc(self) -> None:
+        if self.plc is not None:
+            self.connection.emit(True, "ADS is already connected")
+            return
         try:
             import pyads
 
@@ -220,6 +223,7 @@ class _AdsWorker(QObject):
             except Exception:
                 LOGGER.exception("ADS close failed")
         self.plc = None
+        self.connection.emit(False, "Disconnected by operator")
 
 
 class PressureAdapter(QObject):
@@ -249,6 +253,9 @@ class PressureAdapter(QObject):
 
     def connect_device(self) -> None:
         self._connect.emit()
+
+    def disconnect_device(self) -> None:
+        self._close.emit()
 
     def write(self, name: str, values: dict[str, bool | int | float], verify: bool = False) -> None:
         self._execute.emit(_Command(name, values, verify))

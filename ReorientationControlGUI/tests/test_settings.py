@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from bibazu_reorientation.settings import AppSettings
+from bibazu_reorientation.settings import AppSettings, _migrated_plc_ip
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
 
 
@@ -23,6 +23,11 @@ def test_hardware_settings_validation(tmp_path) -> None:
         replace(settings, plc_ams_net_id="invalid").validated()
     with pytest.raises(ValueError, match="Camera preview"):
         replace(settings, preview_fps=0).validated()
+
+
+def test_legacy_plc_ip_is_migrated() -> None:
+    assert _migrated_plc_ip("192.168.10.23") == "192.168.0.23"
+    assert _migrated_plc_ip("192.168.0.42") == "192.168.0.42"
 
 
 def test_hardware_dialog_exposes_all_connection_fields(qtbot, tmp_path) -> None:

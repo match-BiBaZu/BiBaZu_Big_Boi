@@ -7,6 +7,14 @@ from pathlib import Path
 
 from PyQt6.QtCore import QSettings
 
+DEFAULT_PLC_IP = "192.168.0.23"
+LEGACY_PLC_IPS = {"192.168.10.23"}
+
+
+def _migrated_plc_ip(value: str) -> str:
+    normalized = value.strip()
+    return DEFAULT_PLC_IP if normalized in LEGACY_PLC_IPS else normalized
+
 
 @dataclass(slots=True)
 class AppSettings:
@@ -16,7 +24,7 @@ class AppSettings:
     preview_fps: float = 15.0
     light_1_address: str = ""
     light_2_address: str = ""
-    plc_ip: str = "192.168.0.23"
+    plc_ip: str = DEFAULT_PLC_IP
     plc_ams_net_id: str = "10.145.4.14.1.1"
     plc_port: int = 851
     cycle_timeout_s: float = 60.0
@@ -46,7 +54,7 @@ class AppSettings:
             cti_path=str(cti.resolve()),
             light_1_address=self.light_1_address.strip(),
             light_2_address=self.light_2_address.strip(),
-            plc_ip=self.plc_ip.strip(),
+            plc_ip=_migrated_plc_ip(self.plc_ip),
             plc_ams_net_id=self.plc_ams_net_id.strip(),
         )
 
@@ -64,10 +72,12 @@ class AppSettings:
             result.plc_ip = str(legacy.value("plc/ip", result.plc_ip))
             result.plc_ams_net_id = str(legacy.value("plc/ams_net_id", result.plc_ams_net_id))
             result.plc_port = int(legacy.value("plc/port", result.plc_port))
+            result.plc_ip = _migrated_plc_ip(result.plc_ip)
             return result
         for name, default in asdict(result).items():
             value = q.value(name, default)
             setattr(result, name, type(default)(value))
+        result.plc_ip = _migrated_plc_ip(result.plc_ip)
         return result
 
     def save(self) -> None:
