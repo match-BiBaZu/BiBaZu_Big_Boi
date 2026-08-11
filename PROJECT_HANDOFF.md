@@ -589,9 +589,11 @@ gehören Hauptfenster, Setup-/Roadmap-/Hardwaredialoge, Preflight, Statuswerte u
 alle in der GUI angezeigten Validierungs- und Hardwarefehlermeldungen.
 
 Die neue Anwendung fuehrt die Ergebnisse von PressureControl, Kameraaufnahme und
-YOLO fuer genau ein ueberwachtes Bauteil pro Zyklus zusammen. V1 kennt genau zwei
-Posen. YOLO-Klasse 0 muss `Pose 1`, Klasse 1 muss `Pose 2` heissen. Als Ziel kann
-Pose 1 oder Pose 2 konfiguriert werden:
+YOLO fuer genau ein ueberwachtes Bauteil pro Zyklus zusammen. Schema v1 kennt genau
+zwei Posen; YOLO-Klasse 0 muss `Pose 1`, Klasse 1 muss `Pose 2` heissen. Schema v2
+nutzt die explizite Klassen-zu-Roadmap-Pose-Zuordnung und kann einen eindeutigen
+direkten Pfad oder einen Pfad mit genau einer Zwischenpose ausfuehren. Als Ziel kann
+in Schema v1 Pose 1 oder Pose 2 konfiguriert werden:
 
 - Ziel Pose 1: Pose 1 wird ohne Duesenimpulse transportiert, Pose 2 verwendet das
   konfigurierte Profil `2 -> 1`.
@@ -640,11 +642,28 @@ Roadmap-Hash und bewusst abweichende Stammdaten. Beim Laden wird SHA-256 gepruef
 eine Aenderung verlangt `Re-import roadmap`. Dabei bleiben nur Zuordnungen
 mit weiterhin identischen Pose-/Kanten-IDs erhalten.
 
-Wichtig: Schema v2 ist aktuell nur Import und Konfiguration. Die Hauptansicht
-zeigt Roadmap/Ziel/Vollstaendigkeit, sperrt aber `Start cycle` mit
-`Multi-pose execution not enabled yet`. Das Laden konfiguriert weder den
-v1-Controller noch YOLO und erzeugt keine SPS-Schreibzugriffe. Schema v1 bleibt
-unveraendert ladbar, bearbeitbar und ausfuehrbar.
+Schema v2 ist jetzt fuer den bewusst begrenzten Roadmap-Fall ausfuehrbar: Der
+Resolver akzeptiert einen eindeutigen direkten Pfad oder maximal eine Zwischenpose.
+Nur Kanten mit zugeordnetem Pressure-Profil werden betrachtet. Parallele belegte
+Kanten bleiben ueber `edge_id` getrennt und blockieren als mehrdeutig, statt dass
+die Anwendung eine Aktion errät. Fehlende Profile bleiben fuer Drafts erlaubt;
+wird spaeter eine nicht erreichbare Pose erkannt, endet der Zyklus vor jedem
+Aktuierungswrite mit `roadmap_plan`.
+
+Alle geladenen Profile werden auf `ur_ry_angle_deg` und
+`conveyor_speed_mm_per_sec` verglichen. Gleiche Werte fuellen die beiden Felder im
+Hardwarebereich automatisch. Bei Abweichungen zeigt die GUI jede Kante mit
+Profilpfad und Einzelwerten; der Bediener muss die gemeinsamen Werte einstellen
+und mit `Use machine parameters` bestaetigen. Ein expliziter UR-Wert braucht danach
+weiterhin den separaten quittierten `Apply UR angle`-Schritt.
+
+Nach dem Drei-Frame-Konsens kombiniert der Controller ausschliesslich aktive Arrays
+der gewaehlten ein oder zwei Pfadprofile zu einem SPS-Profil. Eine doppelte Belegung
+desselben physischen Arrays wird blockiert. Array 1..4 entsprechen der raeumlichen
+Reihenfolge LB2/LB4/LB6/LB8. Somit kann beispielsweise `2 -> 3 -> 4` in einem
+Banddurchlauf stattfinden, wenn die beiden Profile unterschiedliche, passend
+aufeinanderfolgende Arrays verwenden. Automatisches Tauschen gleichartiger
+Seiten-/Bodenarrays ist weiterhin ein spaeterer Ausbau.
 
 YAML-Schema v1:
 
@@ -720,7 +739,7 @@ PLC-Baseline-Snapshot benoetigen.
 
 Das Pressure-Profil liefert Druck, aktive Arrays/Duesen, Delay, Pulsdauer,
 Offset, Bandparameter, Lichtschrankeneinstellungen und Kalibrierung. Das reine
-Auswaehlen oder Laden schreibt nichts an die SPS. Versionen 1 bis 8 werden in ein
+Auswaehlen oder Laden schreibt nichts an die SPS. Versionen 1 bis 9 werden in ein
 kanonisches unveraenderliches Modell migriert; fehlende alte Maschinenfelder
 werden erst gegen einen einmalig gelesenen PLC-Baseline-Snapshot aufgeloest.
 Fehlende Arrays sind deaktiviert, alte Duesenlisten werden auf sechs Duesen
@@ -743,8 +762,13 @@ Backend ist `QSettings` unter
 YOLO unterstuetzt normale Detect-Boxen und OBB. Ein gueltiger Entscheid verlangt
 genau ein vollstaendig sichtbares, bekanntes Objekt auf drei unterschiedlichen,
 frischen, aufeinanderfolgenden Frames. Null, mehrere, unbekannte, widerspruechliche
-oder veraltete Erkennungen setzen den Konsens zurueck. Der Warm-up-Frame wird
-verworfen; GPU wird verwendet, wenn verfuegbar, sonst CPU.
+oder veraltete Erkennungen setzen den Konsens zurueck. Das Modell wird nach dem
+Laden einer Konfiguration automatisch in einem eigenen Worker geladen; ein
+`Load YOLO model`-Button erlaubt Reload. Overlay, zugeordnete Roadmap-Pose und
+Konfidenz werden live angezeigt. Schema v2 verlangt alle explizit gemappten
+Klassen im Modell, erlaubt aber weitere Klassen; deren Erkennung blockiert den
+Konsens. Der Warm-up-Frame wird verworfen; GPU wird verwendet, wenn verfuegbar,
+sonst CPU.
 
 Beide Neewer RGB660 Pro II muessen verbunden und eingeschaltet sein. Pro aktueller
 Verbindung muss mindestens ein Lichtbefehl bestaetigt und die manuelle
@@ -861,6 +885,13 @@ erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywer
   fehlende Vertragssymbole still durch Defaultwerte zu ersetzen.
 - Vollstaendiger Pose-1-/Pose-2-Zyklus, Watchdog, LB8/Drain und Fehlerabnahme sind
   noch nicht an druckbeaufschlagter Hardware freigegeben.
+- `ReorientationControlGUI/Ql1i.yaml` ist als erster Roadmap-Executor-Fall
+  vorbereitet: OBB-Modell `Ql1i_best.pt`, Klasse `0 -> Roadmap-Pose 2`, Klasse
+  `1 -> Roadmap-Pose 3`, Zielpose 3 und eindeutige Kante
+  `a7:2->3:free_z`. Das Profil nutzt `100 mm/s`, `UR Ry=18.0 deg` und Array 2
+  (erwartete Maske `2`). Die irrtuemliche parallele Zuordnung desselben
+  `free_z`-Profils zur `free_y`-Kante a6 wurde aus der YAML entfernt. Der reale
+  pneumatische Zyklus bleibt Bediener-/Not-Aus-pflichtige Hardwareabnahme.
 
 ## 9. UR-Roboter
 
@@ -1039,7 +1070,7 @@ python ConveyorSetupGUI.py
 python PressureControlGUI.py
 ```
 
-Zuletzt liefen 51 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
+Zuletzt liefen 52 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
 muessen nach jedem Umzug erneut durchgefuehrt werden.
 
 Im Verzeichnis `ReorientationControlGUI`:
@@ -1049,12 +1080,13 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `78` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `87` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..9, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
-Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen und die harte
-Mehrposen-Ausfuehrungssperre sowie die animierte Uebergangsvorschau mit
+Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen, eindeutige direkte
+und zweistufige Roadmap-Pfade, Mehrprofil-Parametervergleich/-Komposition sowie
+die animierte Uebergangsvorschau mit
 Bild-Fallback ab. Zusaetzlich sind SPS-IP-Migration, BLE-Auswahl, Timeout-Cleanup,
 Connect-Cancel, serielle Doppelverbindung, Connect-Timeout, Isolation eines
 blockierenden WinRT-Aufrufs, Exposure-/FPS-UI, Langzeit-Exposure-Fetch-Timeout und
@@ -1173,8 +1205,8 @@ abgedeckt. Sie ersetzen keine Hardwareabnahme.
 Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
-Legacy-Tests:       python -m unittest test_pressure_control_gui.py (47)
-Reorientation-Test: uv run pytest (78), uv run ruff check src tests
+Legacy-Tests:       python -m unittest test_pressure_control_gui.py (52)
+Reorientation-Test: uv run pytest (87), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004

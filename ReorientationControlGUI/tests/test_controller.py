@@ -15,7 +15,10 @@ from bibazu_reorientation.models import (
     CycleState,
     Detection,
     InferenceFrame,
+    PartDefinition,
     PlcSnapshot,
+    PoseDefinition,
+    TransitionSpec,
 )
 from bibazu_reorientation.profiles import load_pressure_profile
 
@@ -104,6 +107,98 @@ def inference_frame(pose: int, timestamp: float | None = None) -> InferenceFrame
     return InferenceFrame(
         np.zeros((50, 50, 3), np.uint8), (detection,), 2.0, timestamp or time.time()
     )
+
+
+def roadmap_inference_frame(class_id: int, timestamp: float) -> InferenceFrame:
+    detection = Detection(
+        class_id,
+        f"Class {class_id}",
+        0.95,
+        ((10, 10), (40, 10), (40, 40), (10, 40)),
+        "detect",
+    )
+    return InferenceFrame(np.zeros((50, 50, 3), np.uint8), (detection,), 2.0, timestamp)
+
+
+def roadmap_profile(tmp_path: Path, name: str, array_index: int):
+    source = tmp_path / name
+    source.write_text(
+        json.dumps(
+            {
+                "version": 9,
+                "ur_ry_angle_deg": 18.0,
+                "conveyor_enabled": True,
+                "conveyor_speed_mm_per_sec": 100,
+                "conveyor_max_speed_mm_per_sec": 1000,
+                "conveyor_calibration": {
+                    "marker_distance_mm": 315,
+                    "mm_per_full_step": 0.3296,
+                    "valid": True,
+                },
+                "arrays": [
+                    {
+                        "index": array_index,
+                        "enabled": True,
+                        "nozzles_enabled": [True],
+                        "pressure_mbar": 3000,
+                        "pulse_duration_ms": 100,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return load_pressure_profile(source)
+
+
+def test_roadmap_cycle_combines_unique_two_step_path_before_staging(tmp_path: Path) -> None:
+    first = roadmap_profile(tmp_path, "2-3.json", 1)
+    second = roadmap_profile(tmp_path, "3-4.json", 3)
+    part = PartDefinition(
+        schema_version=2,
+        part_name="Roadmap part",
+        model_path=tmp_path / "best.pt",
+        poses=(
+            PoseDefinition(2, "Pose 2", 0),
+            PoseDefinition(3, "Pose 3", 1),
+            PoseDefinition(4, "Pose 4", 2),
+        ),
+        target_pose=4,
+        transitions=(
+            TransitionSpec(2, 3, first.source_path, "edge-2-3"),
+            TransitionSpec(3, 4, second.source_path, "edge-3-4"),
+        ),
+    )
+    pressure = FakePressure()
+    controller = ReorientationController(pressure, RunJournal(tmp_path / "runs"))
+    controller.set_roadmap_configuration(
+        part,
+        {"edge-2-3": first, "edge-3-4": second},
+        conveyor_speed_mm_per_sec=125.0,
+        ur_ry_angle_deg=18.0,
+    )
+    controller.set_model_ready(True)
+    controller.set_camera_fresh(True)
+    controller.set_lights_ready(True, True)
+    controller.set_ur_applied(18.0)
+    controller._on_snapshot(
+        PlcSnapshot(connected=True, calibration_valid=True, light_barriers_stable=(True,) * 8)
+    )
+    controller._barriers_clear_since = time.monotonic() - 1.0
+    controller._refresh_preflight()
+
+    controller.start_cycle()
+    started = time.time()
+    for index in range(3):
+        controller.accept_inference(roadmap_inference_frame(0, started + index * 0.01))
+
+    assert [write[0] for write in pressure.writes] == ["safe_stop"]
+    assert controller._plan.expected_array_mask == 0b0101
+    assert controller.profile.conveyor_speed_mm_per_sec == 125.0
+    assert [edge.edge_id for edge in controller._selected_transitions] == [
+        "edge-2-3",
+        "edge-3-4",
+    ]
 
 
 def test_preflight_is_only_emitted_when_a_check_changes(tmp_path: Path) -> None:

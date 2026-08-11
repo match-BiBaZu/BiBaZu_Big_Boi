@@ -15,11 +15,18 @@ from bibazu_reorientation.models import (
     ProfileWritePlan,
     TransitionSpec,
 )
-from bibazu_reorientation.profiles import build_write_plan, load_pressure_profile
+from bibazu_reorientation.profiles import (
+    MachineParameterComparison,
+    build_write_plan,
+    compare_machine_parameters,
+    compose_pressure_profiles,
+    load_pressure_profile,
+)
 
 __all__ = [
     "CycleResult",
     "CycleState",
+    "MachineParameterComparison",
     "PartDefinition",
     "PoseDefinition",
     "PoseObservation",
@@ -28,6 +35,8 @@ __all__ = [
     "TransitionSpec",
     "TransitionResolver",
     "build_write_plan",
+    "compare_machine_parameters",
+    "compose_pressure_profiles",
     "load_part_definition",
     "load_pressure_profile",
     "save_part_definition",

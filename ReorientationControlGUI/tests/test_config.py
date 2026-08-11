@@ -10,6 +10,7 @@ from bibazu_reorientation.config import (
     load_part_definition,
     save_part_definition,
 )
+from bibazu_reorientation.models import PartDefinition, PoseDefinition, TransitionSpec
 
 
 def test_yaml_roundtrip_and_relative_paths(tmp_path: Path) -> None:
@@ -52,6 +53,46 @@ def test_target_pose_two_and_mesh_path(tmp_path: Path) -> None:
     assert (saved.transitions[0].from_pose, saved.transitions[0].to_pose) == (1, 2)
     assert TransitionResolver(saved).plan(2) == ()
     assert TransitionResolver(saved).plan(1)[0].pressure_profile == profile
+
+
+def test_transition_resolver_supports_one_unique_intermediate_pose(tmp_path: Path) -> None:
+    profile_a = tmp_path / "2-3.json"
+    profile_b = tmp_path / "3-4.json"
+    profile_a.write_text("{}", encoding="utf-8")
+    profile_b.write_text("{}", encoding="utf-8")
+    definition = PartDefinition(
+        schema_version=2,
+        part_name="Roadmap part",
+        model_path=tmp_path / "best.pt",
+        poses=tuple(PoseDefinition(index, f"Pose {index}", index) for index in (2, 3, 4)),
+        target_pose=4,
+        transitions=(
+            TransitionSpec(2, 3, profile_a, "edge-2-3"),
+            TransitionSpec(3, 4, profile_b, "edge-3-4"),
+        ),
+    )
+    plan = TransitionResolver(definition).plan(2)
+    assert [edge.edge_id for edge in plan] == ["edge-2-3", "edge-3-4"]
+
+
+def test_transition_resolver_rejects_ambiguous_two_step_path(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    definition = PartDefinition(
+        schema_version=2,
+        part_name="Roadmap part",
+        model_path=tmp_path / "best.pt",
+        poses=tuple(PoseDefinition(index, f"Pose {index}", index) for index in (1, 2, 3, 4)),
+        target_pose=4,
+        transitions=(
+            TransitionSpec(1, 2, profile, "a"),
+            TransitionSpec(2, 4, profile, "b"),
+            TransitionSpec(1, 3, profile, "c"),
+            TransitionSpec(3, 4, profile, "d"),
+        ),
+    )
+    with pytest.raises(ValueError, match="No unique path"):
+        TransitionResolver(definition).plan(1)
 
 
 def test_stable_roadmap_target_roundtrip(tmp_path: Path) -> None:

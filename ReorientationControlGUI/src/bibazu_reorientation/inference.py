@@ -27,6 +27,7 @@ class InferenceConfig:
     image_size: int = 640
     max_fps: float = 5.0
     device: str = "auto"
+    expected_class_ids: tuple[int, ...] | None = None
 
     def validated(self, *, require_model: bool = True) -> InferenceConfig:
         model_path = Path(self.model_path).expanduser().resolve()
@@ -60,11 +61,18 @@ def _name(names: Any, class_id: int) -> str:
         return f"Class {class_id}"
 
 
-def validate_model_classes(names: Any) -> dict[int, str]:
+def validate_model_classes(
+    names: Any, expected_class_ids: tuple[int, ...] | None = None
+) -> dict[int, str]:
     if isinstance(names, dict):
         mapping = {int(key): str(value) for key, value in names.items()}
     else:
         mapping = {index: str(value) for index, value in enumerate(names)}
+    if expected_class_ids is not None:
+        missing = set(expected_class_ids) - set(mapping)
+        if missing:
+            raise ValueError(f"YOLO model is missing configured classes: {sorted(missing)}")
+        return mapping
     if set(mapping) != {0, 1}:
         raise ValueError("V1 requires a YOLO model with exactly classes 0 and 1")
     for class_id, expected in ((0, "pose1"), (1, "pose2")):
@@ -178,18 +186,18 @@ class PoseConsensus:
     ) -> ConsensusDecision | None:
         now = time.time() if now is None else now
         height, width = frame.image.shape[:2]
-        accepted = [
-            detection
-            for detection in frame.detections
-            if detection.class_id in class_to_pose and fully_visible(detection, width, height)
-        ]
-        if now - frame.timestamp > self.max_age_seconds or len(accepted) != 1:
+        if now - frame.timestamp > self.max_age_seconds or len(frame.detections) != 1:
+            self.reset()
+            return None
+        detection = frame.detections[0]
+        if detection.class_id not in class_to_pose or not fully_visible(
+            detection, width, height
+        ):
             self.reset()
             return None
         if self._observations and frame.timestamp <= self._observations[-1].timestamp:
             self.reset()
             return None
-        detection = accepted[0]
         observation = PoseObservation(
             pose_id=class_to_pose[detection.class_id],
             class_id=detection.class_id,
@@ -251,7 +259,9 @@ class InferenceWorker(QThread):
         try:
             self.status_changed.emit("Loading model …")
             model = self._model()
-            names = validate_model_classes(getattr(model, "names", {}))
+            names = validate_model_classes(
+                getattr(model, "names", {}), self._config.expected_class_ids
+            )
             device = self._config.device
             if device == "auto":
                 import torch

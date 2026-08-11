@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,38 @@ from bibazu_reorientation.models import CameraStatus, ConnectionState
 from bibazu_reorientation.roadmap import load_pose_roadmap
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.main_window import MainWindow
+
+
+def write_transition_profile(
+    path: Path, *, array_index: int, speed: float, angle: float
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "version": 9,
+                "ur_ry_angle_deg": angle,
+                "conveyor_enabled": True,
+                "conveyor_speed_mm_per_sec": speed,
+                "conveyor_max_speed_mm_per_sec": 1000,
+                "conveyor_calibration": {
+                    "marker_distance_mm": 315,
+                    "mm_per_full_step": 0.3296,
+                    "valid": True,
+                },
+                "arrays": [
+                    {
+                        "index": array_index,
+                        "enabled": True,
+                        "nozzles_enabled": [True],
+                        "pressure_mbar": 3000,
+                        "pulse_duration_ms": 100,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
@@ -52,10 +85,14 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     )
     called = []
     monkeypatch.setattr(window.controller, "set_configuration", lambda *_: called.append(True))
+    yolo_loads = []
+    monkeypatch.setattr(window, "load_yolo_model", lambda: yolo_loads.append(True))
     window._load(definition)
     assert called == []
+    assert yolo_loads == [True]
     assert not window.start_button.isEnabled()
-    assert "Multi-pose execution" in window.start_button.text()
+    assert window.start_button.text() == "Start classification and reorientation"
+    assert "No pressure profile" in window.machine_parameter_status.text()
     assert window.inference is None
     disconnected: list[str] = []
     monkeypatch.setattr(window.light1, "disconnect_device", lambda: disconnected.append("light1"))
@@ -66,6 +103,136 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     )
     window.disconnect_all()
     assert disconnected == ["light1", "light2", "camera", "pressure"]
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_roadmap_profile_prefills_machine_fields_and_enables_executor(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    roadmap_path = (
+        Path(__file__).resolve().parents[3]
+        / "bibazu_geometry_to_pose"
+        / "Poses_Found_Robust"
+        / "Df1a_roadmap_provisional"
+        / "Df1a_roadmap.yaml"
+    )
+    roadmap = load_pose_roadmap(roadmap_path)
+    model = tmp_path / "best.pt"
+    model.write_bytes(b"model")
+    profile = tmp_path / "9-to-35.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "version": 9,
+                "ur_ry_angle_deg": 18.5,
+                "conveyor_enabled": True,
+                "conveyor_speed_mm_per_sec": 135,
+                "conveyor_max_speed_mm_per_sec": 1000,
+                "conveyor_calibration": {
+                    "marker_distance_mm": 315,
+                    "mm_per_full_step": 0.3296,
+                    "valid": True,
+                },
+                "arrays": [
+                    {
+                        "index": 1,
+                        "enabled": True,
+                        "nozzles_enabled": [True],
+                        "pressure_mbar": 3000,
+                        "pulse_duration_ms": 100,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    selected_edge = next(
+        edge for edge in roadmap.profile_transitions if (edge.from_pose, edge.to_pose) == (9, 35)
+    )
+    definition = save_roadmap_part_definition(
+        tmp_path / "part.yaml",
+        roadmap_path=roadmap_path,
+        part_name="Df1a",
+        mesh_path=roadmap.mesh_path,
+        model_path=model,
+        pose_class_mapping={9: 0, 24: 1, 35: 2, 60: 3},
+        target_pose=35,
+        transition_profiles={
+            edge.edge_id: profile if edge.edge_id == selected_edge.edge_id else None
+            for edge in roadmap.profile_transitions
+        },
+    )
+    monkeypatch.setattr(window, "load_yolo_model", lambda: None)
+
+    window._load(definition)
+
+    assert window._machine_parameters_confirmed
+    assert window.controller.part == definition
+    assert window.conveyor_speed_input.value() == 135
+    assert window.use_ur_angle.isChecked()
+    assert window.ur_angle_input.value() == 18.5
+    assert "confirmed" in window.machine_parameter_status.text()
+    window.close()
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_roadmap_profile_conflicts_require_explicit_machine_values(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    roadmap_path = (
+        Path(__file__).resolve().parents[3]
+        / "bibazu_geometry_to_pose"
+        / "Poses_Found_Robust"
+        / "Df1a_roadmap_provisional"
+        / "Df1a_roadmap.yaml"
+    )
+    roadmap = load_pose_roadmap(roadmap_path)
+    model = tmp_path / "best.pt"
+    model.write_bytes(b"model")
+    first = write_transition_profile(
+        tmp_path / "60-to-9.json", array_index=1, speed=100, angle=18.0
+    )
+    second = write_transition_profile(
+        tmp_path / "9-to-35.json", array_index=3, speed=150, angle=19.0
+    )
+    selected = {
+        "a15:60->9:free_z": first,
+        "a0:9->35:wall_main_neg_x": second,
+    }
+    definition = save_roadmap_part_definition(
+        tmp_path / "part.yaml",
+        roadmap_path=roadmap_path,
+        part_name="Df1a",
+        mesh_path=roadmap.mesh_path,
+        model_path=model,
+        pose_class_mapping={9: 0, 24: 1, 35: 2, 60: 3},
+        target_pose=35,
+        transition_profiles={
+            edge.edge_id: selected.get(edge.edge_id) for edge in roadmap.profile_transitions
+        },
+    )
+    monkeypatch.setattr(window, "load_yolo_model", lambda: None)
+
+    window._load(definition)
+    assert not window._machine_parameters_confirmed
+    assert "Profiles disagree" in window.machine_parameter_status.text()
+    assert window.controller.part is None
+
+    window.conveyor_speed_input.setValue(125.0)
+    window.ur_angle_input.setValue(18.5)
+    window.apply_machine_parameters(show_error=False)
+    assert window._machine_parameters_confirmed
+    assert window.controller.profile.conveyor_speed_mm_per_sec == 125.0
+    assert window.controller.profile.ur_ry_angle_deg == 18.5
+    window.close()
     window.camera.shutdown()
     window.pressure.shutdown()
 

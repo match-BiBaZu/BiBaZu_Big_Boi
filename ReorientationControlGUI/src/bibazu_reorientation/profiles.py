@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,124 @@ from bibazu_reorientation.models import (
 ARRAY_COUNT = 4
 NOZZLES_PER_ARRAY = 6
 PROFILE_VERSION_MAX = 9
+
+
+@dataclass(slots=True, frozen=True)
+class MachineParameterComparison:
+    """Global machine values found in a set of transition profiles."""
+
+    ur_angles_deg: tuple[float | None, ...]
+    conveyor_speeds_mm_per_sec: tuple[float, ...]
+    common_ur_angle_deg: float | None
+    common_conveyor_speed_mm_per_sec: float | None
+    ur_angle_conflict: bool
+    conveyor_speed_conflict: bool
+
+
+def compare_machine_parameters(
+    profiles: tuple[PressureProfile, ...],
+) -> MachineParameterComparison:
+    if not profiles:
+        raise ValueError("At least one pressure profile is required")
+    angles = tuple(profile.ur_ry_angle_deg for profile in profiles)
+    speeds = tuple(profile.conveyor_speed_mm_per_sec for profile in profiles)
+    unique_angles = set(angles)
+    unique_speeds = set(speeds)
+    return MachineParameterComparison(
+        ur_angles_deg=angles,
+        conveyor_speeds_mm_per_sec=speeds,
+        common_ur_angle_deg=angles[0] if len(unique_angles) == 1 else None,
+        common_conveyor_speed_mm_per_sec=speeds[0] if len(unique_speeds) == 1 else None,
+        ur_angle_conflict=len(unique_angles) != 1,
+        conveyor_speed_conflict=len(unique_speeds) != 1,
+    )
+
+
+def compose_pressure_profiles(
+    profiles: tuple[PressureProfile, ...],
+    *,
+    conveyor_speed_mm_per_sec: float,
+    ur_ry_angle_deg: float | None,
+) -> PressureProfile:
+    """Merge active, non-overlapping arrays for one planned roadmap path."""
+
+    if not profiles:
+        raise ValueError("At least one pressure profile is required")
+    if not math.isfinite(conveyor_speed_mm_per_sec) or not 0 < conveyor_speed_mm_per_sec <= 5000:
+        raise ValueError("Conveyor speed must be between 0 and 5000 mm/s")
+    if ur_ry_angle_deg is not None and (
+        not math.isfinite(ur_ry_angle_deg) or not 15.5 <= ur_ry_angle_deg <= 21.0
+    ):
+        raise ValueError("UR Ry angle must be between 15.5 and 21.0 degrees")
+    if any(profile.conveyor_reverse for profile in profiles):
+        raise ValueError("Roadmap execution does not support reverse conveyor motion")
+    if any(
+        conveyor_speed_mm_per_sec > profile.conveyor_max_speed_mm_per_sec
+        for profile in profiles
+    ):
+        raise ValueError("Selected conveyor speed exceeds a profile's maximum speed")
+
+    base = profiles[0]
+    shared_fields = (
+        "light_barrier_debounce_ms",
+        "light_barrier_inverted",
+        "light_barrier_debounce_enabled",
+        "conveyor_calibration",
+    )
+    for field in shared_fields:
+        values = {getattr(profile, field) for profile in profiles}
+        if len(values) != 1:
+            raise ValueError(
+                f"Profiles use different global {field.replace('_', ' ')} values; "
+                "these cannot be combined in one PLC cycle"
+            )
+
+    arrays = [
+        replace(row, enabled=False, nozzles_enabled=(False, False, False, False, False, False))
+        for row in base.arrays
+    ]
+    force_delays = list(base.force_response_delays_ms)
+    single_delays = list(base.force_single_nozzle_response_delays_ms)
+    owners: dict[int, Path] = {}
+    for profile in profiles:
+        for row in profile.arrays:
+            if not row.active:
+                continue
+            previous = owners.get(row.index)
+            if previous is not None:
+                raise ValueError(
+                    f"Array {row.index} is active in both {previous.name} and "
+                    f"{profile.source_path.name}; one path may configure each array only once"
+                )
+            owners[row.index] = profile.source_path
+            arrays[row.index - 1] = row
+            force_delays[row.index - 1] = profile.force_response_delays_ms[row.index - 1]
+            single_delays[row.index - 1] = profile.force_single_nozzle_response_delays_ms[
+                row.index - 1
+            ]
+    if not owners:
+        raise ValueError("The planned transition profiles do not activate any nozzle array")
+
+    signature = "|".join(
+        [*(profile.sha256 for profile in profiles), f"speed={conveyor_speed_mm_per_sec}",
+         f"ur={ur_ry_angle_deg}"]
+    ).encode("utf-8")
+    return replace(
+        base,
+        source_version=max(profile.source_version for profile in profiles),
+        created_at=None,
+        ur_ry_angle_deg=ur_ry_angle_deg,
+        conveyor_enabled=True,
+        conveyor_reverse=False,
+        conveyor_speed_mm_per_sec=float(conveyor_speed_mm_per_sec),
+        conveyor_max_speed_mm_per_sec=min(
+            profile.conveyor_max_speed_mm_per_sec for profile in profiles
+        ),
+        force_response_delays_ms=tuple(force_delays),
+        force_single_nozzle_response_delays_ms=tuple(single_delays),
+        arrays=tuple(arrays),
+        sha256=hashlib.sha256(signature).hexdigest(),
+    )
 
 
 def _boolean(value: Any, field: str, fallback: bool) -> bool:

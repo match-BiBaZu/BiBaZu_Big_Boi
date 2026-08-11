@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from bibazu_reorientation.models import ConveyorCalibration, PressureBaseline
-from bibazu_reorientation.profiles import build_write_plan, load_pressure_profile
+from bibazu_reorientation.profiles import (
+    build_write_plan,
+    compare_machine_parameters,
+    compose_pressure_profiles,
+    load_pressure_profile,
+)
 
 
 def payload(version: int = 9) -> dict:
@@ -84,3 +89,46 @@ def test_reverse_and_empty_profile_are_rejected(tmp_path: Path) -> None:
     source.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="reverse conveyor motion"):
         load_pressure_profile(source)
+
+
+def _profile_for_array(tmp_path: Path, index: int, speed: float, angle: float):
+    data = payload()
+    data["conveyor_speed_mm_per_sec"] = speed
+    data["ur_ry_angle_deg"] = angle
+    data["arrays"][0]["index"] = index
+    source = tmp_path / f"array-{index}-{speed}.json"
+    source.write_text(json.dumps(data), encoding="utf-8")
+    return load_pressure_profile(source)
+
+
+def test_machine_parameter_comparison_and_path_profile_composition(tmp_path: Path) -> None:
+    first = _profile_for_array(tmp_path, 1, 120.0, 18.0)
+    second = _profile_for_array(tmp_path, 3, 120.0, 18.0)
+    comparison = compare_machine_parameters((first, second))
+    assert comparison.common_conveyor_speed_mm_per_sec == 120.0
+    assert comparison.common_ur_angle_deg == 18.0
+    assert not comparison.conveyor_speed_conflict
+    assert not comparison.ur_angle_conflict
+
+    combined = compose_pressure_profiles(
+        (first, second), conveyor_speed_mm_per_sec=125.0, ur_ry_angle_deg=18.5
+    )
+    assert combined.active_array_mask == 0b0101
+    assert combined.conveyor_speed_mm_per_sec == 125.0
+    assert combined.ur_ry_angle_deg == 18.5
+
+
+def test_conflicting_parameters_require_override_and_duplicate_array_is_rejected(
+    tmp_path: Path,
+) -> None:
+    first = _profile_for_array(tmp_path, 1, 100.0, 18.0)
+    second = _profile_for_array(tmp_path, 2, 140.0, 19.0)
+    comparison = compare_machine_parameters((first, second))
+    assert comparison.conveyor_speed_conflict
+    assert comparison.ur_angle_conflict
+
+    duplicate = _profile_for_array(tmp_path, 1, 100.0, 18.0)
+    with pytest.raises(ValueError, match="Array 1 is active in both"):
+        compose_pressure_profiles(
+            (first, duplicate), conveyor_speed_mm_per_sec=100.0, ur_ry_angle_deg=18.0
+        )

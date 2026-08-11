@@ -1,8 +1,9 @@
 # BiBaZu Reorientation Control
 
-Supervised v1 control for one part per cycle. A Baumer image is evaluated by a
-two-class YOLO Detect or OBB model. Pose 1 or Pose 2 can be selected as target;
-the other pose applies the configured directed PressureControl transition profile.
+Supervised control for one part per cycle. A Baumer image is evaluated by a YOLO
+Detect or OBB model. Legacy schema-v1 projects support Pose 1/2; schema-v2 roadmap
+projects resolve either a direct transition or one unique path with one intermediate
+pose and combine its active PressureControl arrays into one physical conveyor pass.
 All operator-facing labels, dialogs, status messages, and validation errors in the
 application are in English.
 
@@ -67,15 +68,37 @@ des Kamerabildes oder das Menü **Configuration**.
 5. Beim Laden wird der SHA-256 der Roadmap geprüft. Nach einer Änderung muss
    **Re-import roadmap** bestätigt werden; nur identische Pose- und Kanten-IDs
    behalten ihre Zuordnungen.
-6. Schema-v1-Zwei-Posen-Dateien bleiben unverändert ladbar und ausführbar. Neue
-   Roadmap-Dateien verwenden Schema v2 und sind absichtlich nur Konfiguration:
-   **Start cycle** bleibt mit „Multi-pose execution not enabled yet“
-   gesperrt, und es erfolgen keine PLC-Schreibzugriffe.
+6. Schema-v1-Zwei-Posen-Dateien bleiben unverändert ladbar und ausführbar.
+   Schema-v2-Roadmaps können ausgeführt werden, sobald mindestens ein Startzustand
+   das Ziel über einen eindeutigen profilierten Pfad mit maximal einer Zwischenpose
+   erreicht. Parallele belegte Kanten werden mit ihren `edge_id` als mehrdeutig
+   blockiert.
 
 Mit **Edit configuration** wird die aktuell geladene YAML vollständig
 vorausgefüllt geöffnet. Sie kann am bisherigen Ort überschrieben oder im
 Speicherdialog unter einem neuen Namen abgelegt werden. Während eines laufenden
 Zyklus sind Neu, Öffnen und Bearbeiten gesperrt.
+
+### Roadmap-Zyklus starten
+
+1. Konfiguration öffnen. Das YOLO-Modell wird automatisch in einem Worker geladen;
+   **Load YOLO model** erlaubt einen manuellen Reload. Box/OBB, Klassenname,
+   Roadmap-Pose und Konfidenz erscheinen direkt im Kamerabild bzw. darunter.
+2. Die GUI liest alle zugeordneten Transition-Profile und zeigt deren UR-Ry-Winkel
+   und Förderbandgeschwindigkeit. Stimmen beide Werte überall überein, werden die
+   Hardwarefelder automatisch gefüllt. Bei Abweichungen Werte auswählen und
+   **Use machine parameters** drücken.
+3. **Connect all components** drücken, beide Leuchten einschalten/einstellen und
+   deren Zyklus-Checkbox bestätigen. Falls UR aktiv ist, **Apply UR angle** drücken.
+4. Sobald alle Preflight-Zeilen grün sind, **Start cycle** drücken. Erst jetzt wird
+   der Drei-Frame-Konsens gesammelt. Die erkannte Pose bestimmt den eindeutigen
+   direkten oder zweistufigen Pfad.
+5. Nur die aktiven Arrays der Pfadprofile werden zusammengeführt. Jedes physische
+   Array darf im Pfad höchstens einmal belegt sein. Das SPS-Profil wird zunächst bei
+   gestopptem Band geschrieben und zurückgelesen; Freigaben und Band folgen zuletzt.
+
+Eine erkannte Zielpose fährt mit Arraymaske null durch. Eine nicht erreichbare oder
+mehrdeutige Pose endet vor jedem Aktuierungswrite als sichtbarer Fehler.
 
 ### Hardware einstellen
 
@@ -122,8 +145,9 @@ panels together; the preview ran at 15 FPS without an application hang.
 
 ## Operating contract
 
-- V1 requires exactly the model classes `0 = Pose 1`, `1 = Pose 2`; either pose
-  can be the configured target.
+- Schema v1 requires exactly the model classes `0 = Pose 1`, `1 = Pose 2`.
+  Schema v2 uses the explicit class mapping from YAML; extra model classes are
+  permitted, but any detection of an unmapped class blocks consensus.
 - A decision requires one fully visible object in three fresh consecutive frames.
 - Both lights must be connected, receive a confirmed command, and be manually
   confirmed for the cycle.
@@ -167,4 +191,4 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
-The current offscreen suite contains 78 tests.
+The current offscreen suite contains 87 tests.

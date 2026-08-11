@@ -54,3 +54,26 @@ def test_model_class_contract() -> None:
     assert validate_model_classes({0: "Pose 1", 1: "Pose 2"})[1] == "Pose 2"
     with pytest.raises(ValueError):
         validate_model_classes({0: "front", 1: "back"})
+
+
+def test_roadmap_model_contract_allows_extra_classes_and_explicit_mapping() -> None:
+    names = {0: "unknown", 3: "Ql1i pose 9", 7: "Ql1i pose 24", 10: "other"}
+    assert validate_model_classes(names, (3, 7)) == names
+    with pytest.raises(ValueError, match="missing configured classes"):
+        validate_model_classes(names, (3, 8))
+
+
+def test_unmapped_detection_alongside_mapped_object_resets_consensus() -> None:
+    consensus = PoseConsensus()
+    started = time.time()
+    consensus.add(frame(class_id=0, timestamp=started), {0: 1, 1: 2})
+    mapped = frame(class_id=0, timestamp=started + 0.01).detections[0]
+    unknown = frame(class_id=7, timestamp=started + 0.01).detections[0]
+    mixed = InferenceFrame(
+        np.zeros((30, 30, 3), np.uint8),
+        (mapped, unknown),
+        1.0,
+        started + 0.01,
+    )
+    assert consensus.add(mixed, {0: 1, 1: 2}) is None
+    assert consensus.observations == ()

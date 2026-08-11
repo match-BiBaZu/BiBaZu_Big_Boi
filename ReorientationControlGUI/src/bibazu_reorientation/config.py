@@ -435,15 +435,52 @@ class TransitionResolver:
     def __init__(self, definition: PartDefinition) -> None:
         self.definition = definition
 
-    def plan(self, start_pose: int, target_pose: int | None = None) -> tuple[TransitionSpec, ...]:
+    def plan(
+        self,
+        start_pose: int,
+        target_pose: int | None = None,
+        *,
+        max_transitions: int = 2,
+    ) -> tuple[TransitionSpec, ...]:
         target = self.definition.target_pose if target_pose is None else target_pose
         if start_pose == target:
             return ()
-        direct = tuple(
+        if max_transitions not in {1, 2}:
+            raise ValueError("Only direct paths or paths with one intermediate pose are supported")
+        available = tuple(
             transition
             for transition in self.definition.transitions
+            if transition.pressure_profile is not None
+        )
+        direct = tuple(
+            transition
+            for transition in available
             if transition.from_pose == start_pose and transition.to_pose == target
         )
-        if len(direct) != 1:
-            raise ValueError(f"No unique transition {start_pose} → {target} is configured")
-        return direct
+        if direct:
+            if len(direct) != 1:
+                choices = ", ".join(
+                    f"{transition.edge_id} ({transition.actuation or 'actuated'})"
+                    for transition in direct
+                )
+                raise ValueError(
+                    f"Transition {start_pose} → {target} is ambiguous: {choices}. "
+                    "Assign a pressure profile to exactly one of these parallel edges."
+                )
+            return direct
+        if max_transitions == 1:
+            raise ValueError(f"No transition {start_pose} → {target} is configured")
+        paths = tuple(
+            (first, second)
+            for first in available
+            if first.from_pose == start_pose and first.to_pose not in {start_pose, target}
+            for second in available
+            if second.from_pose == first.to_pose and second.to_pose == target
+        )
+        if len(paths) != 1:
+            reason = "No" if not paths else "No unique"
+            raise ValueError(
+                f"{reason} path {start_pose} → … → {target} with at most one "
+                "intermediate pose is configured"
+            )
+        return paths[0]

@@ -19,7 +19,7 @@ from bibazu_reorientation.models import (
     PlcSnapshot,
     PressureProfile,
 )
-from bibazu_reorientation.profiles import build_write_plan
+from bibazu_reorientation.profiles import build_write_plan, compose_pressure_profiles
 
 
 class ReorientationController(QObject):
@@ -58,6 +58,11 @@ class ReorientationController(QObject):
         self._cycle_id = ""
         self._session = None
         self._plan = None
+        self._roadmap_mode = False
+        self._roadmap_profiles: dict[str, PressureProfile] = {}
+        self._transport_profile: PressureProfile | None = None
+        self._selected_transitions = ()
+        self._selected_profiles: tuple[PressureProfile, ...] = ()
         self._finalizing = False
         self._terminal_state = CycleState.COMPLETE
         self._result_emitted = False
@@ -75,7 +80,70 @@ class ReorientationController(QObject):
         if self.state not in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
             raise RuntimeError("The configuration cannot be changed during a cycle")
         self.part, self.profile = part, profile
+        self._roadmap_mode = False
+        self._roadmap_profiles = {}
+        self._transport_profile = profile
+        self._selected_transitions = ()
+        self._selected_profiles = ()
         TransitionResolver(part).plan(3 - part.target_pose, part.target_pose)
+        self._refresh_preflight()
+
+    def clear_configuration(self) -> None:
+        if self.state not in {
+            CycleState.NO_CONFIG,
+            CycleState.OFFLINE,
+            CycleState.READY,
+            CycleState.COMPLETE,
+            CycleState.ABORTED,
+            CycleState.FAULT,
+        }:
+            raise RuntimeError("The configuration cannot be cleared during a cycle")
+        self.part = None
+        self.profile = None
+        self._roadmap_mode = False
+        self._roadmap_profiles = {}
+        self._transport_profile = None
+        self._selected_transitions = ()
+        self._selected_profiles = ()
+        self._set_state(CycleState.NO_CONFIG)
+        self._refresh_preflight()
+
+    def set_roadmap_configuration(
+        self,
+        part: PartDefinition,
+        profiles_by_edge: dict[str, PressureProfile],
+        *,
+        conveyor_speed_mm_per_sec: float,
+        ur_ry_angle_deg: float | None,
+    ) -> None:
+        if self.state not in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
+            raise RuntimeError("The configuration cannot be changed during a cycle")
+        if not part.is_roadmap_configuration or part.roadmap_changed:
+            raise ValueError("A current roadmap configuration is required")
+        if not profiles_by_edge:
+            raise ValueError("Assign at least one pressure profile before execution")
+        configured_edges = {
+            transition.edge_id
+            for transition in part.transitions
+            if transition.pressure_profile is not None
+        }
+        if set(profiles_by_edge) != configured_edges:
+            raise ValueError("Loaded pressure profiles do not match the configured roadmap edges")
+        first = next(iter(profiles_by_edge.values()))
+        transport = compose_pressure_profiles(
+            (first,),
+            conveyor_speed_mm_per_sec=conveyor_speed_mm_per_sec,
+            ur_ry_angle_deg=ur_ry_angle_deg,
+        )
+        self.part = part
+        self.profile = transport
+        self._transport_profile = transport
+        self._roadmap_mode = True
+        self._roadmap_profiles = dict(profiles_by_edge)
+        self._selected_transitions = ()
+        self._selected_profiles = ()
+        if self.ur_applied != ur_ry_angle_deg:
+            self.ur_applied = None
         self._refresh_preflight()
 
     def set_model_ready(self, ready: bool) -> None:
@@ -177,6 +245,10 @@ class ReorientationController(QObject):
         self._detected_pose = None
         self._decision_frame = None
         self._observations = ()
+        self._selected_transitions = ()
+        self._selected_profiles = ()
+        if self._roadmap_mode:
+            self.profile = self._transport_profile
         self._set_state(CycleState.OFFLINE)
         self._refresh_preflight()
 
@@ -196,17 +268,66 @@ class ReorientationController(QObject):
         self._observations = decision.observations
         self._decision_at = datetime.now(UTC)
         try:
-            self._session = self.journal.begin(self._cycle_id, self.part, self.profile)
+            self._select_profile_for_pose(decision.pose_id)
+        except ValueError as exc:
+            self._finish(CycleState.FAULT, "roadmap_plan", str(exc))
+            return
+        try:
+            self._session = self.journal.begin(
+                self._cycle_id,
+                self.part,
+                self.profile,
+                self._selected_profiles or None,
+            )
             self.journal.save_decision_image(self._session, frame.image)
         except Exception as exc:
             self._fault("fault_logging", f"Decision image could not be saved: {exc}")
             return
-        self._plan = build_write_plan(
-            self.profile, actuate=decision.pose_id != self.part.target_pose
+        actuate = (
+            bool(self._selected_transitions)
+            if self._roadmap_mode
+            else decision.pose_id != self.part.target_pose
         )
-        self._set_state(CycleState.DECIDED, f"Pose {decision.pose_id}")
+        self._plan = build_write_plan(self.profile, actuate=actuate)
+        route = " → ".join(
+            map(
+                str,
+                [
+                    decision.pose_id,
+                    *(transition.to_pose for transition in self._selected_transitions),
+                ],
+            )
+        )
+        self._set_state(CycleState.DECIDED, f"Pose {decision.pose_id} · path {route}")
         self._set_state(CycleState.STAGING)
         self.pressure.write("safe_stop", self._plan.safe_stop, True)
+
+    def _select_profile_for_pose(self, start_pose: int) -> None:
+        if not self._roadmap_mode:
+            self._selected_transitions = ()
+            self._selected_profiles = (self.profile,) if self.profile is not None else ()
+            return
+        if self.part is None or self._transport_profile is None:
+            raise ValueError("Roadmap execution is not configured")
+        transitions = TransitionResolver(self.part).plan(start_pose, max_transitions=2)
+        if not transitions:
+            self.profile = self._transport_profile
+            self._selected_transitions = ()
+            self._selected_profiles = ()
+            return
+        try:
+            profiles = tuple(
+                self._roadmap_profiles[transition.edge_id] for transition in transitions
+            )
+        except KeyError as exc:
+            raise ValueError(f"No pressure profile is loaded for edge {exc.args[0]}") from exc
+        self.profile = compose_pressure_profiles(
+            profiles,
+            conveyor_speed_mm_per_sec=self._transport_profile.conveyor_speed_mm_per_sec,
+            ur_ry_angle_deg=self._transport_profile.ur_ry_angle_deg,
+        )
+        self._selected_transitions = transitions
+        self._selected_profiles = profiles
 
     def _operation_finished(self, name: str) -> None:
         if self._plan is None:
@@ -331,7 +452,17 @@ class ReorientationController(QObject):
             (
                 "pass_through"
                 if self._detected_pose == self.part.target_pose
-                else f"{self._detected_pose}_to_{self.part.target_pose}"
+                else "plan_unavailable"
+                if not self._selected_transitions
+                else "_to_".join(
+                    map(
+                        str,
+                        [
+                            self._detected_pose,
+                            *(transition.to_pose for transition in self._selected_transitions),
+                        ],
+                    )
+                )
             ),
             0 if self._plan is None else self._plan.expected_array_mask,
             self.snapshot.triggered_array_mask,
@@ -350,6 +481,15 @@ class ReorientationController(QObject):
             "profile_path": str(self.profile.source_path) if self.profile else "",
             "profile_sha256": self.profile.sha256 if self.profile else "",
             "profile_version": self.profile.source_version if self.profile else "",
+            "transition_edge_ids": [
+                transition.edge_id for transition in self._selected_transitions
+            ],
+            "transition_profile_paths": [
+                str(profile.source_path) for profile in self._selected_profiles
+            ],
+            "transition_profile_sha256": [
+                profile.sha256 for profile in self._selected_profiles
+            ],
             "observations": [
                 {
                     "class_id": item.class_id,

@@ -1,0 +1,19 @@
+schema_version: 2
+roadmap_path: ../../bibazu_geometry_to_pose/Poses_Found_Robust/Ql1i_roadmap/Ql1i_roadmap.json
+roadmap_sha256: 4bd74c5a9ffc8f3164350c152d9ab79d270d6fd5064d91c459b555bf76a224be
+part_name: Ql1i
+mesh_path: ../../bibazu_geometry_to_pose/Werkstücke_STL_grob/Ql1i.STL
+model_path: D:\pictures\Ql1i\YOLO_final_20260809\Ql1i_best.pt
+poses:
+- id: 2
+  label: Pose 2
+  model_class_id: 0
+- id: 3
+  label: Pose 3
+  model_class_id: 1
+target_pose: 3
+transition_profiles:
+  a12:3->2:free_y: null
+  a13:3->2:free_z: null
+  a6:2->3:free_y: null
+  a7:2->3:free_z: ../CSVSaver/pressure_profiles/Ql1i_Uebergang_2-3_free_z.json

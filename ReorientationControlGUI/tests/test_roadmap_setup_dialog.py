@@ -32,7 +32,7 @@ def test_df1a_is_first_step_and_builds_six_profile_rows(qtbot) -> None:
         "a4:35->24:free_y",
         "a15:60->9:free_z",
     }
-    assert "multi-pose execution is not enabled yet" in dialog.readiness.text()
+    assert "unique path with at most one intermediate pose" in dialog.readiness.text()
     assert all(
         dialog.profile_table.cellWidget(row, 5).text() == "Preview …"
         for row in range(dialog.profile_table.rowCount())

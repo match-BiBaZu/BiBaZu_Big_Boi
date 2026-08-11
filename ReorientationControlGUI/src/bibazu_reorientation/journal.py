@@ -33,12 +33,21 @@ class RunJournal:
                 digest.update(block)
         return digest.hexdigest()
 
-    def begin(self, cycle_id: str, part: PartDefinition, profile: PressureProfile) -> Path:
+    def begin(
+        self,
+        cycle_id: str,
+        part: PartDefinition,
+        profile: PressureProfile,
+        source_profiles: tuple[PressureProfile, ...] | None = None,
+    ) -> Path:
         session = self.directory / cycle_id
         session.mkdir(parents=False, exist_ok=False)
         if part.source_path:
             shutil.copy2(part.source_path, session / "part.yaml")
-        shutil.copy2(profile.source_path, session / "pressure-profile.json")
+        profiles = source_profiles or (profile,)
+        for index, source_profile in enumerate(profiles, start=1):
+            suffix = "" if index == 1 else f"-{index}"
+            shutil.copy2(source_profile.source_path, session / f"pressure-profile{suffix}.json")
         return session
 
     def save_decision_image(self, session: Path, image: np.ndarray) -> Path:

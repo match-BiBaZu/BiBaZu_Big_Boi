@@ -390,6 +390,17 @@ class RoadmapSetupDialog(QDialog):
         available = {
             edge_id for edge_id, edit in self.profile_inputs.items() if edit.text().strip()
         }
+        parallel_assignments: dict[tuple[int, int], list[str]] = {}
+        for edge in self.roadmap.profile_transitions:
+            if edge.edge_id in available:
+                parallel_assignments.setdefault((edge.from_pose, edge.to_pose), []).append(
+                    f"{edge.edge_id} ({edge.actuation})"
+                )
+        ambiguous = {
+            direction: edge_ids
+            for direction, edge_ids in parallel_assignments.items()
+            if len(edge_ids) > 1
+        }
         reachable = self._reachable_starts(available)
         parts = [
             f"Missing profiles: {len(missing_profiles)}",
@@ -402,6 +413,11 @@ class RoadmapSetupDialog(QDialog):
             else f"Class mapping incomplete/ambiguous: {missing_mapping}"
         )
         parts.append("Roadmap hash will be recorded again when saving")
+        for (start, target), edge_ids in ambiguous.items():
+            parts.append(
+                f"Execution ambiguous for {start} → {target}: {', '.join(edge_ids)}; "
+                "assign exactly one parallel edge"
+            )
         if self.name.text().strip() != self.roadmap.part_name:
             parts.append("Part name intentionally differs from the roadmap")
         if (
@@ -409,7 +425,10 @@ class RoadmapSetupDialog(QDialog):
             and Path(self.mesh.text()).expanduser().resolve() != self.roadmap.mesh_path
         ):
             parts.append("CAD path intentionally differs from the roadmap")
-        parts.append("Draft can be saved; multi-pose execution is not enabled yet")
+        parts.append(
+            "Draft can be saved; execution requires a unique path with at most one "
+            "intermediate pose"
+        )
         self.readiness.setText("<br>".join(f"• {part}" for part in parts))
 
     def _reachable_starts(self, available_edge_ids: set[str]) -> list[int]:

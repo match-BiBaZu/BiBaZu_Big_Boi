@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -28,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 from bibazu_reorientation.config import (
     RoadmapHashMismatchError,
+    TransitionResolver,
     load_part_definition,
     roadmap_readiness,
 )
@@ -45,8 +47,13 @@ from bibazu_reorientation.models import (
     CycleState,
     InferenceFrame,
     PressureBaseline,
+    PressureProfile,
 )
-from bibazu_reorientation.profiles import load_pressure_profile
+from bibazu_reorientation.profiles import (
+    compare_machine_parameters,
+    compose_pressure_profiles,
+    load_pressure_profile,
+)
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
 from bibazu_reorientation.ui.roadmap_setup_dialog import RoadmapSetupDialog
@@ -134,7 +141,12 @@ class MainWindow(QMainWindow):
         self._updating_exposure_ui = False
         self._preflight_ok = False
         self._displayed_preflight_checks: dict[str, bool] | None = None
-        self._roadmap_config_only = False
+        self._roadmap_mode = False
+        self._roadmap_profiles: dict[str, PressureProfile] = {}
+        self._pressure_baseline: PressureBaseline | None = None
+        self._machine_parameters_confirmed = False
+        self._updating_machine_parameters = False
+        self._profile_parameter_details = ""
         self._light_connect_task: asyncio.Task[None] | None = None
         self._build_ui()
         self._wire()
@@ -231,13 +243,51 @@ class MainWindow(QMainWindow):
         hardware_layout.addWidget(self.plc_status)
         hardware_layout.addWidget(self.camera_status)
         hardware_layout.addLayout(camera_controls)
+        self.yolo_status = QLabel("YOLO: no model loaded")
+        self.yolo_status.setWordWrap(True)
+        self.load_yolo_button = QPushButton("Load YOLO model")
+        self.load_yolo_button.setEnabled(False)
+        self.load_yolo_button.clicked.connect(self.load_yolo_model)
+        yolo_row = QHBoxLayout()
+        yolo_row.addWidget(self.yolo_status, 1)
+        yolo_row.addWidget(self.load_yolo_button)
+        hardware_layout.addLayout(yolo_row)
+        self.use_ur_angle = QCheckBox("Apply")
+        self.ur_angle_input = QDoubleSpinBox()
+        self.ur_angle_input.setRange(15.5, 21.0)
+        self.ur_angle_input.setDecimals(1)
+        self.ur_angle_input.setSingleStep(0.1)
+        self.ur_angle_input.setSuffix(" °")
+        self.ur_angle_input.setValue(18.0)
+        ur_row = QHBoxLayout()
+        ur_row.addWidget(self.use_ur_angle)
+        ur_row.addWidget(self.ur_angle_input, 1)
+        self.conveyor_speed_input = QDoubleSpinBox()
+        self.conveyor_speed_input.setRange(0.1, 5000.0)
+        self.conveyor_speed_input.setDecimals(1)
+        self.conveyor_speed_input.setSuffix(" mm/s")
+        self.conveyor_speed_input.setValue(100.0)
+        machine_form = QFormLayout()
+        machine_form.addRow("UR Ry angle", ur_row)
+        machine_form.addRow("Conveyor speed", self.conveyor_speed_input)
+        hardware_layout.addLayout(machine_form)
+        self.machine_parameter_status = QLabel("Load a configuration to compare profiles.")
+        self.machine_parameter_status.setWordWrap(True)
+        hardware_layout.addWidget(self.machine_parameter_status)
+        self.apply_machine_parameters_button = QPushButton("Use machine parameters")
+        self.apply_machine_parameters_button.setEnabled(False)
+        self.apply_machine_parameters_button.clicked.connect(self.apply_machine_parameters)
+        self.ur_button = QPushButton("Apply UR angle")
+        self.ur_button.clicked.connect(self.apply_ur)
+        self.ur_button.setEnabled(False)
+        machine_buttons = QHBoxLayout()
+        machine_buttons.addWidget(self.apply_machine_parameters_button)
+        machine_buttons.addWidget(self.ur_button)
+        hardware_layout.addLayout(machine_buttons)
         hardware_layout.addWidget(self.connect_button)
         hardware_layout.addWidget(self.disconnect_button)
         self.light_panel1 = LightPanel(self.light1)
         self.light_panel2 = LightPanel(self.light2)
-        self.ur_button = QPushButton("Apply UR angle")
-        self.ur_button.clicked.connect(self.apply_ur)
-        self.ur_button.setEnabled(False)
         self.preflight = QVBoxLayout()
         preflight_box = QGroupBox("Preflight")
         preflight_box.setLayout(self.preflight)
@@ -255,7 +305,6 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(hardware)
         right_layout.addWidget(self.light_panel1)
         right_layout.addWidget(self.light_panel2)
-        right_layout.addWidget(self.ur_button)
         right_layout.addWidget(preflight_box)
         right_layout.addWidget(self.cycle_status)
         right_layout.addWidget(self.start_button)
@@ -285,6 +334,9 @@ class MainWindow(QMainWindow):
         self.light2.status_changed.connect(self._light_status_changed)
         self.light1.error.connect(self._light1_error)
         self.light2.error.connect(self._light2_error)
+        self.use_ur_angle.toggled.connect(self._machine_parameters_edited)
+        self.ur_angle_input.valueChanged.connect(self._machine_parameters_edited)
+        self.conveyor_speed_input.valueChanged.connect(self._machine_parameters_edited)
 
     def _plc_connection_changed(self, connected: bool, detail: str) -> None:
         self.plc_status.setText(f"PLC: {'connected' if connected else 'disconnected'} – {detail}")
@@ -466,14 +518,19 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Configuration", str(exc))
 
     def _load(self, part) -> None:
+        self.controller.clear_configuration()
         self.part = part
         self._displayed_preflight_checks = None
         self.edit_config_action.setEnabled(True)
         self.edit_config_button.setEnabled(True)
-        self._roadmap_config_only = part.schema_version == 2
-        if self._roadmap_config_only:
+        self._roadmap_mode = part.schema_version == 2
+        self.load_yolo_button.setEnabled(True)
+        if self._roadmap_mode:
             self._load_roadmap_configuration(part)
             return
+        self._roadmap_profiles = {}
+        self._machine_parameters_confirmed = True
+        self.apply_machine_parameters_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.profile = load_pressure_profile(
             part.transitions[0].pressure_profile, require_transition=False
@@ -513,20 +570,14 @@ class MainWindow(QMainWindow):
                 self.model_label.setPixmap(QPixmap())
                 self.model_label.setText(f"3D preview unavailable:\n{exc}")
         self.ur_button.setEnabled(self.profile.ur_ry_angle_deg is not None)
-        if self.inference:
-            self.inference.stop()
-        self.inference = InferenceWorker(InferenceConfig(part.model_path))
-        self.inference.frame_ready.connect(self._inference_frame)
-        self.inference.model_ready.connect(self._inference_model_ready)
-        self.inference.error.connect(self._inference_error)
-        self.inference.start()
+        self._set_machine_inputs(
+            self.profile.conveyor_speed_mm_per_sec, self.profile.ur_ry_angle_deg
+        )
+        self.machine_parameter_status.setText("Machine values loaded from the pressure profile.")
+        self.load_yolo_model()
 
     def _load_roadmap_configuration(self, part) -> None:
-        """Display schema v2 without configuring the v1 controller or writing ADS."""
-        if self.inference:
-            self.inference.stop()
-            self.inference = None
-        self.profile = None
+        """Load a roadmap project and prepare its bounded v1 multi-pose executor."""
         readiness = roadmap_readiness(part)
         self.part_label.setText(
             f"Part: {part.part_name}\n"
@@ -535,7 +586,7 @@ class MainWindow(QMainWindow):
             f"Target pose: Roadmap pose {part.target_pose}"
         )
         self.transition_label.setText(
-            f"Roadmap draft: {len(part.transitions)} profile-eligible transitions, "
+            f"Roadmap: {len(part.transitions)} profile-eligible transitions, "
             f"{len(readiness.missing_profile_edge_ids)} profiles missing. "
             f"Reachable: {', '.join(map(str, readiness.reachable_pose_ids))}."
         )
@@ -548,30 +599,192 @@ class MainWindow(QMainWindow):
                 self.model_label.setPixmap(QPixmap())
                 self.model_label.setText(f"3D preview unavailable:\n{exc}")
         self.pose_label.setText(
-            f"Target pose: Roadmap pose {part.target_pose} · "
-            "Multi-pose detection/execution not enabled yet"
+            f"Detected pose: –    Target roadmap pose: {part.target_pose}    Confidence: –"
         )
-        while self.preflight.count():
-            item = self.preflight.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        details = (
-            "Multi-pose execution not enabled yet",
-            f"Roadmap hash: {'valid' if readiness.roadmap_hash_matches else 'changed'}",
-            f"Missing profiles: {len(readiness.missing_profile_edge_ids)}",
-            f"Incomplete YOLO mappings: {len(readiness.unmapped_pose_ids)}",
+        self.cycle_status.setText("Roadmap loaded – waiting for hardware preflight")
+        self.start_button.setText("Start classification and reorientation")
+        self.stop_button.setEnabled(True)
+        self.apply_machine_parameters_button.setEnabled(True)
+        self._load_roadmap_profiles(self._pressure_baseline)
+        self.load_yolo_model()
+
+    def _set_machine_inputs(self, speed: float, angle: float | None) -> None:
+        self._updating_machine_parameters = True
+        self.conveyor_speed_input.setValue(speed)
+        self.use_ur_angle.setChecked(angle is not None)
+        if angle is not None:
+            self.ur_angle_input.setValue(angle)
+        self.ur_angle_input.setEnabled(self._roadmap_mode and angle is not None)
+        self.conveyor_speed_input.setEnabled(self._roadmap_mode)
+        self.use_ur_angle.setEnabled(self._roadmap_mode)
+        self._updating_machine_parameters = False
+
+    def _load_roadmap_profiles(self, baseline: PressureBaseline | None) -> None:
+        if self.part is None or not self._roadmap_mode:
+            return
+        profiles: dict[str, PressureProfile] = {}
+        rows: list[str] = []
+        errors: list[str] = []
+        for transition in self.part.transitions:
+            if transition.pressure_profile is None:
+                continue
+            try:
+                profile = load_pressure_profile(transition.pressure_profile, baseline=baseline)
+                profiles[transition.edge_id] = profile
+                angle = (
+                    "–"
+                    if profile.ur_ry_angle_deg is None
+                    else f"{profile.ur_ry_angle_deg:.1f}°"
+                )
+                rows.append(
+                    f"{transition.from_pose} → {transition.to_pose}: "
+                    f"UR {angle}, conveyor {profile.conveyor_speed_mm_per_sec:g} mm/s "
+                    f"({profile.source_path.name})"
+                )
+            except Exception as exc:
+                errors.append(
+                    f"{transition.from_pose} → {transition.to_pose} "
+                    f"({transition.pressure_profile.name}): {exc}"
+                )
+        self._roadmap_profiles = profiles
+        self._machine_parameters_confirmed = False
+        if errors:
+            self._profile_parameter_details = ""
+            self.profile = None
+            self.machine_parameter_status.setStyleSheet("color:#b91c1c;font-weight:bold")
+            self.machine_parameter_status.setText(
+                "Invalid transition profile:\n" + "\n".join(errors)
+            )
+            return
+        if not profiles:
+            self._profile_parameter_details = ""
+            self.profile = None
+            self.machine_parameter_status.setStyleSheet("color:#b91c1c;font-weight:bold")
+            self.machine_parameter_status.setText(
+                "No pressure profile is assigned. At least one reachable transition is required."
+            )
+            return
+        comparison = compare_machine_parameters(tuple(profiles.values()))
+        speed = comparison.common_conveyor_speed_mm_per_sec
+        angle = comparison.common_ur_angle_deg
+        fallback_speed = comparison.conveyor_speeds_mm_per_sec[0]
+        fallback_angle = next(
+            (value for value in comparison.ur_angles_deg if value is not None), None
         )
-        for detail in details:
-            text = f"✗ {detail}" if detail == details[0] else f"• {detail}"
-            self.preflight.addWidget(QLabel(text))
-        self.cycle_status.setText("Configuration draft – no PLC enable issued")
-        self.start_button.setEnabled(False)
-        self.start_button.setText("Multi-pose execution not enabled yet")
-        self.stop_button.setEnabled(False)
-        self.ur_button.setEnabled(False)
+        selected_angle = angle if not comparison.ur_angle_conflict else fallback_angle
+        self._set_machine_inputs(speed or fallback_speed, selected_angle)
+        profile_text = "\n".join(rows)
+        self._profile_parameter_details = profile_text
+        if comparison.ur_angle_conflict or comparison.conveyor_speed_conflict:
+            conflicts = []
+            if comparison.ur_angle_conflict:
+                conflicts.append("UR Ry angles")
+            if comparison.conveyor_speed_conflict:
+                conflicts.append("conveyor speeds")
+            self.machine_parameter_status.setStyleSheet("color:#b45309;font-weight:bold")
+            self.machine_parameter_status.setText(
+                f"Profiles disagree on {' and '.join(conflicts)}. Select the values above and "
+                f"press 'Use machine parameters'.\n{profile_text}"
+            )
+            self.controller.clear_configuration()
+            return
+        self.machine_parameter_status.setStyleSheet("color:#166534")
+        self.machine_parameter_status.setText(
+            "All assigned profiles use the same machine parameters; values were loaded "
+            f"automatically.\n{profile_text}"
+        )
+        self.apply_machine_parameters(show_error=False)
+
+    def _machine_parameters_edited(self, _value=None) -> None:
+        self.ur_angle_input.setEnabled(self._roadmap_mode and self.use_ur_angle.isChecked())
+        if self._updating_machine_parameters or not self._roadmap_mode:
+            return
+        if self.controller.state not in {
+            CycleState.NO_CONFIG,
+            CycleState.OFFLINE,
+            CycleState.READY,
+            CycleState.COMPLETE,
+            CycleState.ABORTED,
+            CycleState.FAULT,
+        }:
+            return
+        self._machine_parameters_confirmed = False
+        self.machine_parameter_status.setStyleSheet("color:#b45309;font-weight:bold")
+        self.machine_parameter_status.setText(
+            "Machine values changed. Press 'Use machine parameters' before starting."
+        )
+        self.controller.clear_configuration()
+
+    def apply_machine_parameters(self, *, show_error: bool = True) -> None:
+        if self.part is None or not self._roadmap_mode:
+            return
+        try:
+            angle = self.ur_angle_input.value() if self.use_ur_angle.isChecked() else None
+            speed = self.conveyor_speed_input.value()
+            self._validate_roadmap_paths(speed, angle)
+            self._machine_parameters_confirmed = True
+            self.controller.set_roadmap_configuration(
+                self.part,
+                self._roadmap_profiles,
+                conveyor_speed_mm_per_sec=speed,
+                ur_ry_angle_deg=angle,
+            )
+            self.profile = self.controller.profile
+            self.ur_button.setEnabled(angle is not None)
+            self.machine_parameter_status.setStyleSheet("color:#166534;font-weight:bold")
+            details = (
+                f"\n{self._profile_parameter_details}"
+                if self._profile_parameter_details
+                else ""
+            )
+            self.machine_parameter_status.setText(
+                f"Machine parameters confirmed: conveyor {speed:g} mm/s, "
+                f"UR Ry {'not used' if angle is None else f'{angle:.1f}°'}."
+                + details
+            )
+        except Exception as exc:
+            self._machine_parameters_confirmed = False
+            self.controller.clear_configuration()
+            self.machine_parameter_status.setStyleSheet("color:#b91c1c;font-weight:bold")
+            self.machine_parameter_status.setText(str(exc))
+            if show_error:
+                QMessageBox.warning(self, "Machine parameters", str(exc))
+
+    def _validate_roadmap_paths(self, speed: float, angle: float | None) -> None:
+        assert self.part is not None
+        valid_paths = 0
+        ambiguous_paths: list[str] = []
+        resolver = TransitionResolver(self.part)
+        for pose in self.part.poses:
+            if pose.id == self.part.target_pose:
+                continue
+            try:
+                path = resolver.plan(pose.id, max_transitions=2)
+            except ValueError as exc:
+                if "ambiguous" in str(exc).casefold() or "no unique" in str(exc).casefold():
+                    ambiguous_paths.append(str(exc))
+                continue
+            profiles = tuple(self._roadmap_profiles[transition.edge_id] for transition in path)
+            compose_pressure_profiles(
+                profiles,
+                conveyor_speed_mm_per_sec=speed,
+                ur_ry_angle_deg=angle,
+            )
+            valid_paths += 1
+        if ambiguous_paths:
+            raise ValueError("\n".join(ambiguous_paths))
+        if valid_paths == 0:
+            raise ValueError(
+                "No robust start pose has a unique profiled path to the target with at most "
+                "one intermediate pose."
+            )
 
     def _baseline_ready(self, baseline: PressureBaseline) -> None:
-        if self.part is None or self._roadmap_config_only:
+        self._pressure_baseline = baseline
+        if self.part is None:
+            return
+        if self._roadmap_mode:
+            self._load_roadmap_profiles(baseline)
             return
         try:
             self.profile = load_pressure_profile(
@@ -649,20 +862,87 @@ class MainWindow(QMainWindow):
         self._show_image(frame.image)
         if len(frame.detections) == 1:
             detection = frame.detections[0]
+            mapped_pose = next(
+                (
+                    pose
+                    for pose in self.part.poses
+                    if pose.model_class_id == detection.class_id
+                ),
+                None,
+            ) if self.part else None
+            detected = (
+                f"{mapped_pose.label} (roadmap {mapped_pose.id})"
+                if mapped_pose is not None and self._roadmap_mode
+                else mapped_pose.label
+                if mapped_pose is not None
+                else f"unmapped class {detection.class_id}"
+            )
             self.pose_label.setText(
-                f"Detected pose: {detection.class_id + 1}    "
+                f"Detected pose: {detected}    "
                 f"Target pose: {self.part.target_pose if self.part else '–'}    "
                 f"Confidence: {detection.confidence:.1%}"
+            )
+        elif frame.detections:
+            self.pose_label.setText(
+                f"Detected pose: ambiguous ({len(frame.detections)} objects)    "
+                f"Target pose: {self.part.target_pose if self.part else '–'}"
+            )
+        else:
+            self.pose_label.setText(
+                f"Detected pose: none    Target pose: "
+                f"{self.part.target_pose if self.part else '–'}"
             )
         self.controller.accept_inference(frame)
 
     @pyqtSlot(object)
-    def _inference_model_ready(self, _details: object) -> None:
+    def _inference_model_ready(self, details: object) -> None:
+        if isinstance(details, dict):
+            self.yolo_status.setText(
+                f"YOLO ready · {details.get('device', '–')} · "
+                f"{len(details.get('names', {}))} classes"
+            )
+        else:
+            self.yolo_status.setText("YOLO ready")
+        self.load_yolo_button.setEnabled(True)
         self.controller.set_model_ready(True)
 
     @pyqtSlot(str)
+    def _inference_status_changed(self, status: str) -> None:
+        self.yolo_status.setText(f"YOLO: {status}")
+
+    @pyqtSlot(str)
     def _inference_error(self, error: str) -> None:
-        QMessageBox.critical(self, "YOLO", error)
+        self.yolo_status.setText(error)
+        self.yolo_status.setStyleSheet("color:#b91c1c;font-weight:bold")
+        self.load_yolo_button.setEnabled(True)
+        self.controller.set_model_ready(False)
+        LOGGER.error(error)
+
+    def load_yolo_model(self) -> None:
+        if self.part is None:
+            return
+        if self.inference is not None:
+            if not self.inference.stop(2_000):
+                self.yolo_status.setText("YOLO worker is still stopping; try again shortly.")
+                return
+            self.inference = None
+        self.controller.set_model_ready(False)
+        self.yolo_status.setStyleSheet("")
+        self.yolo_status.setText(f"YOLO: loading {self.part.model_path.name} …")
+        self.load_yolo_button.setEnabled(False)
+        expected = (
+            tuple(pose.model_class_id for pose in self.part.poses)
+            if self._roadmap_mode
+            else None
+        )
+        self.inference = InferenceWorker(
+            InferenceConfig(self.part.model_path, expected_class_ids=expected)
+        )
+        self.inference.frame_ready.connect(self._inference_frame)
+        self.inference.model_ready.connect(self._inference_model_ready)
+        self.inference.status_changed.connect(self._inference_status_changed)
+        self.inference.error.connect(self._inference_error)
+        self.inference.start()
 
     def _show_image(self, image: np.ndarray) -> None:
         height, width = image.shape[:2]
@@ -706,9 +986,10 @@ class MainWindow(QMainWindow):
         self.controller.set_lights_ready(ready1, ready2)
 
     def apply_ur(self) -> None:
-        if not self.profile or self.profile.ur_ry_angle_deg is None:
+        profile = self.controller.profile or self.profile
+        if not profile or profile.ur_ry_angle_deg is None:
             return
-        self.ur_worker = UrAngleWorker(self.profile.ur_ry_angle_deg, self)
+        self.ur_worker = UrAngleWorker(profile.ur_ry_angle_deg, self)
         self.ur_worker.applied.connect(self._ur_applied)
         self.ur_worker.failed.connect(self._ur_failed)
         self.ur_worker.start()
@@ -722,9 +1003,6 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "UR", error)
 
     def _preflight(self, checks: dict[str, bool]) -> None:
-        if self._roadmap_config_only:
-            self.start_button.setEnabled(False)
-            return
         if checks == self._displayed_preflight_checks:
             return
         self._displayed_preflight_checks = checks.copy()
@@ -736,7 +1014,7 @@ class MainWindow(QMainWindow):
             self.preflight.addWidget(QLabel(f"{'✓' if passed else '✗'} {label}"))
         self._preflight_ok = all(checks.values())
         self.start_button.setEnabled(
-            self._preflight_ok
+            (self._preflight_ok and self._machine_parameters_confirmed)
             or self.controller.state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
         )
 
@@ -753,26 +1031,25 @@ class MainWindow(QMainWindow):
         self.new_config_button.setEnabled(configuration_editable)
         self.open_config_button.setEnabled(configuration_editable)
         self.edit_config_button.setEnabled(configuration_editable and self.part is not None)
+        self.load_yolo_button.setEnabled(configuration_editable and self.part is not None)
+        machine_editable = configuration_editable and self._roadmap_mode
+        self.use_ur_angle.setEnabled(machine_editable)
+        self.ur_angle_input.setEnabled(machine_editable and self.use_ur_angle.isChecked())
+        self.conveyor_speed_input.setEnabled(machine_editable)
+        self.apply_machine_parameters_button.setEnabled(machine_editable)
         terminal = state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}
         self.start_button.setText("Prepare next cycle" if terminal else "Start cycle")
         self.start_button.setEnabled(
-            not self._roadmap_config_only
-            and (terminal or (state is CycleState.READY and self._preflight_ok))
+            terminal
+            or (
+                state is CycleState.READY
+                and self._preflight_ok
+                and self._machine_parameters_confirmed
+            )
         )
-        if self._roadmap_config_only:
-            self.start_button.setText("Multi-pose execution not enabled yet")
-            self.stop_button.setEnabled(False)
-        else:
-            self.stop_button.setEnabled(True)
+        self.stop_button.setEnabled(True)
 
     def _start(self) -> None:
-        if self._roadmap_config_only:
-            QMessageBox.information(
-                self,
-                "Roadmap configuration",
-                "Multi-pose execution is not enabled yet. No PLC values were written.",
-            )
-            return
         try:
             if self.controller.state in {CycleState.COMPLETE, CycleState.ABORTED, CycleState.FAULT}:
                 self.controller.prepare_next_cycle()
