@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
-import inspect
 import logging
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -19,7 +20,54 @@ from bibazu_reorientation.models import (
 )
 
 LIGHT_COMMAND_TIMEOUT_SECONDS = 3.0
+LIGHT_CONNECT_TIMEOUT_SECONDS = 15.0
 LOGGER = logging.getLogger(__name__)
+
+
+class _BleEventLoopThread:
+    """Own a private asyncio loop so WinRT can never stall the Qt event loop."""
+
+    def __init__(self, name: str) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"BiBaZu-BLE-{name}",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=2.0):
+            raise RuntimeError("The Bluetooth worker could not be started")
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+
+    def submit(self, coroutine: Awaitable[Any]) -> concurrent.futures.Future[Any]:
+        loop = self._loop
+        if loop is None or not self._thread.is_alive():
+            if asyncio.iscoroutine(coroutine):
+                coroutine.close()
+            raise RuntimeError("The Bluetooth worker is not running")
+        return asyncio.run_coroutine_threadsafe(coroutine, loop)
+
+    def stop(self, timeout: float = 1.0) -> bool:
+        loop = self._loop
+        if loop is not None and self._thread.is_alive():
+            loop.call_soon_threadsafe(loop.stop)
+            self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
 
 
 def _attribute(value: Any, name: str, default: Any = None) -> Any:
@@ -64,11 +112,12 @@ class LightAdapter(DeviceAdapter):
         self.address = address
         self._excluded_addresses = excluded_addresses or set
         self._auto_reconnect = auto_reconnect
+        self._worker: _BleEventLoopThread | None = None
         self._light: Any = None
         self.status = LightStatus(address=address or "–")
         self._desired_connection = False
-        self._operation_task: asyncio.Task[Any] | None = None
-        self._reconnect_task: asyncio.Task[Any] | None = None
+        self._operation_task: concurrent.futures.Future[Any] | None = None
+        self._reconnect_task: concurrent.futures.Future[Any] | None = None
         self._command_busy = False
         self._last_command_started_at = 0.0
         self._monitor = QTimer(self)
@@ -76,15 +125,22 @@ class LightAdapter(DeviceAdapter):
         self._monitor.timeout.connect(self._check_connection)
         self._monitor.start()
 
-    def _start_task(self, coroutine: Awaitable[Any]) -> asyncio.Task[Any] | None:
+    def _start_task(self, coroutine: Awaitable[Any]) -> concurrent.futures.Future[Any] | None:
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            if inspect.iscoroutine(coroutine):
-                coroutine.close()
-            self._emit_error("No running Qt/asyncio event loop is available for Bluetooth")
+            if self._worker is None:
+                self._worker = _BleEventLoopThread(self.name)
+            return self._worker.submit(coroutine)
+        except RuntimeError as exc:
+            self._emit_error(str(exc))
             return None
-        return loop.create_task(coroutine)
+
+    @staticmethod
+    async def _await_worker(
+        future: concurrent.futures.Future[Any] | None,
+    ) -> Any:
+        if future is None:
+            return None
+        return await asyncio.wrap_future(future)
 
     def connect_device(self) -> None:
         if self.state in {
@@ -110,7 +166,8 @@ class LightAdapter(DeviceAdapter):
             self._reconnect_task.cancel()
             self._reconnect_task = None
         self._desired_connection = True
-        await self._discover_and_connect()
+        self._operation_task = self._start_task(self._discover_and_connect())
+        await self._await_worker(self._operation_task)
 
     async def _scan(self) -> list[DiscoveredLight]:
         from neewerlite import NeewerScanner
@@ -177,7 +234,16 @@ class LightAdapter(DeviceAdapter):
         connection_target = selected.raw if selected.raw is not None else selected.address
         light = NeewerLight(connection_target, name=profile_name)
         try:
-            await light.connect()
+            try:
+                connect_operation = light.connect(timeout=10.0)
+            except TypeError:
+                # Test doubles and older neewerlite versions expose connect() without
+                # a timeout argument. The outer timeout still protects the worker.
+                connect_operation = light.connect()
+            await asyncio.wait_for(
+                connect_operation,
+                timeout=LIGHT_CONNECT_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
                 await light.disconnect()
@@ -320,9 +386,13 @@ class LightAdapter(DeviceAdapter):
         if self._operation_task is not None and not self._operation_task.done():
             self._operation_task.cancel()
         self._command_busy = False
-        self._operation_task = self._start_task(self.disconnect_async())
+        self._operation_task = self._start_task(self._disconnect_impl())
 
     async def disconnect_async(self) -> None:
+        operation = self._start_task(self._disconnect_impl())
+        await self._await_worker(operation)
+
+    async def _disconnect_impl(self) -> None:
         light, self._light = self._light, None
         if light is not None:
             with contextlib.suppress(Exception):
@@ -335,6 +405,10 @@ class LightAdapter(DeviceAdapter):
 
     async def shutdown(self) -> None:
         self._desired_connection = False
+        if self._worker is None:
+            self.status.connected = False
+            self._set_state(ConnectionState.DISCONNECTED)
+            return
         tasks = [
             task
             for task in (self._operation_task, self._reconnect_task)
@@ -343,14 +417,19 @@ class LightAdapter(DeviceAdapter):
         for task in tasks:
             task.cancel()
         if tasks:
-            _done, pending = await asyncio.wait(tasks, timeout=1.0)
+            wrapped = [asyncio.wrap_future(task) for task in tasks]
+            _done, pending = await asyncio.wait(wrapped, timeout=1.0)
             if pending:
                 LOGGER.error("%s BLE task(s) did not stop during shutdown", len(pending))
         self._operation_task = None
         self._reconnect_task = None
-        disconnect_task = asyncio.create_task(self.disconnect_async())
+        disconnect_future = self._start_task(self._disconnect_impl())
+        disconnect_task = asyncio.ensure_future(self._await_worker(disconnect_future))
         _done, pending = await asyncio.wait({disconnect_task}, timeout=1.0)
         if pending:
             disconnect_task.cancel()
             self.status.connected = False
             self._set_state(ConnectionState.DISCONNECTED, "Forced local disconnect")
+        worker, self._worker = self._worker, None
+        if worker is not None and not await asyncio.to_thread(worker.stop, 1.0):
+            LOGGER.error("Bluetooth worker did not stop within one second")

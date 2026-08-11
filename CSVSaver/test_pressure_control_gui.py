@@ -99,10 +99,12 @@ class AdsThreadTests(unittest.TestCase):
         QTimer.singleShot(milliseconds, loop.quit)
         loop.exec()
 
-    def test_first_light_barrier_spacing_default_is_calibrated_value(self):
-        self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 23.54)
-        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 39.9)
-        self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 64.69)
+    def test_light_barrier_defaults_match_standard_setup(self):
+        self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 40.0)
+        self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 40.0)
+        self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 40.0)
+        self.assertEqual(gui.LIGHT_BARRIER_INVERT_DEFAULTS, (True,) * 6)
+        self.assertEqual(gui.LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS, (False,) * 6)
 
     def test_pressure_inputs_use_ten_mbar_steps(self):
         row = gui.ArrayRow(1)
@@ -828,7 +830,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(
             result["light_barrier_debounce_enabled"],
-            [True, True, False, False, True, True],
+            [False, False, False, False, False, False],
         )
 
     def test_version_7_profile_preserves_per_barrier_debounce_settings(self):
@@ -1025,13 +1027,13 @@ class ConveyorSetupWindowTests(unittest.TestCase):
 
         self.assertEqual(
             [checkbox.isChecked() for checkbox in window.barrier_inverted],
-            [False, False, True, True, False, False],
+            [True, True, True, True, True, True],
         )
-        window.barrier_inverted[0].setChecked(True)
+        window.barrier_inverted[0].setChecked(False)
 
         self.assertEqual(
             writes[0],
-            ({"MAIN.GuiLightBarrierInvert1": True}, "light_barrier_1_inversion"),
+            ({"MAIN.GuiLightBarrierInvert1": False}, "light_barrier_1_inversion"),
         )
         window.ads.connected = False
         window.close()

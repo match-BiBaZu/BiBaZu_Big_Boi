@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -157,4 +158,53 @@ async def test_disconnect_cancels_inflight_connection_and_releases_client(
 
     assert not light.client.is_connected
     assert not adapter._desired_connection
+    await adapter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_blocking_winrt_connect_does_not_block_gui_event_loop(qtbot, monkeypatch) -> None:
+    class BlockingConnectLight(FakeLight):
+        async def connect(self) -> None:
+            # Models a WinRT call which blocks its event-loop thread internally.
+            time.sleep(0.2)
+            self.client.is_connected = True
+
+    FakeLight.instances.clear()
+    monkeypatch.setitem(
+        sys.modules,
+        "neewerlite",
+        SimpleNamespace(NeewerScanner=FakeScanner, NeewerLight=BlockingConnectLight),
+    )
+    adapter = LightAdapter("Panel", auto_reconnect=False)
+
+    connection = asyncio.create_task(adapter.connect_async())
+    started = time.monotonic()
+    await asyncio.sleep(0.03)
+
+    assert time.monotonic() - started < 0.15
+    assert not connection.done()
+    await asyncio.wait_for(connection, 1.0)
+    assert adapter.state is ConnectionState.CONNECTED
+    await adapter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_async_connect_timeout_returns_error(qtbot, monkeypatch) -> None:
+    class HangingConnectLight(FakeLight):
+        async def connect(self) -> None:
+            await asyncio.sleep(10.0)
+
+    FakeLight.instances.clear()
+    monkeypatch.setattr(light_module, "LIGHT_CONNECT_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setitem(
+        sys.modules,
+        "neewerlite",
+        SimpleNamespace(NeewerScanner=FakeScanner, NeewerLight=HangingConnectLight),
+    )
+    adapter = LightAdapter("Panel", auto_reconnect=False)
+
+    await asyncio.wait_for(adapter.connect_async(), 1.0)
+
+    assert adapter.state is ConnectionState.ERROR
+    assert not adapter.status.connected
     await adapter.shutdown()

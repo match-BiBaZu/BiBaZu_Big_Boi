@@ -91,15 +91,17 @@ gefundenen Adressen.
 **Disconnect all components** cancels pending BLE work and releases both panels,
 the camera, and ADS without waiting in the GUI thread. Light connections are made
 one after another because simultaneous WinRT/Bleak discovery and GATT connection
-can be unreliable. A timed-out light command releases its stale BLE client and
-leaves a clean, retryable error instead of retaining a stale connection.
+can be unreliable. Each panel owns a private asyncio worker thread, so even a
+blocking Windows-GATT call cannot block Qt. Connect and command timeouts release
+the stale BLE client and leave a clean, retryable error instead of retaining a
+stale connection.
 
 Reorientation Control and Automated Image Capture share a Windows hardware lease.
 Starting either application while the other is open now shows a clear message and
 performs no hardware connection. The two panel connections use one central serial
 retry sequence; individual panel reconnect loops are disabled to prevent
-overlapping WinRT scans. Pending BLE shutdown work is bounded so a faulty driver
-cannot hold the Qt application open indefinitely.
+overlapping WinRT scans. Connect, cancel, and BLE shutdown work is bounded so a
+faulty driver cannot freeze Qt or hold the application open indefinitely.
 
 ## Operating contract
 

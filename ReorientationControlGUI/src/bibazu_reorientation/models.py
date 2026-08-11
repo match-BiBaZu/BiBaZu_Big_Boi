@@ -122,14 +122,14 @@ class ConveyorCalibration:
 @dataclass(slots=True, frozen=True)
 class PressureBaseline:
     light_barrier_debounce_ms: int = 20
-    light_barrier_inverted: tuple[bool, ...] = (False, False, True, True, False, False)
+    light_barrier_inverted: tuple[bool, ...] = (True, True, True, True, True, True)
     light_barrier_debounce_enabled: tuple[bool, ...] = (
-        True,
-        True,
         False,
         False,
-        True,
-        True,
+        False,
+        False,
+        False,
+        False,
     )
     conveyor_speed_mm_per_sec: float = 0.0
     conveyor_max_speed_mm_per_sec: float = 1000.0

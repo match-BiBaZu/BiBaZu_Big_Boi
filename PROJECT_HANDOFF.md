@@ -142,16 +142,18 @@ Pressure-GUI. Die Anwendung trennt die laufenden Aufgaben wie folgt:
 - ADS/SPS: ein dauerhafter Worker in einem eigenen `QThread`
 - Baumer/GenTL: ein eigener Kamera-Worker in einem eigenen `QThread`
 - YOLO Detect/OBB: ein eigener Inferenz-Worker mit `latest frame only`
-- zwei Neewer RGB660 Pro II: getrennte `asyncio`-Tasks im `qasync`-Qt-Eventloop
+- zwei Neewer RGB660 Pro II: je ein eigener langlebiger `asyncio`-Worker-Thread;
+  die GUI orchestriert beide Verbindungen seriell
 - GUI, Vorschau und Zustandsanzeige: ausschliesslich im Qt-Hauptthread
 
 Der Kamera-Worker leert den GenTL-Stream kontinuierlich, konvertiert und emittiert
 aber nur die konfigurierte Vorschau-Bildrate. Default sind `15 FPS`, einstellbar
 von 1 bis 60 FPS. Dadurch entsteht bei einer schnellen Baumer-Kamera keine
 Warteschlange alter Vollbilder. YOLO verarbeitet ebenfalls nur das jeweils neueste
-Bild und ist auf 5 FPS begrenzt. Sind beide BLE-Adressen gespeichert, verbinden
-sich die Panels parallel; bei der erstmaligen Suche absichtlich nacheinander,
-damit beide Adapter nicht dasselbe Panel waehlen.
+Bild und ist auf 5 FPS begrenzt. Die beiden Panels verbinden sich immer
+nacheinander, damit WinRT-Scan und GATT-Aufbau nicht ueberlappen und beide Adapter
+nicht dasselbe Panel waehlen. Ein blockierender Windows-GATT-Aufruf bleibt dabei
+im BLE-Worker und kann den Qt-Hauptthread nicht mehr anhalten.
 
 Baumer Camera Explorer, Automated Image Capture und Reorientation Control duerfen
 die Kamera nicht gleichzeitig oeffnen. Dasselbe gilt praktisch fuer die beiden
@@ -220,9 +222,9 @@ Stand SICK WTE11-2P2432.
 
 Aktuelle, experimentell nachjustierte Abstaende:
 
-- LB1-2: `23.54 mm`
-- LB3-4: `39.9 mm`
-- LB5-6: `64.69 mm`
+- LB1-2: `40.0 mm`
+- LB3-4: `40.0 mm`
+- LB5-6: `40.0 mm`
 
 Diese Werte sind Defaults in Python und SPS. Gespeicherte Profile oder per ADS
 geschriebene Werte koennen sie ueberschreiben.
@@ -238,12 +240,12 @@ logischen Signals. Aktuelle Defaults:
 
 | Sensor | Logik invertiert | Entprellung aktiv |
 | --- | --- | --- |
-| LB1 | nein | ja |
-| LB2 | nein | ja |
+| LB1 | ja | nein |
+| LB2 | ja | nein |
 | LB3 | ja | nein |
 | LB4 | ja | nein |
-| LB5 | nein | ja |
-| LB6 | nein | ja |
+| LB5 | ja | nein |
+| LB6 | ja | nein |
 
 Die globale Entprellzeit ist `20 ms`. Sie kann in der Pressure-GUI geaendert
 werden; die Aktivierung selbst ist im Dialog `Light Barrier Settings` pro Sensor
@@ -482,8 +484,8 @@ Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
 
 Die Lichtschranken-Invertierung wird im Settings-Dialog sichtbar dargestellt und
 zusammen mit dem Profil gespeichert. Selektives Abschalten der Entprellung ist
-im selben Dialog moeglich. LB3 und LB4 sind standardmaessig invertiert und nicht
-entprellt.
+im selben Dialog moeglich. Alle sechs Lichtschranken sind standardmaessig
+invertiert und nicht entprellt; alle drei Sensorabstaende starten bei `40 mm`.
 
 `Conveyor max` ist in der Haupt-GUI bewusst ausgeblendet und wird vorlaeufig
 fest mit `1000.0 mm/s` gespeichert und an die SPS geschrieben. Auch ein Profil
@@ -672,8 +674,10 @@ zusaetzlich denselben Windows-Named-Mutex `Local\BiBaZuCameraAndLights`. Eine
 zweite Hardware-GUI beendet ihren Start mit klarer Meldung, bevor Adapter erzeugt
 werden. In der Reorientation-GUI sind einzelne Auto-Reconnect-Loops deaktiviert;
 ein zentraler Ablauf verbindet und wiederholt beide Panels ausschliesslich
-seriell. BLE-Cancel und Shutdown haben harte Zeitgrenzen, damit ein haengender
-WinRT-Callback das Beenden der Qt-Anwendung nicht endlos blockiert.
+seriell. Jeder Paneladapter fuehrt Scan, GATT-Verbindung und Befehle in einem
+eigenen langlebigen Asyncio-Worker-Thread aus. Connect, BLE-Cancel und Shutdown
+haben harte Zeitgrenzen, damit ein haengender WinRT-Callback weder die Qt-GUI noch
+das Beenden der Anwendung blockiert.
 
 YAML-Schema v2 (gekuerzt):
 
@@ -804,12 +808,17 @@ Enthalten sind unter anderem Cycle-ID/Zeitpunkte, absolute Pfade und SHA256,
 drei Konsensmessungen, erkannte/Zielpose, Aktion, UR-Status, Lichtadressen,
 erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywerte.
 
-### Aktueller Inbetriebnahmestand 2026-08-09
+### Aktueller Inbetriebnahmestand 2026-08-11
 
-- Beide LED-Panels verbinden sich in der Reorientation-GUI praktisch erfolgreich.
-- Der urspruengliche GUI-Lag nach `Alle Komponenten verbinden` wurde auf eine
-  ungebegrenzte Kameraframe-Flut zurueckgefuehrt und per Preview-Limit/latest-only
-  korrigiert; erneuter Hardwaretest nach Neustart steht noch aus.
+- Ein programmgesteuerter Lauf der echten `MainWindow`-Klasse verband Panel 1
+  (`D2:96:EB:A9:A2:86`) nach 3 s und Panel 2 (`D7:6B:0F:DC:7B:4B`) nach 6 s und
+  trennte danach beide wieder sauber. Ein Reset des Bluetooth-Adapters war fuer
+  diesen bestaetigten Lauf nicht erforderlich.
+- Der Qt-Eventloop blieb waehrend jeder Messsekunde responsiv. Scan und GATT-
+  Verbindung laufen nun ausserhalb des Qt-Hauptthreads; ein zusaetzlicher Test
+  bildet einen intern synchron blockierenden WinRT-Connect nach.
+- Die Desktop-Verknuepfung zeigt auf die aktuelle `.venv\Scripts\pythonw.exe` mit
+  `-m bibazu_reorientation`; sie verwendet keine kopierte oder veraltete GUI.
 - Automated Image Capture erreicht Kamera und uebrige Hardware auf diesem PC.
   Der Reorientation-Kameraadapter wurde danach an dessen robuste Windows-/Baumer-
   Behandlung angenaehert; der reale Dauerlauf muss noch bestaetigt werden.
@@ -1006,15 +1015,16 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `68` bestandene Reorientation-Tests. Diese
+Aktueller Stand: Ruff ohne Befund und `70` bestandene Reorientation-Tests. Diese
 decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
 Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen und die harte
 Mehrposen-Ausfuehrungssperre sowie die animierte Uebergangsvorschau mit
 Bild-Fallback ab. Zusaetzlich sind SPS-IP-Migration, BLE-Auswahl, Timeout-Cleanup,
-Connect-Cancel, serielle Doppelverbindung und `Disconnect all components`
-abgedeckt. Sie ersetzen keine Hardwareabnahme.
+Connect-Cancel, serielle Doppelverbindung, Connect-Timeout, Isolation eines
+blockierenden WinRT-Aufrufs und `Disconnect all components` abgedeckt. Sie
+ersetzen keine Hardwareabnahme.
 
 ## 13. Empfohlene Wiederinbetriebnahme
 
@@ -1129,13 +1139,13 @@ Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
 Legacy-Tests:       python -m unittest test_pressure_control_gui.py (47)
-Reorientation-Test: uv run pytest (54), uv run ruff check src tests
+Reorientation-Test: uv run pytest (70), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004
 PLC-Zyklus:         1 ms
 Arrays/Duesen:      4 / 6
-Sensorabstaende:    23.54 mm, 39.9 mm, 64.69 mm
+Sensorabstaende:    40.0 mm, 40.0 mm, 40.0 mm
 Bandkalibrierung:   0.32960026 mm/Vollschritt, 64 Inkremente/Vollschritt
 Force-Delay:        2000-ms-Fenster, 0.05 Mindestanstieg
 Profile:            JSON Version 8, alte Versionen 1-8 ladbar
