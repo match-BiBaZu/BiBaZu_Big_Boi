@@ -155,6 +155,13 @@ nacheinander, damit WinRT-Scan und GATT-Aufbau nicht ueberlappen und beide Adapt
 nicht dasselbe Panel waehlen. Ein blockierender Windows-GATT-Aufruf bleibt dabei
 im BLE-Worker und kann den Qt-Hauptthread nicht mehr anhalten.
 
+Der Hardwareblock zeigt einen logarithmischen Exposure-Slider mit dem von GenICam
+gemeldeten Wertebereich. Slideränderungen werden 250 ms entprellt und per Queue im
+Kamera-Worker auf `ExposureTime`/`ExposureTimeAbs` geschrieben; falls erforderlich,
+wird `ExposureAuto` fuer diese Verbindung deaktiviert. Beim Trennen werden
+urspruenglicher Exposure- und Auto-Wert wiederhergestellt. Die FPS-Zeile trennt
+Kamera-Node (`cam`), gemessenen Rohabruf (`raw`) und Qt-Vorschau (`view`).
+
 Baumer Camera Explorer, Automated Image Capture und Reorientation Control duerfen
 die Kamera nicht gleichzeitig oeffnen. Dasselbe gilt praktisch fuer die beiden
 BLE-Panels. Unsichtbar weiterlaufende `pythonw.exe`-Instanzen im Task-Manager
@@ -210,21 +217,23 @@ TwinCAT-Rechner vorhanden sein.
 
 ### 4.3 Lichtschranken
 
-Die sechs Lichtschranken liegen auf Term 16, EL1018, Kanal 1-6 und sind in der
-SPS als `LightBarrierOn1..6` verknuepft. Verwendeter Sensortyp ist nach aktuellem
+Die acht Lichtschranken liegen auf Term 16, EL1018, Kanal 1-8 und sind in der
+SPS als `LightBarrierOn1..8` verknuepft. Verwendeter Sensortyp ist nach aktuellem
 Stand SICK WTE11-2P2432.
 
 | Paar | Aufgabe | Ausloesende Schranke |
 | --- | --- | --- |
 | LB1 -> LB2 | Geschwindigkeit Array 1 | LB2 startet Array 1 |
 | LB3 -> LB4 | Geschwindigkeit Array 2 | LB4 startet Array 2 |
-| LB5 -> LB6 | Geschwindigkeit Array 3 und 4 | LB6 startet Array 3 und 4 |
+| LB5 -> LB6 | Geschwindigkeit Array 3 | LB6 startet Array 3 |
+| LB7 -> LB8 | Geschwindigkeit Array 4 | LB8 startet Array 4 |
 
 Aktuelle, experimentell nachjustierte Abstaende:
 
 - LB1-2: `40.0 mm`
 - LB3-4: `40.0 mm`
 - LB5-6: `40.0 mm`
+- LB7-8: `40.0 mm`
 
 Diese Werte sind Defaults in Python und SPS. Gespeicherte Profile oder per ADS
 geschriebene Werte koennen sie ueberschreiben.
@@ -246,6 +255,8 @@ logischen Signals. Aktuelle Defaults:
 | LB4 | ja | nein |
 | LB5 | ja | nein |
 | LB6 | ja | nein |
+| LB7 | ja | nein |
+| LB8 | ja | nein |
 
 Die globale Entprellzeit ist `20 ms`. Sie kann in der Pressure-GUI geaendert
 werden; die Aktivierung selbst ist im Dialog `Light Barrier Settings` pro Sensor
@@ -385,7 +396,7 @@ alle 24 Ventilausgaenge zwangsweise aus und normale Arraytrigger deaktiviert.
 ### 5.4 Kraftpeak-Delaymessung
 
 Der Dialog `Measure Force Delay` misst die Zeit zwischen einer ausgewaehlten,
-akzeptierten fallenden Flanke von LB2, LB4 oder LB6 und dem globalen Maximum des
+akzeptierten fallenden Flanke von LB2, LB4, LB6 oder LB8 und dem globalen Maximum des
 ausgewaehlten Kraftsignals innerhalb eines Messfensters.
 
 Aktuelle Anforderungen und Defaults:
@@ -470,7 +481,7 @@ Startdatei: `CSVSaver/PressureControlGUI.py`
 Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
 
 - Foerderband Enable, Reverse, Reset und Geschwindigkeit
-- `Light Barrier Settings` mit Sensorabstaenden LB1-2, LB3-4 und LB5-6,
+- `Light Barrier Settings` mit Sensorabstaenden LB1-2, LB3-4, LB5-6 und LB7-8,
   globaler Debounce-Zeit sowie Invert-/Debounce-Enable je Lichtschranke
 - UR-Ry-Sollwinkel mit explizitem `Apply UR Angle`
 - vier Arrayzeilen mit Array-Enable, sechs Duesen-Checkboxen, Druck, manuellem
@@ -484,8 +495,8 @@ Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
 
 Die Lichtschranken-Invertierung wird im Settings-Dialog sichtbar dargestellt und
 zusammen mit dem Profil gespeichert. Selektives Abschalten der Entprellung ist
-im selben Dialog moeglich. Alle sechs Lichtschranken sind standardmaessig
-invertiert und nicht entprellt; alle drei Sensorabstaende starten bei `40 mm`.
+im selben Dialog moeglich. Alle acht Lichtschranken sind standardmaessig
+invertiert und nicht entprellt; alle vier Sensorabstaende starten bei `40 mm`.
 
 `Conveyor max` ist in der Haupt-GUI bewusst ausgeblendet und wird vorlaeufig
 fest mit `1000.0 mm/s` gespeichert und an die SPS geschrieben. Auch ein Profil
@@ -523,8 +534,8 @@ Dateiname beispielsweise:
 Df1a_Uebergang_9-35_wall_main_neg_x.json
 ```
 
-Die Profilversion bleibt 8, weil der Roadmap-Kontext nicht als neues Profilfeld
-gespeichert wird; er beeinflusst derzeit nur Anzeige und Dateinamensvorschlag.
+Die Profilversion ist 9. Version 9 ergaenzt LB7/LB8 sowie den Abstand LB7-8;
+der Roadmap-Kontext beeinflusst weiterhin nur Anzeige und Dateinamensvorschlag.
 
 Beim Oeffnen von Kalibrier- oder Jogdialogen wird normales Conveyor-Enable
 ausgeschaltet. Beim Schliessen erfolgt kein automatischer Wiederanlauf.
@@ -538,7 +549,7 @@ den normalen Duesenbetrieb. Sie bietet:
 
 - Anzeige des Kalibrierfaktors und der aktuellen Speed-Umrechnung
 - Foerderbandkalibrierung und mm-Jogging
-- Live-Status aller sechs Lichtschranken
+- Live-Status aller acht Lichtschranken
 - gespeicherte Logikinvertierung pro Lichtschranke
 - Auswahl zweier Lichtschranken und automatische Distanzmessung ueber die im
   SPS-Zyklus gelatchte EL7047-Position
@@ -786,12 +797,12 @@ PLC nach GUI:
 - `ReorientationExpectedArrayMask`, `ReorientationTriggeredArrayMask`
 - `ReorientationComplete`, `ReorientationCycleCounter`
 
-Heartbeatintervall ist 250 ms, PLC-Timeout 2 s, maximales Warten bis LB6 60 s,
-Drain-Timeout 35 s. Die PLC latcht die entprellte fallende LB6-Flanke, stoppt
+Heartbeatintervall ist 250 ms, PLC-Timeout 2 s, maximales Warten bis LB8 60 s,
+Drain-Timeout 35 s. Die PLC latcht die entprellte fallende LB8-Flanke, stoppt
 danach den Transport und meldet erst Complete, wenn erwartete und ausgeloeste
 Arraymasken exakt gleich sind, alle vier State-Machines idle sind, kein Pending
 existiert und alle 24 Ventile aus sind. Fehlercodes: 90 manueller Abort, 91
-Heartbeat, 92 Zyklus/LB6, 93 Drain, 94 Antrieb/VTEM.
+Heartbeat, 92 Zyklus/LB8, 93 Drain, 94 Antrieb/VTEM.
 
 Bei Heartbeatverlust bleibt ein Safe-Latch aktiv; es darf keinen automatischen
 Rueckfall in die Legacy-Freigaben geben. `PressureControlGUI` und
@@ -819,13 +830,18 @@ erwartete/ausgeloeste Maske, PLC-Zustand, Fehler und verfuegbare Druck-/Delaywer
   bildet einen intern synchron blockierenden WinRT-Connect nach.
 - Die Desktop-Verknuepfung zeigt auf die aktuelle `.venv\Scripts\pythonw.exe` mit
   `-m bibazu_reorientation`; sie verwendet keine kopierte oder veraltete GUI.
+- Der reale Baumer-Test mit Seriennummer `700006383255` bestaetigte
+  `ExposureTime=4000 us`, den Kamerabereich `8..60000000 us`, beschreibbaren
+  manuellen Modus und die exakte Apply-Quittierung. Im Test wurden ca. `105 raw`
+  und `16 view FPS` gemessen; die Kamera-Node meldete `10 cam FPS`. Danach wurde
+  die Kamera sauber getrennt und der Ausgangswert wiederhergestellt.
 - Automated Image Capture erreicht Kamera und uebrige Hardware auf diesem PC.
   Der Reorientation-Kameraadapter wurde danach an dessen robuste Windows-/Baumer-
   Behandlung angenaehert; der reale Dauerlauf muss noch bestaetigt werden.
 - SPS-IP `192.168.0.23` ist vom Betreiber bestaetigt. AMS bleibt
   `10.145.4.14.1.1`. Die GUI validiert nun auch `MAIN.ReorientationState`, statt
   fehlende Vertragssymbole still durch Defaultwerte zu ersetzen.
-- Vollstaendiger Pose-1-/Pose-2-Zyklus, Watchdog, LB6/Drain und Fehlerabnahme sind
+- Vollstaendiger Pose-1-/Pose-2-Zyklus, Watchdog, LB8/Drain und Fehlerabnahme sind
   noch nicht an druckbeaufschlagter Hardware freigegeben.
 
 ## 9. UR-Roboter
@@ -1015,16 +1031,16 @@ uv run ruff check src tests
 uv run pytest
 ```
 
-Aktueller Stand: Ruff ohne Befund und `70` bestandene Reorientation-Tests. Diese
-decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..8, Legacy-Migration,
+Aktueller Stand: Ruff ohne Befund und `73` bestandene Reorientation-Tests. Diese
+decken YAML/relative Pfade, Zielpose 1/2, Profilversionen 1..9, Legacy-Migration,
 Detect/OBB, Drei-Frame-Konsens, Controller/Readback-Reihenfolge, STL/OBJ-Preview,
 Settings, Df1a-YAML/JSON-Normalisierung, Roadmap-Validierung, v2-Roundtrip,
 Hash-Neuuebernahme, Graph-Readiness, sechs Df1a-Profilzeilen und die harte
 Mehrposen-Ausfuehrungssperre sowie die animierte Uebergangsvorschau mit
 Bild-Fallback ab. Zusaetzlich sind SPS-IP-Migration, BLE-Auswahl, Timeout-Cleanup,
 Connect-Cancel, serielle Doppelverbindung, Connect-Timeout, Isolation eines
-blockierenden WinRT-Aufrufs und `Disconnect all components` abgedeckt. Sie
-ersetzen keine Hardwareabnahme.
+blockierenden WinRT-Aufrufs, Exposure-/FPS-UI, Langzeit-Exposure-Fetch-Timeout und
+`Disconnect all components` abgedeckt. Sie ersetzen keine Hardwareabnahme.
 
 ## 13. Empfohlene Wiederinbetriebnahme
 
@@ -1036,7 +1052,7 @@ ersetzen keine Hardwareabnahme.
    beide Richtungen pruefen.
 5. Foerderband ueber die 315-mm-Markierungen neu validieren; bei Bedarf
    kalibrieren.
-6. Alle sechs Lichtschranken in der Setup-GUI pruefen, Invertierung und
+6. Alle acht Lichtschranken in der Setup-GUI pruefen, Invertierung und
    Entprellung bestaetigen.
 7. Sensorabstaende mit mehreren UR-Passagen in beide Richtungen validieren.
 8. Geschwindigkeitsplausibilitaet zuerst bei konstanter, langsamer Bewegung und
@@ -1050,8 +1066,8 @@ ersetzen keine Hardwareabnahme.
     beide Panels, PLC-Vertrag und Preflight pruefen.
 13. Pose-Pass-through mit erwarteter Maske null pruefen; kein Ventil darf pulsen.
 14. Danach genau einen Uebergang mit konservativem Profil und physischem Not-Aus
-    testen. LB6, Trigger-Maske, Drain, Ventil-idle und CycleCounter online pruefen.
-15. Abschliessend Heartbeatverlust, ADS-Abbruch, manuellen Stop, blockierte LB6
+    testen. LB8, Trigger-Maske, Drain, Ventil-idle und CycleCounter online pruefen.
+15. Abschliessend Heartbeatverlust, ADS-Abbruch, manuellen Stop, blockierte LB8
     und fehlenden Trigger kontrolliert abnehmen. Kein Fall darf automatisch
     wieder anlaufen.
 
@@ -1068,8 +1084,8 @@ ersetzen keine Hardwareabnahme.
 - Die Lichtschrankenzeit hat 1-ms-SPS-Aufloesung und keine EL1018-Hardware-
   Timestamps. Sehr kurze Sensorlaufzeiten haben entsprechend groesseren
   relativen Fehler.
-- Array 3 und 4 teilen sich die Geschwindigkeitsmessung LB5-6 und den Trigger
-  LB6.
+- Array 3 nutzt die Geschwindigkeitsmessung LB5-6 und den Trigger LB6; Array 4
+  nutzt getrennt LB7-8 und den Trigger LB8.
 - Die Kraftantwortinterpolation endet derzeit bei vier aktiven Duesen; vier,
   fuenf und sechs verwenden denselben Endwert.
 - Die Force-Delay-Messung startet an der Lichtschranke und kann geplante
@@ -1139,14 +1155,14 @@ Pressure-GUI:       python PressureControlGUI.py
 Setup-GUI:          python ConveyorSetupGUI.py
 Reorientation:      cd ReorientationControlGUI; uv run bibazu-reorientation
 Legacy-Tests:       python -m unittest test_pressure_control_gui.py (47)
-Reorientation-Test: uv run pytest (70), uv run ruff check src tests
+Reorientation-Test: uv run pytest (73), uv run ruff check src tests
 Shortcuts:          WindowsLaunchers\Verknuepfungen-installieren.cmd
 PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004
 PLC-Zyklus:         1 ms
 Arrays/Duesen:      4 / 6
-Sensorabstaende:    40.0 mm, 40.0 mm, 40.0 mm
+Sensorabstaende:    40.0 mm, 40.0 mm, 40.0 mm, 40.0 mm
 Bandkalibrierung:   0.32960026 mm/Vollschritt, 64 Inkremente/Vollschritt
 Force-Delay:        2000-ms-Fenster, 0.05 Mindestanstieg
-Profile:            JSON Version 8, alte Versionen 1-8 ladbar
+Profile:            JSON Version 9, alte Versionen 1-8 ladbar
 ```

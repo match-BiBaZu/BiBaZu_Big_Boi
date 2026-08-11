@@ -65,7 +65,7 @@ PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
-PROFILE_VERSION = 8
+PROFILE_VERSION = 9
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -85,6 +85,8 @@ ADS_WRITE_DEBOUNCE_MS = 100
 
 ARRAY_COUNT = 4
 NOZZLES_PER_ARRAY = 6
+LIGHT_BARRIER_COUNT = 8
+LIGHT_BARRIER_PAIRS = ((1, 2), (3, 4), (5, 6), (7, 8))
 PRESSURE_MIN_MBAR = 0
 PRESSURE_MAX_MBAR = 6000
 DELAY_MIN_MS = 0
@@ -96,20 +98,14 @@ SENSOR_SPACING_MAX_MM = 5000.0
 SENSOR_SPACING_12_DEFAULT_MM = 40.0
 SENSOR_SPACING_34_DEFAULT_MM = 40.0
 SENSOR_SPACING_56_DEFAULT_MM = 40.0
+SENSOR_SPACING_78_DEFAULT_MM = 40.0
 OFFSET_MIN_MM = 0.0
 OFFSET_MAX_MM = 5000.0
 LIGHT_BARRIER_DEBOUNCE_MIN_MS = 1
 LIGHT_BARRIER_DEBOUNCE_MAX_MS = 200
 LIGHT_BARRIER_DEBOUNCE_DEFAULT_MS = 20
-LIGHT_BARRIER_INVERT_DEFAULTS = (True,) * 6
-LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS = (
-    False,
-    False,
-    False,
-    False,
-    False,
-    False,
-)
+LIGHT_BARRIER_INVERT_DEFAULTS = (True,) * LIGHT_BARRIER_COUNT
+LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS = (False,) * LIGHT_BARRIER_COUNT
 CONVEYOR_SPEED_MIN_MM_PER_SEC = 0.0
 CONVEYOR_SPEED_MAX_MM_PER_SEC = 5000.0
 CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC = 1.0
@@ -279,13 +275,14 @@ class AdsClient:
         else:
             raise ValueError(f"Unknown field: {field}")
 
-    def read_sensor_spacings(self) -> tuple[float, float, float]:
+    def read_sensor_spacings(self) -> tuple[float, float, float, float]:
         if self.plc is None:
             raise RuntimeError("ADS is offline")
         return (
             self.plc.read_by_name("MAIN.GuiSensorSpacing12Mm", pyads.PLCTYPE_REAL),
             self.plc.read_by_name("MAIN.GuiSensorSpacing34Mm", pyads.PLCTYPE_REAL),
             self.plc.read_by_name("MAIN.GuiSensorSpacing56Mm", pyads.PLCTYPE_REAL),
+            self.plc.read_by_name("MAIN.GuiSensorSpacing78Mm", pyads.PLCTYPE_REAL),
         )
 
     def write_sensor_spacing(self, symbol_name: str, value: float) -> None:
@@ -624,11 +621,15 @@ class AdsWorker(QObject):
             "MAIN.GuiSensorSpacing12Mm",
             "MAIN.GuiSensorSpacing34Mm",
             "MAIN.GuiSensorSpacing56Mm",
+            "MAIN.GuiSensorSpacing78Mm",
             "MAIN.GuiBarrierCalibrationDebounceMs",
-            *[f"MAIN.GuiLightBarrierInvert{index}" for index in range(1, 7)],
+            *[
+                f"MAIN.GuiLightBarrierInvert{index}"
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
+            ],
             *[
                 f"MAIN.GuiLightBarrierDebounceEnabled{index}"
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "MAIN.GuiConveyorEnabled",
             "MAIN.GuiConveyorReverse",
@@ -680,17 +681,18 @@ class AdsWorker(QObject):
                 float(values["MAIN.GuiSensorSpacing12Mm"]),
                 float(values["MAIN.GuiSensorSpacing34Mm"]),
                 float(values["MAIN.GuiSensorSpacing56Mm"]),
+                float(values["MAIN.GuiSensorSpacing78Mm"]),
             ),
             "light_barrier_debounce_ms": int(
                 values["MAIN.GuiBarrierCalibrationDebounceMs"]
             ),
             "light_barrier_inverted": [
                 bool(values[f"MAIN.GuiLightBarrierInvert{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "light_barrier_debounce_enabled": [
                 bool(values[f"MAIN.GuiLightBarrierDebounceEnabled{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "conveyor": {
                 "enabled": bool(values["MAIN.GuiConveyorEnabled"]),
@@ -724,7 +726,7 @@ class AdsWorker(QObject):
         names = ["MAIN.ShotCounter", "MAIN.AvgPressureN1", "MAIN.AvgPressureN2"]
         for index in range(1, ARRAY_COUNT + 1):
             names.extend([SYMBOLS[index].estimated_velocity, SYMBOLS[index].estimated_delay])
-        for index in range(1, 7):
+        for index in range(1, LIGHT_BARRIER_COUNT + 1):
             names.extend(
                 [
                     f"MAIN.LightBarrierEventCount{index}",
@@ -739,9 +741,11 @@ class AdsWorker(QObject):
                 "MAIN.LastVelocityTimeMs",
                 "MAIN.LastVelocityTime2Ms",
                 "MAIN.LastVelocityTime3Ms",
+                "MAIN.LastVelocityTime4Ms",
                 "MAIN.VelocityMeasurementValid",
                 "MAIN.VelocityMeasurement2Valid",
                 "MAIN.VelocityMeasurement3Valid",
+                "MAIN.VelocityMeasurement4Valid",
             ]
         )
         values = self.read_values(names)
@@ -770,17 +774,19 @@ class AdsWorker(QObject):
                     "state": bool(values[f"MAIN.LightBarrierStable{index}"]),
                     "raw_state": bool(values[f"MAIN.LightBarrierOn{index}"]),
                 }
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "velocity_times_ms": (
                 int(values["MAIN.LastVelocityTimeMs"]),
                 int(values["MAIN.LastVelocityTime2Ms"]),
                 int(values["MAIN.LastVelocityTime3Ms"]),
+                int(values["MAIN.LastVelocityTime4Ms"]),
             ),
             "velocity_valid": (
                 bool(values["MAIN.VelocityMeasurementValid"]),
                 bool(values["MAIN.VelocityMeasurement2Valid"]),
                 bool(values["MAIN.VelocityMeasurement3Valid"]),
+                bool(values["MAIN.VelocityMeasurement4Valid"]),
             ),
         }
 
@@ -900,17 +906,17 @@ class AdsWorker(QObject):
 
     def read_setup_snapshot(self) -> dict:
         names = [
-            *[f"MAIN.LightBarrierOn{index}" for index in range(1, 7)],
-            *[f"MAIN.LightBarrierStable{index}" for index in range(1, 7)],
-            *[f"MAIN.GuiLightBarrierInvert{index}" for index in range(1, 7)],
+            *[f"MAIN.LightBarrierOn{index}" for index in range(1, LIGHT_BARRIER_COUNT + 1)],
+            *[f"MAIN.LightBarrierStable{index}" for index in range(1, LIGHT_BARRIER_COUNT + 1)],
+            *[f"MAIN.GuiLightBarrierInvert{index}" for index in range(1, LIGHT_BARRIER_COUNT + 1)],
             *[
                 f"MAIN.GuiLightBarrierDebounceEnabled{index}"
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
-            *[f"MAIN.LightBarrierEventCount{index}" for index in range(1, 7)],
+            *[f"MAIN.LightBarrierEventCount{index}" for index in range(1, LIGHT_BARRIER_COUNT + 1)],
             *[
                 f"MAIN.LightBarrierLastEventTimeMs{index}"
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "MAIN.StepperInternalPosition",
             "MAIN.StepperPosReadyToExecute",
@@ -935,41 +941,45 @@ class AdsWorker(QObject):
             "MAIN.GuiSensorSpacing12Mm",
             "MAIN.GuiSensorSpacing34Mm",
             "MAIN.GuiSensorSpacing56Mm",
+            "MAIN.GuiSensorSpacing78Mm",
             "MAIN.LastVelocityTimeMs",
             "MAIN.LastVelocityTime2Ms",
             "MAIN.LastVelocityTime3Ms",
+            "MAIN.LastVelocityTime4Ms",
             "MAIN.VelocityMeasurementValid",
             "MAIN.VelocityMeasurement2Valid",
             "MAIN.VelocityMeasurement3Valid",
+            "MAIN.VelocityMeasurement4Valid",
             "MAIN.EstimatedVelocityMmPerSec1",
             "MAIN.EstimatedVelocityMmPerSec2",
             "MAIN.EstimatedVelocityMmPerSec3",
+            "MAIN.EstimatedVelocityMmPerSec4",
         ]
         values = self.read_values(names)
         return {
             "light_barriers": [
                 bool(values[f"MAIN.LightBarrierStable{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "raw_light_barriers": [
                 bool(values[f"MAIN.LightBarrierOn{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "light_barrier_inverted": [
                 bool(values[f"MAIN.GuiLightBarrierInvert{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "light_barrier_debounce_enabled": [
                 bool(values[f"MAIN.GuiLightBarrierDebounceEnabled{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "light_barrier_event_counts": [
                 int(values[f"MAIN.LightBarrierEventCount{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "light_barrier_event_times_ms": [
                 int(values[f"MAIN.LightBarrierLastEventTimeMs{index}"])
-                for index in range(1, 7)
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
             "internal_position": int(values["MAIN.StepperInternalPosition"]),
             "ready_to_execute": bool(values["MAIN.StepperPosReadyToExecute"]),
@@ -999,21 +1009,25 @@ class AdsWorker(QObject):
                 float(values["MAIN.GuiSensorSpacing12Mm"]),
                 float(values["MAIN.GuiSensorSpacing34Mm"]),
                 float(values["MAIN.GuiSensorSpacing56Mm"]),
+                float(values["MAIN.GuiSensorSpacing78Mm"]),
             ),
             "velocity_times_ms": (
                 int(values["MAIN.LastVelocityTimeMs"]),
                 int(values["MAIN.LastVelocityTime2Ms"]),
                 int(values["MAIN.LastVelocityTime3Ms"]),
+                int(values["MAIN.LastVelocityTime4Ms"]),
             ),
             "velocity_valid": (
                 bool(values["MAIN.VelocityMeasurementValid"]),
                 bool(values["MAIN.VelocityMeasurement2Valid"]),
                 bool(values["MAIN.VelocityMeasurement3Valid"]),
+                bool(values["MAIN.VelocityMeasurement4Valid"]),
             ),
             "estimated_velocities": (
                 float(values["MAIN.EstimatedVelocityMmPerSec1"]),
                 float(values["MAIN.EstimatedVelocityMmPerSec2"]),
                 float(values["MAIN.EstimatedVelocityMmPerSec3"]),
+                float(values["MAIN.EstimatedVelocityMmPerSec4"]),
             ),
         }
 
@@ -1677,14 +1691,14 @@ class ArrayRow:
 
 class LightBarrierSettingsDialog(QDialog):
     setting_changed = pyqtSignal(int, bool, bool)
-    measurement_changed = pyqtSignal(float, float, float, int)
+    measurement_changed = pyqtSignal(float, float, float, float, int)
 
     def __init__(
         self,
         ads: AdsController,
         inverted: list[bool],
         debounce_enabled: list[bool],
-        sensor_spacings_mm: tuple[float, float, float],
+        sensor_spacings_mm: tuple[float, float, float, float],
         debounce_ms: int,
         parent: QWidget | None = None,
     ) -> None:
@@ -1697,11 +1711,15 @@ class LightBarrierSettingsDialog(QDialog):
         measurement_box = QGroupBox("Measurement Settings")
         measurement_grid = QGridLayout(measurement_box)
         self.spacing_controls: list[QDoubleSpinBox] = []
-        spacing_labels = ("Sensor spacing 1-2", "Sensor spacing 3-4", "Sensor spacing 5-6")
+        spacing_labels = tuple(
+            f"Sensor spacing {first}-{second}"
+            for first, second in LIGHT_BARRIER_PAIRS
+        )
         spacing_symbols = (
             "MAIN.GuiSensorSpacing12Mm",
             "MAIN.GuiSensorSpacing34Mm",
             "MAIN.GuiSensorSpacing56Mm",
+            "MAIN.GuiSensorSpacing78Mm",
         )
         for index, (label, symbol, value) in enumerate(
             zip(spacing_labels, spacing_symbols, sensor_spacings_mm)
@@ -1738,8 +1756,8 @@ class LightBarrierSettingsDialog(QDialog):
                 "Light barrier debounce",
             )
         )
-        measurement_grid.addWidget(QLabel("Light barrier debounce"), 3, 0)
-        measurement_grid.addWidget(self.debounce_ms_control, 3, 1)
+        measurement_grid.addWidget(QLabel("Light barrier debounce"), 4, 0)
+        measurement_grid.addWidget(self.debounce_ms_control, 4, 1)
         measurement_grid.setColumnStretch(2, 1)
         layout.addWidget(measurement_box)
 
@@ -1751,7 +1769,7 @@ class LightBarrierSettingsDialog(QDialog):
 
         self.invert_controls: list[QCheckBox] = []
         self.debounce_controls: list[QCheckBox] = []
-        for sensor in range(1, 7):
+        for sensor in range(1, LIGHT_BARRIER_COUNT + 1):
             invert_control = QCheckBox()
             invert_control.setChecked(bool(inverted[sensor - 1]))
             invert_control.setToolTip(
@@ -2254,7 +2272,7 @@ class ForceDelayDialog(QDialog):
         for index in range(1, ARRAY_COUNT + 1):
             self.array_input.addItem(f"Array {index}", index)
         self.light_barrier_input = QComboBox()
-        for index in (2, 4, 6):
+        for index in (2, 4, 6, 8):
             self.light_barrier_input.addItem(f"Light barrier {index}", index)
         self.force_sensor_input = QComboBox()
         self.force_sensor_input.addItem("Force sensor 1", 1)
@@ -2679,7 +2697,9 @@ class PressureControlWindow(QMainWindow):
         super().__init__()
         self.rows = [ArrayRow(index) for index in range(1, ARRAY_COUNT + 1)]
         self.last_shot_counter: int | None = None
-        self.last_light_barrier_event_counts: list[int | None] = [None] * 6
+        self.last_light_barrier_event_counts: list[int | None] = [
+            None
+        ] * LIGHT_BARRIER_COUNT
         self.light_barrier_inverted = list(LIGHT_BARRIER_INVERT_DEFAULTS)
         self.light_barrier_debounce_enabled = list(
             LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS
@@ -2756,6 +2776,13 @@ class PressureControlWindow(QMainWindow):
         self.sensor_spacing_56.setSingleStep(1.0)
         self.sensor_spacing_56.setValue(SENSOR_SPACING_56_DEFAULT_MM)
         self.sensor_spacing_56.setToolTip("Physical distance between light barrier 5 and light barrier 6")
+        self.sensor_spacing_78 = QDoubleSpinBox()
+        self.sensor_spacing_78.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
+        self.sensor_spacing_78.setSuffix(" mm")
+        self.sensor_spacing_78.setDecimals(1)
+        self.sensor_spacing_78.setSingleStep(1.0)
+        self.sensor_spacing_78.setValue(SENSOR_SPACING_78_DEFAULT_MM)
+        self.sensor_spacing_78.setToolTip("Physical distance between light barrier 7 and light barrier 8")
         self.light_barrier_debounce = QSpinBox()
         self.light_barrier_debounce.setRange(
             LIGHT_BARRIER_DEBOUNCE_MIN_MS, LIGHT_BARRIER_DEBOUNCE_MAX_MS
@@ -2927,6 +2954,9 @@ class PressureControlWindow(QMainWindow):
         self.sensor_spacing_56.valueChanged.connect(
             lambda value: self.write_sensor_spacing("MAIN.GuiSensorSpacing56Mm", value, "Sensor spacing 5-6")
         )
+        self.sensor_spacing_78.valueChanged.connect(
+            lambda value: self.write_sensor_spacing("MAIN.GuiSensorSpacing78Mm", value, "Sensor spacing 7-8")
+        )
         self.light_barrier_debounce.valueChanged.connect(
             lambda value: self.ads.queue_write(
                 "MAIN.GuiBarrierCalibrationDebounceMs",
@@ -3019,13 +3049,13 @@ class PressureControlWindow(QMainWindow):
             self.statusBar().showMessage(f"ADS offline: {detail}")
             self.logging_status.setText("Logging: offline")
             self.last_shot_counter = None
-            self.last_light_barrier_event_counts = [None] * 6
+            self.last_light_barrier_event_counts = [None] * LIGHT_BARRIER_COUNT
             for row in self.rows:
                 row.status.setText("offline")
 
     @pyqtSlot(object)
     def apply_initial_snapshot(self, snapshot: dict) -> None:
-        spacing_12, spacing_34, spacing_56 = snapshot["sensor_spacings"]
+        spacing_12, spacing_34, spacing_56, spacing_78 = snapshot["sensor_spacings"]
         light_barrier_debounce = snapshot["light_barrier_debounce_ms"]
         self.light_barrier_inverted = list(
             snapshot.get("light_barrier_inverted", LIGHT_BARRIER_INVERT_DEFAULTS)
@@ -3047,6 +3077,7 @@ class PressureControlWindow(QMainWindow):
             QSignalBlocker(self.sensor_spacing_12),
             QSignalBlocker(self.sensor_spacing_34),
             QSignalBlocker(self.sensor_spacing_56),
+            QSignalBlocker(self.sensor_spacing_78),
             QSignalBlocker(self.light_barrier_debounce),
             QSignalBlocker(self.conveyor_enabled),
             QSignalBlocker(self.conveyor_reverse),
@@ -3056,6 +3087,7 @@ class PressureControlWindow(QMainWindow):
             self.sensor_spacing_12.setValue(spacing_12)
             self.sensor_spacing_34.setValue(spacing_34)
             self.sensor_spacing_56.setValue(spacing_56)
+            self.sensor_spacing_78.setValue(spacing_78)
             self.light_barrier_debounce.setValue(light_barrier_debounce)
             self.conveyor_enabled.setChecked(bool(conveyor_settings["enabled"]))
             self.conveyor_reverse.setChecked(bool(conveyor_settings["reverse"]))
@@ -3114,6 +3146,7 @@ class PressureControlWindow(QMainWindow):
             "MAIN.GuiSensorSpacing12Mm": float(self.sensor_spacing_12.value()),
             "MAIN.GuiSensorSpacing34Mm": float(self.sensor_spacing_34.value()),
             "MAIN.GuiSensorSpacing56Mm": float(self.sensor_spacing_56.value()),
+            "MAIN.GuiSensorSpacing78Mm": float(self.sensor_spacing_78.value()),
             "MAIN.GuiBarrierCalibrationDebounceMs": int(
                 self.light_barrier_debounce.value()
             ),
@@ -3196,6 +3229,7 @@ class PressureControlWindow(QMainWindow):
                 self.sensor_spacing_12.value(),
                 self.sensor_spacing_34.value(),
                 self.sensor_spacing_56.value(),
+                self.sensor_spacing_78.value(),
             ),
             self.light_barrier_debounce.value(),
             self,
@@ -3213,14 +3247,20 @@ class PressureControlWindow(QMainWindow):
         self.light_barrier_inverted[sensor - 1] = inverted
         self.light_barrier_debounce_enabled[sensor - 1] = debounce_enabled
 
-    @pyqtSlot(float, float, float, int)
+    @pyqtSlot(float, float, float, float, int)
     def _update_light_barrier_measurements(
-        self, spacing_12: float, spacing_34: float, spacing_56: float, debounce_ms: int
+        self,
+        spacing_12: float,
+        spacing_34: float,
+        spacing_56: float,
+        spacing_78: float,
+        debounce_ms: int,
     ) -> None:
         controls_and_values = (
             (self.sensor_spacing_12, spacing_12),
             (self.sensor_spacing_34, spacing_34),
             (self.sensor_spacing_56, spacing_56),
+            (self.sensor_spacing_78, spacing_78),
             (self.light_barrier_debounce, debounce_ms),
         )
         blockers = [QSignalBlocker(control) for control, _value in controls_and_values]
@@ -3516,6 +3556,10 @@ class PressureControlWindow(QMainWindow):
             "light_barrier_debounce_enabled": list(
                 self.light_barrier_debounce_enabled
             ),
+            "sensor_spacing_12_mm": self.sensor_spacing_12.value(),
+            "sensor_spacing_34_mm": self.sensor_spacing_34.value(),
+            "sensor_spacing_56_mm": self.sensor_spacing_56.value(),
+            "sensor_spacing_78_mm": self.sensor_spacing_78.value(),
             "conveyor_enabled": self.conveyor_enabled.isChecked(),
             "conveyor_reverse": self.conveyor_reverse.isChecked(),
             "conveyor_speed_mm_per_sec": self.conveyor_speed.value(),
@@ -3621,11 +3665,24 @@ class PressureControlWindow(QMainWindow):
                     self.light_barrier_debounce.value(),
                 )
             )
+            sensor_spacings = (
+                float(profile.get("sensor_spacing_12_mm", self.sensor_spacing_12.value())),
+                float(profile.get("sensor_spacing_34_mm", self.sensor_spacing_34.value())),
+                float(profile.get("sensor_spacing_56_mm", self.sensor_spacing_56.value())),
+                float(profile.get("sensor_spacing_78_mm", self.sensor_spacing_78.value())),
+            )
             profile_inversions = profile.get(
                 "light_barrier_inverted", self.light_barrier_inverted
             )
-            if not isinstance(profile_inversions, list) or len(profile_inversions) != 6:
-                raise ValueError("Light barrier inversion list must contain six values")
+            if not isinstance(profile_inversions, list) or len(profile_inversions) not in {
+                6,
+                LIGHT_BARRIER_COUNT,
+            }:
+                raise ValueError("Light barrier inversion list must contain six or eight values")
+            profile_inversions = [
+                *profile_inversions,
+                *LIGHT_BARRIER_INVERT_DEFAULTS[len(profile_inversions) :],
+            ]
             self.light_barrier_inverted = [
                 bool(value) for value in profile_inversions
             ]
@@ -3635,17 +3692,27 @@ class PressureControlWindow(QMainWindow):
             )
             if (
                 not isinstance(profile_debounce_enabled, list)
-                or len(profile_debounce_enabled) != 6
+                or len(profile_debounce_enabled) not in {6, LIGHT_BARRIER_COUNT}
             ):
                 raise ValueError(
-                    "Light barrier debounce enable list must contain six values"
+                    "Light barrier debounce enable list must contain six or eight values"
                 )
+            profile_debounce_enabled = [
+                *profile_debounce_enabled,
+                *LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS[
+                    len(profile_debounce_enabled) :
+                ],
+            ]
             self.light_barrier_debounce_enabled = [
                 bool(value) for value in profile_debounce_enabled
             ]
             with (
                 QSignalBlocker(self.ur_angle_input),
                 QSignalBlocker(self.light_barrier_debounce),
+                QSignalBlocker(self.sensor_spacing_12),
+                QSignalBlocker(self.sensor_spacing_34),
+                QSignalBlocker(self.sensor_spacing_56),
+                QSignalBlocker(self.sensor_spacing_78),
                 QSignalBlocker(self.conveyor_enabled),
                 QSignalBlocker(self.conveyor_reverse),
                 QSignalBlocker(self.conveyor_speed),
@@ -3653,6 +3720,10 @@ class PressureControlWindow(QMainWindow):
             ):
                 self.ur_angle_input.setValue(ur_angle_deg)
                 self.light_barrier_debounce.setValue(light_barrier_debounce)
+                self.sensor_spacing_12.setValue(sensor_spacings[0])
+                self.sensor_spacing_34.setValue(sensor_spacings[1])
+                self.sensor_spacing_56.setValue(sensor_spacings[2])
+                self.sensor_spacing_78.setValue(sensor_spacings[3])
                 self.conveyor_enabled.setChecked(conveyor_enabled)
                 self.conveyor_reverse.setChecked(conveyor_reverse)
                 self.conveyor_speed.setValue(conveyor_speed)

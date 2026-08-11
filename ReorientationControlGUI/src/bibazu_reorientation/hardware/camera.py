@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import re
 import time
 from typing import Any
@@ -12,6 +13,9 @@ from bibazu_reorientation.hardware.base import DeviceAdapter
 from bibazu_reorientation.models import CameraFrame, CameraStatus, ConnectionState
 from bibazu_reorientation.settings import AppSettings
 
+FETCH_TIMEOUT_SECONDS = 1.0
+FETCH_TIMEOUT_MARGIN_SECONDS = 0.5
+
 
 def advance_frame_deadline(deadline: float, interval: float, now: float) -> float:
     """Advance a preview deadline without building up delayed Qt frames."""
@@ -23,6 +27,51 @@ def advance_frame_deadline(deadline: float, interval: float, now: float) -> floa
         return deadline
     missed_intervals = int((now - deadline) // interval) + 1
     return deadline + missed_intervals * interval
+
+
+def camera_fetch_timeout_seconds(exposure_time_us: float | None) -> float:
+    """Allow a complete exposure plus transfer margin before a fetch times out."""
+    if exposure_time_us is None:
+        return FETCH_TIMEOUT_SECONDS
+    return max(
+        FETCH_TIMEOUT_SECONDS,
+        max(0.0, float(exposure_time_us)) / 1_000_000.0 + FETCH_TIMEOUT_MARGIN_SECONDS,
+    )
+
+
+def _find_node(node_map: Any, *names: str) -> Any:
+    for name in names:
+        try:
+            return getattr(node_map, name)
+        except Exception:
+            continue
+    return None
+
+
+def _node_value(node_map: Any, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(node_map, name).value
+    except Exception:
+        return default
+
+
+def _node_number(node: Any, attribute: str) -> float | None:
+    try:
+        return float(getattr(node, attribute))
+    except Exception:
+        return None
+
+
+def _node_writable(node: Any) -> bool:
+    if node is None:
+        return False
+    try:
+        from genicam.genapi import is_writable
+
+        return bool(is_writable(node))
+    except Exception:
+        access_mode = str(getattr(node, "access_mode", "")).upper()
+        return access_mode in {"RW", "WO", "4"}
 
 
 def _uint8(image: np.ndarray, pixel_format: str) -> np.ndarray:
@@ -69,6 +118,9 @@ def convert_to_rgb(data: Any, width: int, height: int, pixel_format: str) -> np.
 class _CameraWorker(QObject):
     frame = pyqtSignal(object)
     connected = pyqtSignal(object)
+    status_changed = pyqtSignal(object)
+    exposure_applied = pyqtSignal(float)
+    exposure_failed = pyqtSignal(str)
     error = pyqtSignal(str)
     finished = pyqtSignal()
 
@@ -76,11 +128,19 @@ class _CameraWorker(QObject):
         super().__init__()
         self.settings = settings
         self._running = False
+        self._exposure_commands: queue.Queue[float] = queue.Queue()
+
+    def enqueue_exposure(self, exposure_time_us: float) -> None:
+        self._exposure_commands.put(float(exposure_time_us))
 
     @pyqtSlot()
     def run(self) -> None:
         harvester = None
         acquisition = None
+        exposure_node: Any = None
+        exposure_auto_node: Any = None
+        original_exposure: float | None = None
+        original_exposure_auto: str | None = None
         try:
             from harvesters.core import Harvester
 
@@ -103,41 +163,146 @@ class _CameraWorker(QObject):
             if selected is None:
                 raise RuntimeError("Baumer camera could not be identified uniquely")
             acquisition = harvester.create({"serial_number": selected.serial_number})
-            acquisition.start()
-            self.connected.emit(
-                CameraStatus(
-                    model=str(getattr(selected, "model", "–")),
-                    serial_number=str(getattr(selected, "serial_number", "–")),
-                    ip_address=self.settings.camera_ip,
-                )
+            node_map = acquisition.remote_device.node_map
+            exposure_node = _find_node(node_map, "ExposureTime", "ExposureTimeAbs")
+            exposure_auto_node = _find_node(node_map, "ExposureAuto")
+            original_exposure = _node_number(exposure_node, "value")
+            exposure_auto = str(_node_value(node_map, "ExposureAuto", "–"))
+            original_exposure_auto = exposure_auto
+            camera_fps_raw = _node_value(
+                node_map,
+                "ResultingFrameRate",
+                _node_value(node_map, "AcquisitionFrameRate", None),
             )
+            camera_fps = float(camera_fps_raw) if camera_fps_raw is not None else None
+            status = CameraStatus(
+                model=str(getattr(selected, "model", "–")),
+                serial_number=str(getattr(selected, "serial_number", "–")),
+                ip_address=self.settings.camera_ip,
+                width=int(_node_value(node_map, "Width", 0)),
+                height=int(_node_value(node_map, "Height", 0)),
+                pixel_format=str(_node_value(node_map, "PixelFormat", "–")),
+                camera_fps=camera_fps,
+                exposure_time_us=original_exposure,
+                exposure_min_us=_node_number(exposure_node, "min"),
+                exposure_max_us=_node_number(exposure_node, "max"),
+                exposure_writable=exposure_node is not None
+                and (_node_writable(exposure_node) or _node_writable(exposure_auto_node)),
+                exposure_auto=exposure_auto,
+            )
+            acquisition.start()
+            self.connected.emit(status)
             self._running = True
             preview_interval = 1.0 / max(1.0, float(self.settings.preview_fps))
             next_preview = 0.0
+            fps_window_start = time.monotonic()
+            stream_frames = 0
+            preview_frames = 0
             while self._running and not QThread.currentThread().isInterruptionRequested():
-                with acquisition.fetch(timeout=1.0) as buffer:
+                try:
+                    while True:
+                        requested_exposure = self._exposure_commands.get_nowait()
+                        if exposure_node is None or not status.exposure_writable:
+                            raise RuntimeError(
+                                "The camera does not expose a writable exposure time"
+                            )
+                        current_auto = str(
+                            getattr(exposure_auto_node, "value", status.exposure_auto)
+                        )
+                        if current_auto.lower() not in {"off", "–", "none"}:
+                            if exposure_auto_node is None or not _node_writable(exposure_auto_node):
+                                raise RuntimeError("ExposureAuto is active and cannot be disabled")
+                            exposure_auto_node.value = "Off"
+                        minimum = status.exposure_min_us or requested_exposure
+                        maximum = status.exposure_max_us or requested_exposure
+                        requested_exposure = max(minimum, min(maximum, requested_exposure))
+                        if not _node_writable(exposure_node):
+                            raise RuntimeError("ExposureTime is not writable")
+                        exposure_node.value = requested_exposure
+                        applied = float(exposure_node.value)
+                        status.exposure_time_us = applied
+                        status.exposure_auto = str(
+                            getattr(exposure_auto_node, "value", status.exposure_auto)
+                        )
+                        self.status_changed.emit(status)
+                        self.exposure_applied.emit(applied)
+                except queue.Empty:
+                    pass
+                except Exception as exc:
+                    self.exposure_failed.emit(str(exc) or type(exc).__name__)
+
+                fetch_timeout = camera_fetch_timeout_seconds(status.exposure_time_us)
+                with acquisition.fetch(timeout=fetch_timeout) as buffer:
                     now = time.monotonic()
+                    stream_frames += 1
                     if now < next_preview:
                         # Fetching still returns the GenTL buffer immediately, so the
                         # camera stream is drained without flooding Qt with old frames.
-                        continue
-                    component = buffer.payload.components[0]
-                    image = convert_to_rgb(
-                        component.data,
-                        int(component.width),
-                        int(component.height),
-                        str(component.data_format),
+                        component = None
+                    else:
+                        component = buffer.payload.components[0]
+                        image = convert_to_rgb(
+                            component.data,
+                            int(component.width),
+                            int(component.height),
+                            str(component.data_format),
+                        )
+                        self.frame.emit(CameraFrame(image, str(component.data_format), time.time()))
+                        preview_frames += 1
+                        next_preview = advance_frame_deadline(next_preview, preview_interval, now)
+                elapsed = now - fps_window_start
+                if elapsed >= 1.0:
+                    status.stream_fps = stream_frames / elapsed
+                    status.preview_fps = preview_frames / elapsed
+                    camera_fps_raw = _node_value(
+                        node_map,
+                        "ResultingFrameRate",
+                        _node_value(node_map, "AcquisitionFrameRate", None),
                     )
-                    self.frame.emit(CameraFrame(image, str(component.data_format), time.time()))
-                    next_preview = advance_frame_deadline(next_preview, preview_interval, now)
+                    status.camera_fps = (
+                        float(camera_fps_raw) if camera_fps_raw is not None else None
+                    )
+                    status.exposure_time_us = _node_number(exposure_node, "value")
+                    status.exposure_auto = str(
+                        getattr(exposure_auto_node, "value", status.exposure_auto)
+                    )
+                    self.status_changed.emit(status)
+                    fps_window_start = now
+                    stream_frames = 0
+                    preview_frames = 0
         except Exception as exc:
             self.error.emit(str(exc) or type(exc).__name__)
         finally:
             if acquisition is not None:
-                acquisition.stop()
-                acquisition.destroy()
+                if exposure_node is not None and original_exposure is not None:
+                    try:
+                        current_auto = str(
+                            getattr(exposure_auto_node, "value", original_exposure_auto)
+                        )
+                        if (
+                            current_auto.lower() not in {"off", "–", "none"}
+                            and exposure_auto_node is not None
+                            and _node_writable(exposure_auto_node)
+                        ):
+                            exposure_auto_node.value = "Off"
+                        exposure_node.value = original_exposure
+                        if exposure_auto_node is not None and original_exposure_auto is not None:
+                            exposure_auto_node.value = original_exposure_auto
+                    except Exception:
+                        pass
+                try:
+                    acquisition.stop()
+                except Exception:
+                    pass
+                try:
+                    acquisition.destroy()
+                except Exception:
+                    pass
             if harvester is not None:
-                harvester.reset()
+                try:
+                    harvester.reset()
+                except Exception:
+                    pass
             self.finished.emit()
 
     @pyqtSlot()
@@ -148,6 +313,8 @@ class _CameraWorker(QObject):
 class CameraAdapter(DeviceAdapter):
     frame_ready = pyqtSignal(object)
     status_changed = pyqtSignal(object)
+    exposure_applied = pyqtSignal(float)
+    exposure_failed = pyqtSignal(str)
     _stop_requested = pyqtSignal()
 
     def __init__(self, settings: AppSettings) -> None:
@@ -156,6 +323,7 @@ class CameraAdapter(DeviceAdapter):
         self.thread: QThread | None = None
         self.worker: _CameraWorker | None = None
         self._disconnect_requested = False
+        self.status = CameraStatus()
 
     def connect_device(self) -> None:
         if self.thread and self.thread.isRunning():
@@ -170,6 +338,9 @@ class CameraAdapter(DeviceAdapter):
         self._stop_requested.connect(worker.stop)
         worker.frame.connect(self.frame_ready)
         worker.connected.connect(self._connected)
+        worker.status_changed.connect(self._status_changed)
+        worker.exposure_applied.connect(self.exposure_applied)
+        worker.exposure_failed.connect(self.exposure_failed)
         worker.error.connect(self._emit_error)
         worker.finished.connect(self.thread.quit)
         self.thread.finished.connect(worker.deleteLater)
@@ -177,8 +348,23 @@ class CameraAdapter(DeviceAdapter):
         self.thread.start()
 
     def _connected(self, status: CameraStatus) -> None:
+        self.status = status
         self._set_state(ConnectionState.CONNECTED, status.serial_number)
         self.status_changed.emit(status)
+
+    def _status_changed(self, status: CameraStatus) -> None:
+        self.status = status
+        self.status_changed.emit(status)
+
+    def set_exposure_time(self, exposure_time_us: float) -> bool:
+        if self.worker is None or self.state is not ConnectionState.CONNECTED:
+            self.exposure_failed.emit("Exposure can only be changed while the camera is connected")
+            return False
+        if not self.status.exposure_writable:
+            self.exposure_failed.emit("The camera exposure time is not writable")
+            return False
+        self.worker.enqueue_exposure(exposure_time_us)
+        return True
 
     def disconnect_device(self) -> None:
         self._disconnect_requested = True

@@ -122,15 +122,8 @@ class ConveyorCalibration:
 @dataclass(slots=True, frozen=True)
 class PressureBaseline:
     light_barrier_debounce_ms: int = 20
-    light_barrier_inverted: tuple[bool, ...] = (True, True, True, True, True, True)
-    light_barrier_debounce_enabled: tuple[bool, ...] = (
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-    )
+    light_barrier_inverted: tuple[bool, ...] = (True,) * 8
+    light_barrier_debounce_enabled: tuple[bool, ...] = (False,) * 8
     conveyor_speed_mm_per_sec: float = 0.0
     conveyor_max_speed_mm_per_sec: float = 1000.0
     conveyor_enabled: bool = False
@@ -147,8 +140,8 @@ class PressureProfile:
     created_at: str | None
     ur_ry_angle_deg: float | None
     light_barrier_debounce_ms: int
-    light_barrier_inverted: tuple[bool, bool, bool, bool, bool, bool]
-    light_barrier_debounce_enabled: tuple[bool, bool, bool, bool, bool, bool]
+    light_barrier_inverted: tuple[bool, ...]
+    light_barrier_debounce_enabled: tuple[bool, ...]
     conveyor_enabled: bool
     conveyor_reverse: bool
     conveyor_speed_mm_per_sec: float
@@ -276,7 +269,7 @@ class PlcSnapshot:
     pending_mask: int = 0
     open_valve_mask: int = 0
     vtem_error_codes: tuple[int, int] = (0, 0)
-    light_barriers_stable: tuple[bool, ...] = (True,) * 6
+    light_barriers_stable: tuple[bool, ...] = (True,) * 8
     reorientation_state: int = 0
     reorientation_fault_code: int = 0
     heartbeat_alive: bool = False

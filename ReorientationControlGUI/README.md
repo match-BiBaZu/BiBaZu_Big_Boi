@@ -88,6 +88,13 @@ werden. Bleiben beide Lichtadressen leer, sucht die Anwendung beim nächsten
 Verbindungsaufbau nacheinander zwei unterschiedliche Panels und speichert die
 gefundenen Adressen.
 
+Im oberen Hardwarebereich wird nach dem Kameraverbindungsaufbau ein logarithmischer
+**Exposure**-Slider freigeschaltet. Er verwendet den von der Baumer-Kamera gemeldeten
+Min-/Max-Bereich und sendet erst 250 ms nach der letzten Änderung. Beim Trennen wird
+der ursprüngliche Exposure-/Auto-Zustand wiederhergestellt. Die Anzeige dahinter
+unterscheidet `cam` (Kamera-Node), `raw` (gemessener Bufferabruf) und `view`
+(tatsächlich dargestellte Vorschau) in FPS.
+
 **Disconnect all components** cancels pending BLE work and releases both panels,
 the camera, and ADS without waiting in the GUI thread. Light connections are made
 one after another because simultaneous WinRT/Bleak discovery and GATT connection
@@ -126,8 +133,8 @@ separately under the adjacent `logs` directory.
 ## TwinCAT activation
 
 Activate the changed `MAIN.TcPOU` before using this GUI. The added PLC contract
-implements a 250 ms GUI heartbeat, 2 s watchdog, 60 s LB6 timeout, and 35 s drain
-timeout. LB6 falling is latched in the 1 ms task; completion additionally requires
+implements a 250 ms GUI heartbeat, 2 s watchdog, 60 s LB8 timeout, and 35 s drain
+timeout. LB8 falling is latched in the 1 ms task; completion additionally requires
 the exact expected trigger mask, all four array states idle, no pending trigger,
 and all 24 valves closed.
 

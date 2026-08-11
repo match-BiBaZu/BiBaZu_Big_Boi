@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from bibazu_reorientation.hardware.camera import advance_frame_deadline, convert_to_rgb
+from bibazu_reorientation.hardware.camera import (
+    advance_frame_deadline,
+    camera_fetch_timeout_seconds,
+    convert_to_rgb,
+)
 
 
 def test_mono12_is_scaled_to_rgb8() -> None:
@@ -23,3 +27,9 @@ def test_bgr_is_converted_to_rgb() -> None:
 def test_preview_deadline_skips_missed_frames_without_backlog() -> None:
     assert np.isclose(advance_frame_deadline(1.0, 0.1, 1.35), 1.4)
     assert np.isclose(advance_frame_deadline(0.0, 0.1, 5.0), 5.1)
+
+
+def test_fetch_timeout_includes_long_exposure() -> None:
+    assert camera_fetch_timeout_seconds(None) == 1.0
+    assert camera_fetch_timeout_seconds(100_000) == 1.0
+    assert np.isclose(camera_fetch_timeout_seconds(2_000_000), 2.5)

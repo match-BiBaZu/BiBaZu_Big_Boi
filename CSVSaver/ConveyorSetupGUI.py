@@ -33,7 +33,9 @@ from PressureControlGUI import (
     ADS_TIMEOUT_MS,
     AMS_NET_ID,
     PLC_IP,
+    LIGHT_BARRIER_COUNT,
     LIGHT_BARRIER_INVERT_DEFAULTS,
+    LIGHT_BARRIER_PAIRS,
     AdsController,
     ConveyorCalibrationDialog,
     ConveyorJogDialog,
@@ -45,6 +47,7 @@ SENSOR_SPACING_SYMBOLS = {
     (1, 2): "MAIN.GuiSensorSpacing12Mm",
     (3, 4): "MAIN.GuiSensorSpacing34Mm",
     (5, 6): "MAIN.GuiSensorSpacing56Mm",
+    (7, 8): "MAIN.GuiSensorSpacing78Mm",
 }
 
 BARRIER_STATUS_TEXT = {
@@ -419,7 +422,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.barrier_lamps = []
         self.barrier_labels = []
         self.barrier_inverted = []
-        for index in range(1, 7):
+        for index in range(1, LIGHT_BARRIER_COUNT + 1):
             column = index - 1
             title = QLabel(f"LB {index}")
             title.setStyleSheet("font-weight: 600;")
@@ -440,7 +443,7 @@ class ConveyorSetupWindow(QMainWindow):
             self.barrier_labels.append(state)
             self.barrier_inverted.append(inverted)
             self._set_barrier_indicator(index - 1, None)
-        barrier_layout.setColumnStretch(6, 1)
+        barrier_layout.setColumnStretch(LIGHT_BARRIER_COUNT, 1)
         layout.addWidget(barrier_group)
 
         measurement_group = QGroupBox("Light Barrier Distance Calibration")
@@ -448,7 +451,7 @@ class ConveyorSetupWindow(QMainWindow):
         form = QFormLayout()
         self.first_sensor = QComboBox()
         self.second_sensor = QComboBox()
-        for index in range(1, 7):
+        for index in range(1, LIGHT_BARRIER_COUNT + 1):
             self.first_sensor.addItem(f"Light barrier {index}", index)
             self.second_sensor.addItem(f"Light barrier {index}", index)
         self.second_sensor.setCurrentIndex(1)
@@ -523,7 +526,7 @@ class ConveyorSetupWindow(QMainWindow):
         ur_settings = QFormLayout()
         self.ur_first_sensor = QComboBox()
         self.ur_second_sensor = QComboBox()
-        for index in range(1, 7):
+        for index in range(1, LIGHT_BARRIER_COUNT + 1):
             self.ur_first_sensor.addItem(f"Light barrier {index}", index)
             self.ur_second_sensor.addItem(f"Light barrier {index}", index)
         self.ur_second_sensor.setCurrentIndex(1)
@@ -618,8 +621,8 @@ class ConveyorSetupWindow(QMainWindow):
 
         spacing_group = QGroupBox("Velocity Sensor Spacings")
         spacing_layout = QHBoxLayout(spacing_group)
-        self.spacing_labels = [QLabel("-") for _ in range(3)]
-        for pair, label in zip(((1, 2), (3, 4), (5, 6)), self.spacing_labels):
+        self.spacing_labels = [QLabel("-") for _ in LIGHT_BARRIER_PAIRS]
+        for pair, label in zip(LIGHT_BARRIER_PAIRS, self.spacing_labels):
             spacing_layout.addWidget(QLabel(f"LB {pair[0]}-{pair[1]}"))
             spacing_layout.addWidget(label)
             spacing_layout.addSpacing(18)
@@ -753,7 +756,7 @@ class ConveyorSetupWindow(QMainWindow):
 
         spacings = self.latest_status.get("sensor_spacings") if self.latest_status else None
         if spacings is not None and supported_pair:
-            spacing_index = ((1, 2), (3, 4), (5, 6)).index(pair)
+            spacing_index = LIGHT_BARRIER_PAIRS.index(pair)
             spacing = float(spacings[spacing_index])
             self.ur_monitor_distance.setText(f"{spacing:.3f} mm")
         else:
@@ -900,7 +903,7 @@ class ConveyorSetupWindow(QMainWindow):
             return
 
         pair = tuple(sorted(self._selected_ur_sensors()))
-        spacing_index = ((1, 2), (3, 4), (5, 6)).index(pair)
+        spacing_index = LIGHT_BARRIER_PAIRS.index(pair)
         distance_mm = float(status["sensor_spacings"][spacing_index])
         expected_elapsed_ms = (
             distance_mm * 1000.0 / self.ur_target_speed.value()
@@ -1053,7 +1056,7 @@ class ConveyorSetupWindow(QMainWindow):
             if self.ur_monitor_active:
                 self._stop_ur_speed_monitor("Stopped: ADS connection lost")
             self.statusBar().showMessage(f"ADS offline: {message or 'reconnecting'}")
-            for index in range(6):
+            for index in range(LIGHT_BARRIER_COUNT):
                 self._set_barrier_indicator(index, None)
         self._update_ur_controls()
 

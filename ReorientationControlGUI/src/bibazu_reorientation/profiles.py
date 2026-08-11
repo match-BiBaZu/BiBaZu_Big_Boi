@@ -16,7 +16,7 @@ from bibazu_reorientation.models import (
 
 ARRAY_COUNT = 4
 NOZZLES_PER_ARRAY = 6
-PROFILE_VERSION_MAX = 8
+PROFILE_VERSION_MAX = 9
 
 
 def _boolean(value: Any, field: str, fallback: bool) -> bool:
@@ -56,6 +56,14 @@ def _bool_list(value: Any, field: str, length: int, fallback: tuple[bool, ...]) 
     ):
         raise ValueError(f"{field} must contain {length} boolean values")
     return tuple(value)
+
+
+def _barrier_bool_list(
+    value: Any, field: str, fallback: tuple[bool, ...]
+) -> tuple[bool, ...]:
+    if isinstance(value, list) and len(value) == 6:
+        value = [*value, *fallback[6:]]
+    return _bool_list(value, field, 8, fallback)
 
 
 def _float_list(
@@ -204,16 +212,14 @@ def load_pressure_profile(
             1,
             200,
         ),
-        light_barrier_inverted=_bool_list(
+        light_barrier_inverted=_barrier_bool_list(
             payload.get("light_barrier_inverted"),
             "light_barrier_inverted",
-            6,
             baseline.light_barrier_inverted,
         ),  # type: ignore[arg-type]
-        light_barrier_debounce_enabled=_bool_list(
+        light_barrier_debounce_enabled=_barrier_bool_list(
             payload.get("light_barrier_debounce_enabled"),
             "light_barrier_debounce_enabled",
-            6,
             baseline.light_barrier_debounce_enabled,
         ),  # type: ignore[arg-type]
         conveyor_enabled=_boolean(

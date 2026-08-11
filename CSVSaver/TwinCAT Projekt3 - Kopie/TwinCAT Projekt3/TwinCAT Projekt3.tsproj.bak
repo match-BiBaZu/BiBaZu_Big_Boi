@@ -317,6 +317,16 @@
 							<Type>BOOL</Type>
 						</Var>
 						<Var>
+							<Name>MAIN.LightBarrierOn7</Name>
+							<Comment><![CDATA[1 when detecting a reflection]]></Comment>
+							<Type>BOOL</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.LightBarrierOn8</Name>
+							<Comment><![CDATA[1 when detecting a reflection]]></Comment>
+							<Type>BOOL</Type>
+						</Var>
+						<Var>
 							<Name>MAIN.RawNozzlePressure</Name>
 							<Comment><![CDATA[The raw analogue input reading from the EL3068 terminal (max 32767)]]></Comment>
 							<Type>INT</Type>
@@ -1907,6 +1917,8 @@ Bit1: Value bigger/equal Limit2]]></Comment>
 				<Link VarA="PlcTask Inputs^MAIN.LightBarrierOn4" VarB="Channel 4^Input"/>
 				<Link VarA="PlcTask Inputs^MAIN.LightBarrierOn5" VarB="Channel 5^Input"/>
 				<Link VarA="PlcTask Inputs^MAIN.LightBarrierOn6" VarB="Channel 6^Input"/>
+				<Link VarA="PlcTask Inputs^MAIN.LightBarrierOn7" VarB="Channel 7^Input"/>
+				<Link VarA="PlcTask Inputs^MAIN.LightBarrierOn8" VarB="Channel 8^Input"/>
 			</OwnerB>
 			<OwnerB Name="TIID^Device 1 (EtherCAT)^Term 6 (EK1100)^Term 18 (EL3068)">
 				<Link VarA="PlcTask Inputs^MAIN.RawNozzlePressure" VarB="AI Standard Channel 1^Value"/>

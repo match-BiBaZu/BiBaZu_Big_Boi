@@ -103,8 +103,28 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 40.0)
         self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 40.0)
         self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 40.0)
-        self.assertEqual(gui.LIGHT_BARRIER_INVERT_DEFAULTS, (True,) * 6)
-        self.assertEqual(gui.LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS, (False,) * 6)
+        self.assertEqual(gui.LIGHT_BARRIER_INVERT_DEFAULTS, (True,) * 8)
+        self.assertEqual(gui.LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS, (False,) * 8)
+
+    def test_twin_cat_maps_and_processes_light_barriers_7_and_8(self):
+        project_root = Path(__file__).parent / "TwinCAT Projekt3 - Kopie" / "TwinCAT Projekt3"
+        project = (project_root / "TwinCAT Projekt3.tsproj").read_text(encoding="utf-8")
+        main = (project_root / "Untitled1" / "POUs" / "MAIN.TcPOU").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'VarA="PlcTask Inputs^MAIN.LightBarrierOn7" VarB="Channel 7^Input"',
+            project,
+        )
+        self.assertIn(
+            'VarA="PlcTask Inputs^MAIN.LightBarrierOn8" VarB="Channel 8^Input"',
+            project,
+        )
+        self.assertIn("GuiSensorSpacing78Mm\t: REAL := 40.0;", main)
+        self.assertIn("IF LightBarrier7FallingEdge THEN", main)
+        self.assertIn("IF LightBarrier8FallingEdge THEN", main)
+        self.assertIn("IF LightBarrier8FallingEdge AND Array4Active", main)
 
     def test_pressure_inputs_use_ten_mbar_steps(self):
         row = gui.ArrayRow(1)
@@ -210,23 +230,23 @@ class AdsThreadTests(unittest.TestCase):
         )
         dialog = gui.LightBarrierSettingsDialog(
             controller,
-            [False, False, True, True, False, False],
-            [True] * 6,
-            (23.54, 39.9, 64.69),
+            [False, False, True, True, False, False, True, True],
+            [True] * 8,
+            (23.54, 39.9, 64.69, 40.0),
             20,
         )
 
         self.assertEqual(
             [checkbox.isChecked() for checkbox in dialog.invert_controls],
-            [False, False, True, True, False, False],
+            [False, False, True, True, False, False, True, True],
         )
         self.assertEqual(
             [checkbox.isChecked() for checkbox in dialog.debounce_controls],
-            [True] * 6,
+            [True] * 8,
         )
         self.assertEqual(
             [control.value() for control in dialog.spacing_controls],
-            [23.5, 39.9, 64.7],
+            [23.5, 39.9, 64.7, 40.0],
         )
         self.assertEqual(dialog.debounce_ms_control.value(), 20)
         measurement_changes = []
@@ -234,7 +254,7 @@ class AdsThreadTests(unittest.TestCase):
             lambda *values: measurement_changes.append(values)
         )
         dialog.spacing_controls[0].setValue(25.0)
-        self.assertEqual(measurement_changes[-1], (25.0, 39.9, 64.7, 20))
+        self.assertEqual(measurement_changes[-1], (25.0, 39.9, 64.7, 40.0, 20))
         dialog.debounce_controls[1].setChecked(False)
 
         self.assertEqual(
@@ -512,13 +532,13 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 68)
-        self.assertEqual(snapshot["light_barriers"], [False] * 6)
-        self.assertEqual(snapshot["raw_light_barriers"], [False] * 6)
-        self.assertEqual(snapshot["light_barrier_inverted"], [False] * 6)
-        self.assertEqual(snapshot["light_barrier_debounce_enabled"], [False] * 6)
-        self.assertEqual(snapshot["light_barrier_event_counts"], [0] * 6)
-        self.assertEqual(snapshot["light_barrier_event_times_ms"], [0] * 6)
+        self.assertEqual(len(plc.read_calls[0]), 84)
+        self.assertEqual(snapshot["light_barriers"], [False] * 8)
+        self.assertEqual(snapshot["raw_light_barriers"], [False] * 8)
+        self.assertEqual(snapshot["light_barrier_inverted"], [False] * 8)
+        self.assertEqual(snapshot["light_barrier_debounce_enabled"], [False] * 8)
+        self.assertEqual(snapshot["light_barrier_event_counts"], [0] * 8)
+        self.assertEqual(snapshot["light_barrier_event_times_ms"], [0] * 8)
         self.assertEqual(snapshot["debounce_ms"], 0)
 
     def test_barrier_calibration_start_is_one_safe_batch(self):
@@ -575,7 +595,7 @@ class AdsThreadTests(unittest.TestCase):
         dialog.target_speed_input.setValue(10.0)
         dialog._start()
         waiting = {
-            "sensor_spacings": (20.0, 100.0, 100.0),
+            "sensor_spacings": (20.0, 100.0, 100.0, 100.0),
             "velocity_valid": (False, False, False),
             "velocity_times_ms": (0, 0, 0),
         }
@@ -728,8 +748,10 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 window.close()
 
             profile = json.loads(profile_path.read_text(encoding="utf-8"))
-            self.assertEqual(profile["version"], 8)
+            self.assertEqual(profile["version"], 9)
             self.assertEqual(profile["ur_ry_angle_deg"], 20.4)
+            self.assertEqual(profile["sensor_spacing_78_mm"], 40.0)
+            self.assertEqual(len(profile["light_barrier_inverted"]), 8)
 
     def test_version_1_profile_loads_uncalibrated(self):
         result = self.load_profile({"version": 1, "arrays": []})
@@ -826,11 +848,11 @@ class ProfileCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(
             result["light_barrier_inverted"],
-            [False, True, True, False, False, True],
+            [False, True, True, False, False, True, True, True],
         )
         self.assertEqual(
             result["light_barrier_debounce_enabled"],
-            [False, False, False, False, False, False],
+            [False, False, False, False, False, False, False, False],
         )
 
     def test_version_7_profile_preserves_per_barrier_debounce_settings(self):
@@ -852,7 +874,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(
             result["light_barrier_debounce_enabled"],
-            [True, False, True, False, True, False],
+            [True, False, True, False, True, False, False, False],
         )
 
     def test_version_8_profile_preserves_ur_ry_angle(self):
@@ -1027,7 +1049,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
 
         self.assertEqual(
             [checkbox.isChecked() for checkbox in window.barrier_inverted],
-            [True, True, True, True, True, True],
+            [True, True, True, True, True, True, True, True],
         )
         window.barrier_inverted[0].setChecked(False)
 
@@ -1056,10 +1078,10 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.ur_connected = True
         window.latest_ur_pose = (1.0, (0.1, 0.2, 0.3, 0.0, 0.0, 0.0))
         status = {
-            "light_barriers": [False] * 6,
-            "light_barrier_event_counts": [0] * 6,
-            "light_barrier_event_times_ms": [0] * 6,
-            "sensor_spacings": (58.356, 27.13, 39.254),
+            "light_barriers": [False] * 8,
+            "light_barrier_event_counts": [0] * 8,
+            "light_barrier_event_times_ms": [0] * 8,
+            "sensor_spacings": (58.356, 27.13, 39.254, 40.0),
         }
         window.latest_status = status
         window.ur_target_speed.setValue(15.0)
@@ -1099,7 +1121,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.ur_first_sensor.setCurrentIndex(4)
         window.ur_second_sensor.setCurrentIndex(5)
         window._append_ur_speed_log = lambda sample: None
-        status = {"sensor_spacings": (22.34, 39.254, 64.69)}
+        status = {"sensor_spacings": (22.34, 39.254, 64.69, 40.0)}
         window.ur_monitor_pending_edges[True] = (1000, 5)
 
         window._accept_ur_monitor_event(1120, 6, True, status)
@@ -1123,7 +1145,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.connected = True
         window.have_setup_status = True
         window.ur_connected = True
-        window.latest_status = {"light_barriers": [False] * 6}
+        window.latest_status = {"light_barriers": [False] * 8}
         window.latest_ur_pose = (1.0, (0.1, 0.2, 0.3, 0.0, 0.0, 0.0))
         writes = []
         window.ads.write_requested.connect(
@@ -1171,7 +1193,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
             "conveyor_calibration_valid": True,
             "full_steps_per_sec": 30.0,
             "velocity_raw": 150,
-            "sensor_spacings": (100.0, 110.0, 120.0),
+            "sensor_spacings": (100.0, 110.0, 120.0, 130.0),
         }
         writes = []
         window.ads.write_requested.connect(
@@ -1212,7 +1234,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertIsNotNone(window.pending_measurement)
 
         ready_status = {
-            "light_barriers": [True] * 6,
+            "light_barriers": [True] * 8,
             "internal_position": 0,
             "ready_to_execute": True,
             "drive_busy": False,
@@ -1233,7 +1255,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
             "conveyor_calibration_valid": True,
             "full_steps_per_sec": 0.0,
             "velocity_raw": 0,
-            "sensor_spacings": (100.0, 100.0, 100.0),
+            "sensor_spacings": (100.0, 100.0, 100.0, 100.0),
         }
         window._on_setup_status(ready_status)
 

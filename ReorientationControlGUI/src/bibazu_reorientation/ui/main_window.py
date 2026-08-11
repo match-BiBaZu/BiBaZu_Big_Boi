@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -37,7 +38,14 @@ from bibazu_reorientation.hardware.pressure import PressureAdapter
 from bibazu_reorientation.hardware.robot import UrAngleWorker
 from bibazu_reorientation.inference import InferenceConfig, InferenceWorker
 from bibazu_reorientation.mesh_preview import render_mesh_preview
-from bibazu_reorientation.models import CameraFrame, CycleState, InferenceFrame, PressureBaseline
+from bibazu_reorientation.models import (
+    CameraFrame,
+    CameraStatus,
+    ConnectionState,
+    CycleState,
+    InferenceFrame,
+    PressureBaseline,
+)
 from bibazu_reorientation.profiles import load_pressure_profile
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
@@ -45,6 +53,7 @@ from bibazu_reorientation.ui.roadmap_setup_dialog import RoadmapSetupDialog
 from bibazu_reorientation.ui.setup_dialog import SetupDialog
 
 LOGGER = logging.getLogger(__name__)
+EXPOSURE_SLIDER_STEPS = 1000
 
 
 class LightPanel(QGroupBox):
@@ -117,6 +126,10 @@ class MainWindow(QMainWindow):
         self.profile = None
         self.ur_worker: UrAngleWorker | None = None
         self._last_camera_frame = 0.0
+        self._camera_status_data = CameraStatus()
+        self._exposure_min_us = 1.0
+        self._exposure_max_us = 1.0
+        self._updating_exposure_ui = False
         self._preflight_ok = False
         self._roadmap_config_only = False
         self._light_connect_task: asyncio.Task[None] | None = None
@@ -128,6 +141,10 @@ class MainWindow(QMainWindow):
             lambda: self.controller.set_camera_fresh(time.time() - self._last_camera_frame <= 1.0)
         )
         self.freshness_timer.start()
+        self.exposure_apply_timer = QTimer(self)
+        self.exposure_apply_timer.setSingleShot(True)
+        self.exposure_apply_timer.setInterval(250)
+        self.exposure_apply_timer.timeout.connect(self._apply_camera_exposure)
 
     def _build_ui(self) -> None:
         menu = self.menuBar().addMenu("Configuration")
@@ -184,6 +201,26 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.pose_label)
         self.plc_status = QLabel("PLC: disconnected")
         self.camera_status = QLabel("Camera: disconnected")
+        self.exposure_slider = QSlider(Qt.Orientation.Horizontal)
+        self.exposure_slider.setRange(0, EXPOSURE_SLIDER_STEPS)
+        self.exposure_slider.setEnabled(False)
+        self.exposure_slider.setMinimumWidth(110)
+        self.exposure_slider.setToolTip(
+            "Logarithmic exposure-time control; the selected value is applied after "
+            "250 ms without another change."
+        )
+        self.exposure_slider.valueChanged.connect(self._exposure_slider_changed)
+        self.exposure_value = QLabel("– µs")
+        self.exposure_value.setMinimumWidth(75)
+        self.camera_fps = QLabel("FPS: –")
+        self.camera_fps.setToolTip(
+            "cam = camera-reported rate, raw = measured buffer rate, view = displayed preview rate"
+        )
+        camera_controls = QHBoxLayout()
+        camera_controls.addWidget(QLabel("Exposure"))
+        camera_controls.addWidget(self.exposure_slider, 1)
+        camera_controls.addWidget(self.exposure_value)
+        camera_controls.addWidget(self.camera_fps)
         self.connect_button = QPushButton("Connect all components")
         self.connect_button.clicked.connect(self.connect_all)
         self.disconnect_button = QPushButton("Disconnect all components")
@@ -192,6 +229,7 @@ class MainWindow(QMainWindow):
         hardware_layout = QVBoxLayout(hardware)
         hardware_layout.addWidget(self.plc_status)
         hardware_layout.addWidget(self.camera_status)
+        hardware_layout.addLayout(camera_controls)
         hardware_layout.addWidget(self.connect_button)
         hardware_layout.addWidget(self.disconnect_button)
         self.light_panel1 = LightPanel(self.light1)
@@ -232,8 +270,11 @@ class MainWindow(QMainWindow):
     def _wire(self) -> None:
         self.pressure.connection_changed.connect(self._plc_connection_changed)
         self.pressure.baseline_ready.connect(self._baseline_ready)
-        self.camera.state_changed.connect(
-            lambda state, detail: self.camera_status.setText(f"Camera: {state} {detail}")
+        self.camera.state_changed.connect(self._camera_state_changed)
+        self.camera.status_changed.connect(self._camera_status_changed)
+        self.camera.exposure_applied.connect(self._camera_exposure_applied)
+        self.camera.exposure_failed.connect(
+            lambda detail: self._hardware_error("Camera exposure", detail)
         )
         self.camera.frame_ready.connect(self._camera_frame)
         self.camera.error.connect(lambda detail: self._hardware_error("Camera", detail))
@@ -258,6 +299,83 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _hardware_error(component: str, detail: str) -> None:
         LOGGER.error("%s: %s", component, detail)
+
+    def _camera_state_changed(self, state: ConnectionState, detail: str) -> None:
+        self.camera_status.setText(f"Camera: {state} {detail}")
+        if state is not ConnectionState.CONNECTED:
+            self.exposure_apply_timer.stop()
+            self.exposure_slider.setEnabled(False)
+            if state in {ConnectionState.DISCONNECTED, ConnectionState.ERROR}:
+                self.camera_fps.setText("FPS: –")
+
+    @staticmethod
+    def _slider_to_exposure(position: int, minimum: float, maximum: float) -> float:
+        minimum = max(1.0, float(minimum))
+        maximum = max(minimum, float(maximum))
+        if maximum == minimum:
+            return minimum
+        fraction = max(0.0, min(1.0, position / EXPOSURE_SLIDER_STEPS))
+        return minimum * math.pow(maximum / minimum, fraction)
+
+    @staticmethod
+    def _exposure_to_slider(exposure: float, minimum: float, maximum: float) -> int:
+        minimum = max(1.0, float(minimum))
+        maximum = max(minimum, float(maximum))
+        exposure = max(minimum, min(maximum, float(exposure)))
+        if maximum == minimum:
+            return 0
+        fraction = math.log(exposure / minimum) / math.log(maximum / minimum)
+        return round(fraction * EXPOSURE_SLIDER_STEPS)
+
+    @staticmethod
+    def _format_exposure(exposure_time_us: float | None) -> str:
+        if exposure_time_us is None or not math.isfinite(exposure_time_us):
+            return "– µs"
+        return f"{exposure_time_us:,.0f} µs".replace(",", " ")
+
+    def _camera_status_changed(self, status: CameraStatus) -> None:
+        self._camera_status_data = status
+        minimum = max(1.0, float(status.exposure_min_us or 1.0))
+        maximum = max(minimum, float(status.exposure_max_us or minimum))
+        self._exposure_min_us = minimum
+        self._exposure_max_us = maximum
+        if (
+            status.exposure_time_us is not None
+            and not self.exposure_slider.isSliderDown()
+            and not self.exposure_apply_timer.isActive()
+        ):
+            self._updating_exposure_ui = True
+            self.exposure_slider.setValue(
+                self._exposure_to_slider(status.exposure_time_us, minimum, maximum)
+            )
+            self._updating_exposure_ui = False
+        self.exposure_value.setText(self._format_exposure(status.exposure_time_us))
+        self.exposure_slider.setEnabled(
+            self.camera.state is ConnectionState.CONNECTED and status.exposure_writable
+        )
+        camera_fps = "–" if status.camera_fps is None else f"{status.camera_fps:.1f}"
+        self.camera_fps.setText(
+            f"FPS: {camera_fps} cam · {status.stream_fps:.1f} raw · {status.preview_fps:.1f} view"
+        )
+
+    def _exposure_slider_changed(self, position: int) -> None:
+        exposure = self._slider_to_exposure(position, self._exposure_min_us, self._exposure_max_us)
+        self.exposure_value.setText(self._format_exposure(exposure))
+        if not self._updating_exposure_ui and self.exposure_slider.isEnabled():
+            self.exposure_apply_timer.start()
+
+    def _apply_camera_exposure(self) -> None:
+        if not self.exposure_slider.isEnabled():
+            return
+        exposure = self._slider_to_exposure(
+            self.exposure_slider.value(),
+            self._exposure_min_us,
+            self._exposure_max_us,
+        )
+        self.camera.set_exposure_time(exposure)
+
+    def _camera_exposure_applied(self, exposure_time_us: float) -> None:
+        self.exposure_value.setText(self._format_exposure(exposure_time_us))
 
     def open_hardware_settings(self) -> None:
         dialog = HardwareSettingsDialog(self.settings, self)
@@ -622,7 +740,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Cycle", str(exc))
 
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self.freshness_timer.stop()
+        self.exposure_apply_timer.stop()
+        super().closeEvent(event)
+
     async def shutdown_async(self) -> None:
+        self.freshness_timer.stop()
+        self.exposure_apply_timer.stop()
         if self._light_connect_task and not self._light_connect_task.done():
             self._light_connect_task.cancel()
             done, pending = await asyncio.wait({self._light_connect_task}, timeout=1.0)

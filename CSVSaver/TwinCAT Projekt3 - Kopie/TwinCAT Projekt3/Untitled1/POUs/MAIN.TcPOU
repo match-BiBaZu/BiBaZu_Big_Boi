@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.19">
   <POU Name="MAIN" Id="{e80dba2a-67f9-4c18-8302-7ea92125d6c4}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
 VAR
@@ -38,15 +38,19 @@ VAR
 	VelocityTimer			: TON;
 	VelocityTimer2			: TON;
 	VelocityTimer3			: TON;
+	VelocityTimer4			: TON;
 	LastVelocityTimeMs		: INT  := 0;
 	LastVelocityTime2Ms		: INT  := 0;
 	LastVelocityTime3Ms		: INT  := 0;
+	LastVelocityTime4Ms		: INT  := 0;
 	VelocityTimingActive	: BOOL := FALSE;
 	VelocityTiming2Active	: BOOL := FALSE;
 	VelocityTiming3Active	: BOOL := FALSE;
+	VelocityTiming4Active	: BOOL := FALSE;
 	VelocityMeasurementValid: BOOL := FALSE;
 	VelocityMeasurement2Valid: BOOL := FALSE;
 	VelocityMeasurement3Valid: BOOL := FALSE;
+	VelocityMeasurement4Valid: BOOL := FALSE;
 
 	//GUI control values written through ADS
 	GuiPressureMbar1		: INT  := 3000;
@@ -93,6 +97,7 @@ VAR
 	GuiSensorSpacing12Mm	: REAL := 40.0;
 	GuiSensorSpacing34Mm	: REAL := 40.0;
 	GuiSensorSpacing56Mm	: REAL := 40.0;
+	GuiSensorSpacing78Mm	: REAL := 40.0;
 	GuiConveyorEnabled		: BOOL := FALSE;
 	GuiVelocityCheckMode	: BOOL := FALSE;
 	GuiConveyorReverse		: BOOL := FALSE;
@@ -196,12 +201,16 @@ VAR
 	GuiLightBarrierInvert4	: BOOL := TRUE;
 	GuiLightBarrierInvert5	: BOOL := TRUE;
 	GuiLightBarrierInvert6	: BOOL := TRUE;
+	GuiLightBarrierInvert7	: BOOL := TRUE;
+	GuiLightBarrierInvert8	: BOOL := TRUE;
 	GuiLightBarrierDebounceEnabled1	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled2	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled3	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled4	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled5	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled6	: BOOL := FALSE;
+	GuiLightBarrierDebounceEnabled7	: BOOL := FALSE;
+	GuiLightBarrierDebounceEnabled8	: BOOL := FALSE;
 	GuiBarrierCalibrationStart	: BOOL := FALSE;
 	BarrierCalibrationActive	: BOOL := FALSE;
 	BarrierCalibrationFirstCaptured	: BOOL := FALSE;
@@ -231,36 +240,48 @@ VAR
 	LightBarrierOn4 AT %I*	: BOOL := 0; //1 when detecting a reflection
 	LightBarrierOn5 AT %I*	: BOOL := 0; //1 when detecting a reflection
 	LightBarrierOn6 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierOn7 AT %I*	: BOOL := 0; //1 when detecting a reflection
+	LightBarrierOn8 AT %I*	: BOOL := 0; //1 when detecting a reflection
 	LightBarrierLogical1	: BOOL := FALSE;
 	LightBarrierLogical2	: BOOL := FALSE;
 	LightBarrierLogical3	: BOOL := FALSE;
 	LightBarrierLogical4	: BOOL := FALSE;
 	LightBarrierLogical5	: BOOL := FALSE;
 	LightBarrierLogical6	: BOOL := FALSE;
+	LightBarrierLogical7	: BOOL := FALSE;
+	LightBarrierLogical8	: BOOL := FALSE;
 	LastLightBarrierInvert1	: BOOL := FALSE;
 	LastLightBarrierInvert2	: BOOL := FALSE;
 	LastLightBarrierInvert3	: BOOL := TRUE;
 	LastLightBarrierInvert4	: BOOL := TRUE;
 	LastLightBarrierInvert5	: BOOL := FALSE;
 	LastLightBarrierInvert6	: BOOL := FALSE;
+	LastLightBarrierInvert7	: BOOL := TRUE;
+	LastLightBarrierInvert8	: BOOL := TRUE;
 	LastLightBarrierDebounceEnabled1	: BOOL := TRUE;
 	LastLightBarrierDebounceEnabled2	: BOOL := TRUE;
 	LastLightBarrierDebounceEnabled3	: BOOL := FALSE;
 	LastLightBarrierDebounceEnabled4	: BOOL := FALSE;
 	LastLightBarrierDebounceEnabled5	: BOOL := TRUE;
 	LastLightBarrierDebounceEnabled6	: BOOL := TRUE;
+	LastLightBarrierDebounceEnabled7	: BOOL := FALSE;
+	LastLightBarrierDebounceEnabled8	: BOOL := FALSE;
 	LightBarrierStable1		: BOOL := FALSE;
 	LightBarrierStable2		: BOOL := FALSE;
 	LightBarrierStable3		: BOOL := FALSE;
 	LightBarrierStable4		: BOOL := FALSE;
 	LightBarrierStable5		: BOOL := FALSE;
 	LightBarrierStable6		: BOOL := FALSE;
+	LightBarrierStable7		: BOOL := FALSE;
+	LightBarrierStable8		: BOOL := FALSE;
 	LightBarrierStableCounter1	: UINT := 0;
 	LightBarrierStableCounter2	: UINT := 0;
 	LightBarrierStableCounter3	: UINT := 0;
 	LightBarrierStableCounter4	: UINT := 0;
 	LightBarrierStableCounter5	: UINT := 0;
 	LightBarrierStableCounter6	: UINT := 0;
+	LightBarrierStableCounter7	: UINT := 0;
+	LightBarrierStableCounter8	: UINT := 0;
 	LightBarrierDebounceInitialized	: BOOL := FALSE;
 	LastLightBarrier1		: BOOL := FALSE; //previous debounced state
 	LastLightBarrier2		: BOOL := FALSE; //previous debounced state
@@ -268,12 +289,16 @@ VAR
 	LastLightBarrier4		: BOOL := FALSE; //previous debounced state
 	LastLightBarrier5		: BOOL := FALSE; //previous debounced state
 	LastLightBarrier6		: BOOL := FALSE; //previous debounced state
+	LastLightBarrier7		: BOOL := FALSE; //previous debounced state
+	LastLightBarrier8		: BOOL := FALSE; //previous debounced state
 	LightBarrier1FallingEdge	: BOOL := FALSE;
 	LightBarrier2FallingEdge	: BOOL := FALSE;
 	LightBarrier3FallingEdge	: BOOL := FALSE;
 	LightBarrier4FallingEdge	: BOOL := FALSE;
 	LightBarrier5FallingEdge	: BOOL := FALSE;
 	LightBarrier6FallingEdge	: BOOL := FALSE;
+	LightBarrier7FallingEdge	: BOOL := FALSE;
+	LightBarrier8FallingEdge	: BOOL := FALSE;
 	LightBarrierEventClockMs	: UDINT := 0; //1 ms PLC task cycle counter
 	LightBarrierEventCount1	: UDINT := 0;
 	LightBarrierEventCount2	: UDINT := 0;
@@ -281,18 +306,24 @@ VAR
 	LightBarrierEventCount4	: UDINT := 0;
 	LightBarrierEventCount5	: UDINT := 0;
 	LightBarrierEventCount6	: UDINT := 0;
+	LightBarrierEventCount7	: UDINT := 0;
+	LightBarrierEventCount8	: UDINT := 0;
 	LightBarrierLastEventTimeMs1	: UDINT := 0;
 	LightBarrierLastEventTimeMs2	: UDINT := 0;
 	LightBarrierLastEventTimeMs3	: UDINT := 0;
 	LightBarrierLastEventTimeMs4	: UDINT := 0;
 	LightBarrierLastEventTimeMs5	: UDINT := 0;
 	LightBarrierLastEventTimeMs6	: UDINT := 0;
+	LightBarrierLastEventTimeMs7	: UDINT := 0;
+	LightBarrierLastEventTimeMs8	: UDINT := 0;
 	LightBarrierLastEventPosition1	: UDINT := 0;
 	LightBarrierLastEventPosition2	: UDINT := 0;
 	LightBarrierLastEventPosition3	: UDINT := 0;
 	LightBarrierLastEventPosition4	: UDINT := 0;
 	LightBarrierLastEventPosition5	: UDINT := 0;
 	LightBarrierLastEventPosition6	: UDINT := 0;
+	LightBarrierLastEventPosition7	: UDINT := 0;
+	LightBarrierLastEventPosition8	: UDINT := 0;
 	Array1TriggerPending		: BOOL := FALSE;
 	Array2TriggerPending		: BOOL := FALSE;
 	Array3TriggerPending		: BOOL := FALSE;
@@ -507,12 +538,15 @@ IF GuiResetVelocityEstimates THEN
 	LastVelocityTimeMs := 0;
 	LastVelocityTime2Ms := 0;
 	LastVelocityTime3Ms := 0;
+	LastVelocityTime4Ms := 0;
 	VelocityTimingActive := FALSE;
 	VelocityTiming2Active := FALSE;
 	VelocityTiming3Active := FALSE;
+	VelocityTiming4Active := FALSE;
 	VelocityMeasurementValid := FALSE;
 	VelocityMeasurement2Valid := FALSE;
 	VelocityMeasurement3Valid := FALSE;
+	VelocityMeasurement4Valid := FALSE;
 	EstimatedVelocityMmPerSec := 0.0;
 	EstimatedVelocityMmPerSec1 := 0.0;
 	EstimatedVelocityMmPerSec2 := 0.0;
@@ -532,6 +566,7 @@ END_IF
 VelocityTimer(IN := VelocityTimingActive, PT := T#30S);
 VelocityTimer2(IN := VelocityTiming2Active, PT := T#30S);
 VelocityTimer3(IN := VelocityTiming3Active, PT := T#30S);
+VelocityTimer4(IN := VelocityTiming4Active, PT := T#30S);
 
 Array1Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled1 AND (GuiNozzleEnabled1 OR GuiNozzleEnabled2 OR GuiNozzleEnabled3 OR GuiNozzleEnabled4 OR GuiNozzleEnabled5 OR GuiNozzleEnabled6);
 Array2Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND GuiArrayEnabled2 AND (GuiNozzleEnabled7 OR GuiNozzleEnabled8 OR GuiNozzleEnabled9 OR GuiNozzleEnabled10 OR GuiNozzleEnabled11 OR GuiNozzleEnabled12);
@@ -598,6 +633,8 @@ LightBarrierLogical3 := LightBarrierOn3 <> GuiLightBarrierInvert3;
 LightBarrierLogical4 := LightBarrierOn4 <> GuiLightBarrierInvert4;
 LightBarrierLogical5 := LightBarrierOn5 <> GuiLightBarrierInvert5;
 LightBarrierLogical6 := LightBarrierOn6 <> GuiLightBarrierInvert6;
+LightBarrierLogical7 := LightBarrierOn7 <> GuiLightBarrierInvert7;
+LightBarrierLogical8 := LightBarrierOn8 <> GuiLightBarrierInvert8;
 
 // Changing polarity re-synchronizes the debouncer without generating an artificial edge.
 IF (GuiLightBarrierInvert1 <> LastLightBarrierInvert1)
@@ -606,12 +643,16 @@ IF (GuiLightBarrierInvert1 <> LastLightBarrierInvert1)
 	OR (GuiLightBarrierInvert4 <> LastLightBarrierInvert4)
 	OR (GuiLightBarrierInvert5 <> LastLightBarrierInvert5)
 	OR (GuiLightBarrierInvert6 <> LastLightBarrierInvert6)
+	OR (GuiLightBarrierInvert7 <> LastLightBarrierInvert7)
+	OR (GuiLightBarrierInvert8 <> LastLightBarrierInvert8)
 	OR (GuiLightBarrierDebounceEnabled1 <> LastLightBarrierDebounceEnabled1)
 	OR (GuiLightBarrierDebounceEnabled2 <> LastLightBarrierDebounceEnabled2)
 	OR (GuiLightBarrierDebounceEnabled3 <> LastLightBarrierDebounceEnabled3)
 	OR (GuiLightBarrierDebounceEnabled4 <> LastLightBarrierDebounceEnabled4)
 	OR (GuiLightBarrierDebounceEnabled5 <> LastLightBarrierDebounceEnabled5)
-	OR (GuiLightBarrierDebounceEnabled6 <> LastLightBarrierDebounceEnabled6) THEN
+	OR (GuiLightBarrierDebounceEnabled6 <> LastLightBarrierDebounceEnabled6)
+	OR (GuiLightBarrierDebounceEnabled7 <> LastLightBarrierDebounceEnabled7)
+	OR (GuiLightBarrierDebounceEnabled8 <> LastLightBarrierDebounceEnabled8) THEN
 	LightBarrierDebounceInitialized := FALSE;
 	LightBarrierStableCounter1 := 0;
 	LightBarrierStableCounter2 := 0;
@@ -619,6 +660,8 @@ IF (GuiLightBarrierInvert1 <> LastLightBarrierInvert1)
 	LightBarrierStableCounter4 := 0;
 	LightBarrierStableCounter5 := 0;
 	LightBarrierStableCounter6 := 0;
+	LightBarrierStableCounter7 := 0;
+	LightBarrierStableCounter8 := 0;
 END_IF
 LastLightBarrierInvert1 := GuiLightBarrierInvert1;
 LastLightBarrierInvert2 := GuiLightBarrierInvert2;
@@ -626,12 +669,16 @@ LastLightBarrierInvert3 := GuiLightBarrierInvert3;
 LastLightBarrierInvert4 := GuiLightBarrierInvert4;
 LastLightBarrierInvert5 := GuiLightBarrierInvert5;
 LastLightBarrierInvert6 := GuiLightBarrierInvert6;
+LastLightBarrierInvert7 := GuiLightBarrierInvert7;
+LastLightBarrierInvert8 := GuiLightBarrierInvert8;
 LastLightBarrierDebounceEnabled1 := GuiLightBarrierDebounceEnabled1;
 LastLightBarrierDebounceEnabled2 := GuiLightBarrierDebounceEnabled2;
 LastLightBarrierDebounceEnabled3 := GuiLightBarrierDebounceEnabled3;
 LastLightBarrierDebounceEnabled4 := GuiLightBarrierDebounceEnabled4;
 LastLightBarrierDebounceEnabled5 := GuiLightBarrierDebounceEnabled5;
 LastLightBarrierDebounceEnabled6 := GuiLightBarrierDebounceEnabled6;
+LastLightBarrierDebounceEnabled7 := GuiLightBarrierDebounceEnabled7;
+LastLightBarrierDebounceEnabled8 := GuiLightBarrierDebounceEnabled8;
 
 // On startup, synchronize without creating a false edge.
 IF NOT LightBarrierDebounceInitialized THEN
@@ -641,18 +688,24 @@ IF NOT LightBarrierDebounceInitialized THEN
 	LightBarrierStable4 := LightBarrierLogical4;
 	LightBarrierStable5 := LightBarrierLogical5;
 	LightBarrierStable6 := LightBarrierLogical6;
+	LightBarrierStable7 := LightBarrierLogical7;
+	LightBarrierStable8 := LightBarrierLogical8;
 	LastLightBarrier1 := LightBarrierLogical1;
 	LastLightBarrier2 := LightBarrierLogical2;
 	LastLightBarrier3 := LightBarrierLogical3;
 	LastLightBarrier4 := LightBarrierLogical4;
 	LastLightBarrier5 := LightBarrierLogical5;
 	LastLightBarrier6 := LightBarrierLogical6;
+	LastLightBarrier7 := LightBarrierLogical7;
+	LastLightBarrier8 := LightBarrierLogical8;
 	LightBarrierStableCounter1 := 0;
 	LightBarrierStableCounter2 := 0;
 	LightBarrierStableCounter3 := 0;
 	LightBarrierStableCounter4 := 0;
 	LightBarrierStableCounter5 := 0;
 	LightBarrierStableCounter6 := 0;
+	LightBarrierStableCounter7 := 0;
+	LightBarrierStableCounter8 := 0;
 	LightBarrierDebounceInitialized := TRUE;
 ELSE
 	IF NOT GuiLightBarrierDebounceEnabled1 THEN
@@ -739,6 +792,34 @@ ELSE
 	ELSE
 		LightBarrierStableCounter6 := 0;
 	END_IF
+	IF NOT GuiLightBarrierDebounceEnabled7 THEN
+		LightBarrierStable7 := LightBarrierLogical7;
+		LightBarrierStableCounter7 := 0;
+	ELSIF LightBarrierLogical7 <> LightBarrierStable7 THEN
+		IF LightBarrierStableCounter7 < GuiBarrierCalibrationDebounceMs THEN
+			LightBarrierStableCounter7 := LightBarrierStableCounter7 + 1;
+		END_IF
+		IF LightBarrierStableCounter7 >= GuiBarrierCalibrationDebounceMs THEN
+			LightBarrierStable7 := LightBarrierLogical7;
+			LightBarrierStableCounter7 := 0;
+		END_IF
+	ELSE
+		LightBarrierStableCounter7 := 0;
+	END_IF
+	IF NOT GuiLightBarrierDebounceEnabled8 THEN
+		LightBarrierStable8 := LightBarrierLogical8;
+		LightBarrierStableCounter8 := 0;
+	ELSIF LightBarrierLogical8 <> LightBarrierStable8 THEN
+		IF LightBarrierStableCounter8 < GuiBarrierCalibrationDebounceMs THEN
+			LightBarrierStableCounter8 := LightBarrierStableCounter8 + 1;
+		END_IF
+		IF LightBarrierStableCounter8 >= GuiBarrierCalibrationDebounceMs THEN
+			LightBarrierStable8 := LightBarrierLogical8;
+			LightBarrierStableCounter8 := 0;
+		END_IF
+	ELSE
+		LightBarrierStableCounter8 := 0;
+	END_IF
 END_IF
 
 CASE GuiBarrierCalibrationFirstSensor OF
@@ -748,6 +829,8 @@ CASE GuiBarrierCalibrationFirstSensor OF
 	4: BarrierCalibrationFirstState := LightBarrierLogical4;
 	5: BarrierCalibrationFirstState := LightBarrierLogical5;
 	6: BarrierCalibrationFirstState := LightBarrierLogical6;
+	7: BarrierCalibrationFirstState := LightBarrierLogical7;
+	8: BarrierCalibrationFirstState := LightBarrierLogical8;
 ELSE
 	BarrierCalibrationFirstState := FALSE;
 END_CASE
@@ -759,6 +842,8 @@ CASE GuiBarrierCalibrationSecondSensor OF
 	4: BarrierCalibrationSecondState := LightBarrierLogical4;
 	5: BarrierCalibrationSecondState := LightBarrierLogical5;
 	6: BarrierCalibrationSecondState := LightBarrierLogical6;
+	7: BarrierCalibrationSecondState := LightBarrierLogical7;
+	8: BarrierCalibrationSecondState := LightBarrierLogical8;
 ELSE
 	BarrierCalibrationSecondState := FALSE;
 END_CASE
@@ -772,9 +857,9 @@ IF GuiBarrierCalibrationStart THEN
 		AND NOT StepperPosBusy
 		AND StepperPosReadyToExecute
 		AND (GuiBarrierCalibrationFirstSensor >= 1)
-		AND (GuiBarrierCalibrationFirstSensor <= 6)
+		AND (GuiBarrierCalibrationFirstSensor <= 8)
 		AND (GuiBarrierCalibrationSecondSensor >= 1)
-		AND (GuiBarrierCalibrationSecondSensor <= 6)
+		AND (GuiBarrierCalibrationSecondSensor <= 8)
 		AND (GuiBarrierCalibrationFirstSensor <> GuiBarrierCalibrationSecondSensor) THEN
 		BarrierCalibrationActive := TRUE;
 		BarrierCalibrationFirstCaptured := FALSE;
@@ -1037,6 +1122,8 @@ LightBarrier3FallingEdge := (NOT LightBarrierStable3) AND LastLightBarrier3;
 LightBarrier4FallingEdge := (NOT LightBarrierStable4) AND LastLightBarrier4;
 LightBarrier5FallingEdge := (NOT LightBarrierStable5) AND LastLightBarrier5;
 LightBarrier6FallingEdge := (NOT LightBarrierStable6) AND LastLightBarrier6;
+LightBarrier7FallingEdge := (NOT LightBarrierStable7) AND LastLightBarrier7;
+LightBarrier8FallingEdge := (NOT LightBarrierStable8) AND LastLightBarrier8;
 
 // Reorientation cycle ownership and event latches. The conveyor is released only
 // after a fresh heartbeat and the GUI's explicit start pulse.
@@ -1061,9 +1148,13 @@ IF GuiReorientationControlActive AND (ReorientationState = 20) THEN
 	IF LightBarrier4FallingEdge AND ((ReorientationExpectedArrayMask AND BYTE#2) <> BYTE#0) THEN
 		ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#2;
 	END_IF
-	IF LightBarrier6FallingEdge THEN
-		IF (ReorientationExpectedArrayMask AND BYTE#4) <> BYTE#0 THEN ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#4; END_IF
-		IF (ReorientationExpectedArrayMask AND BYTE#8) <> BYTE#0 THEN ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#8; END_IF
+	IF LightBarrier6FallingEdge AND ((ReorientationExpectedArrayMask AND BYTE#4) <> BYTE#0) THEN
+		ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#4;
+	END_IF
+	IF LightBarrier8FallingEdge THEN
+		IF (ReorientationExpectedArrayMask AND BYTE#8) <> BYTE#0 THEN
+			ReorientationTriggeredArrayMask := ReorientationTriggeredArrayMask OR BYTE#8;
+		END_IF
 		ReorientationExitSeen := TRUE;
 		GuiConveyorEnabled := FALSE;
 		ReorientationState := 30;
@@ -1105,6 +1196,16 @@ IF LightBarrierStable6 <> LastLightBarrier6 THEN
 	LightBarrierEventCount6 := LightBarrierEventCount6 + 1;
 	LightBarrierLastEventTimeMs6 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition6 := StepperInternalPosition;
+END_IF
+IF LightBarrierStable7 <> LastLightBarrier7 THEN
+	LightBarrierEventCount7 := LightBarrierEventCount7 + 1;
+	LightBarrierLastEventTimeMs7 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition7 := StepperInternalPosition;
+END_IF
+IF LightBarrierStable8 <> LastLightBarrier8 THEN
+	LightBarrierEventCount8 := LightBarrierEventCount8 + 1;
+	LightBarrierLastEventTimeMs8 := LightBarrierEventClockMs;
+	LightBarrierLastEventPosition8 := StepperInternalPosition;
 END_IF
 
 // Accept either signal polarity, but only after the new state remains stable for the debounce time.
@@ -1189,7 +1290,7 @@ IF LightBarrier6FallingEdge AND Array3Active AND (State3 <= 2) THEN
 	Array3TriggerPending := TRUE;
 END_IF
 
-IF LightBarrier6FallingEdge AND Array4Active AND (State4 = 2) THEN
+IF LightBarrier8FallingEdge AND Array4Active AND (State4 = 2) THEN
 	Array4TriggerPending := TRUE;
 END_IF
 
@@ -1198,8 +1299,10 @@ IF GuiForceDelayLightBarrier = 2 THEN
 	ForceDelayTrigger := LightBarrier2FallingEdge;
 ELSIF GuiForceDelayLightBarrier = 4 THEN
 	ForceDelayTrigger := LightBarrier4FallingEdge;
-ELSE
+ELSIF GuiForceDelayLightBarrier = 6 THEN
 	ForceDelayTrigger := LightBarrier6FallingEdge;
+ELSE
+	ForceDelayTrigger := LightBarrier8FallingEdge;
 END_IF
 
 IF GuiForceDelaySensor = 2 THEN
@@ -1344,29 +1447,46 @@ IF LightBarrier4FallingEdge THEN
 	VelocityTiming2Active := FALSE;
 END_IF
 
-// Light barriers 5 and 6 measure velocity for nozzle arrays 3 and 4.
+// Light barriers 5 and 6 measure velocity for nozzle array 3.
 IF LightBarrier5FallingEdge THEN
 	VelocityTiming3Active := FALSE;
 	VelocityTimer3(IN := FALSE, PT := T#30S);
 	VelocityTiming3Active := TRUE;
 	VelocityMeasurement3Valid := FALSE;
 	EstimatedVelocityMmPerSec3 := 0.0;
-	EstimatedVelocityMmPerSec4 := 0.0;
 	EstimatedOffsetDelayMs3 := 0.0;
-	EstimatedOffsetDelayMs4 := 0.0;
 	OffsetDelayCycles3 := 0;
-	OffsetDelayCycles4 := 0;
 END_IF
 
-// Light barrier 6 completes the array 3/4 velocity measurement and triggers arrays 3 and 4.
+// Light barrier 6 completes the array 3 velocity measurement and triggers array 3.
 IF LightBarrier6FallingEdge THEN
 	IF VelocityTiming3Active AND (TIME_TO_INT(VelocityTimer3.ET) > 0) AND (GuiSensorSpacing56Mm > 0.0) THEN
 		LastVelocityTime3Ms := TIME_TO_INT(VelocityTimer3.ET);
 		EstimatedVelocityMmPerSec3 := GuiSensorSpacing56Mm * 1000.0 / TO_REAL(LastVelocityTime3Ms);
-		EstimatedVelocityMmPerSec4 := EstimatedVelocityMmPerSec3;
 		VelocityMeasurement3Valid := TRUE;
 	END_IF
 	VelocityTiming3Active := FALSE;
+END_IF
+
+// Light barriers 7 and 8 measure velocity for nozzle array 4.
+IF LightBarrier7FallingEdge THEN
+	VelocityTiming4Active := FALSE;
+	VelocityTimer4(IN := FALSE, PT := T#30S);
+	VelocityTiming4Active := TRUE;
+	VelocityMeasurement4Valid := FALSE;
+	EstimatedVelocityMmPerSec4 := 0.0;
+	EstimatedOffsetDelayMs4 := 0.0;
+	OffsetDelayCycles4 := 0;
+END_IF
+
+// Light barrier 8 completes the array 4 velocity measurement and triggers array 4.
+IF LightBarrier8FallingEdge THEN
+	IF VelocityTiming4Active AND (TIME_TO_INT(VelocityTimer4.ET) > 0) AND (GuiSensorSpacing78Mm > 0.0) THEN
+		LastVelocityTime4Ms := TIME_TO_INT(VelocityTimer4.ET);
+		EstimatedVelocityMmPerSec4 := GuiSensorSpacing78Mm * 1000.0 / TO_REAL(LastVelocityTime4Ms);
+		VelocityMeasurement4Valid := TRUE;
+	END_IF
+	VelocityTiming4Active := FALSE;
 END_IF
 
 IF GuiPressureMbar1 < 0 THEN
@@ -1605,7 +1725,7 @@ ELSE
 	EstimatedOffsetDelayMs3 := 0.0;
 END_IF
 
-IF VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec4 > 0.0) THEN
+IF VelocityMeasurement4Valid AND (EstimatedVelocityMmPerSec4 > 0.0) THEN
 	IF GuiOffsetMm4 < 0.0 THEN
 		EstimatedOffsetDelayMs4 := 0.0;
 	ELSE
@@ -1861,7 +1981,7 @@ END_CASE
 
 CASE State4 OF
 	2:
-		//start nozzle array 4 on the falling edge of light barrier 6
+		//start nozzle array 4 on the falling edge of light barrier 8
 		IF NOT Array4Active THEN
 			Array4TriggerPending := FALSE;
 		ELSIF Array4TriggerPending THEN
@@ -1905,7 +2025,7 @@ CASE State4 OF
 END_CASE
 
 // Completion is independent of the legacy ShotCounter: all expected triggers and
-// the complete idle/valve state are required after the latched LB6 falling edge.
+// the complete idle/valve state are required after the latched LB8 falling edge.
 ReorientationArraysIdle := (State = 2) AND (State2 = 2) AND (State3 = 2) AND (State4 = 2)
 	AND NOT Array1TriggerPending AND NOT Array2TriggerPending AND NOT Array3TriggerPending AND NOT Array4TriggerPending
 	AND NOT OpenValve1 AND NOT OpenValve2 AND NOT OpenValve3 AND NOT OpenValve4
@@ -2028,7 +2148,9 @@ LastLightBarrier2 := LightBarrierStable2;
 LastLightBarrier3 := LightBarrierStable3;
 LastLightBarrier4 := LightBarrierStable4;
 LastLightBarrier5 := LightBarrierStable5;
-LastLightBarrier6 := LightBarrierStable6;]]></ST>
+LastLightBarrier6 := LightBarrierStable6;
+LastLightBarrier7 := LightBarrierStable7;
+LastLightBarrier8 := LightBarrierStable8;]]></ST>
     </Implementation>
   </POU>
 </TcPlcObject>

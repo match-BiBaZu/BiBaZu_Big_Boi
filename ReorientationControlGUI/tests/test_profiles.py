@@ -9,7 +9,7 @@ from bibazu_reorientation.models import ConveyorCalibration, PressureBaseline
 from bibazu_reorientation.profiles import build_write_plan, load_pressure_profile
 
 
-def payload(version: int = 8) -> dict:
+def payload(version: int = 9) -> dict:
     return {
         "version": version,
         "conveyor_enabled": True,
@@ -35,8 +35,8 @@ def payload(version: int = 8) -> dict:
     }
 
 
-@pytest.mark.parametrize("version", range(1, 9))
-def test_loads_versions_1_to_8(tmp_path: Path, version: int) -> None:
+@pytest.mark.parametrize("version", range(1, 10))
+def test_loads_versions_1_to_9(tmp_path: Path, version: int) -> None:
     source = tmp_path / f"v{version}.json"
     source.write_text(json.dumps(payload(version)), encoding="utf-8")
     profile = load_pressure_profile(source)

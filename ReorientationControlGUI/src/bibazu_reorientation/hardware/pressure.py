@@ -87,14 +87,14 @@ class _AdsWorker(QObject):
                 self._read("MAIN.GuiBarrierCalibrationDebounceMs", pyads.PLCTYPE_UDINT, 20)
             ),
             light_barrier_inverted=tuple(
-                bool(self._read(f"MAIN.GuiLightBarrierInvert{i}", pyads.PLCTYPE_BOOL, False))
-                for i in range(1, 7)
+                bool(self._read(f"MAIN.GuiLightBarrierInvert{i}", pyads.PLCTYPE_BOOL, True))
+                for i in range(1, 9)
             ),
             light_barrier_debounce_enabled=tuple(
                 bool(
-                    self._read(f"MAIN.GuiLightBarrierDebounceEnabled{i}", pyads.PLCTYPE_BOOL, True)
+                    self._read(f"MAIN.GuiLightBarrierDebounceEnabled{i}", pyads.PLCTYPE_BOOL, False)
                 )
-                for i in range(1, 7)
+                for i in range(1, 9)
             ),
             conveyor_speed_mm_per_sec=float(
                 self._read("MAIN.GuiConveyorSpeedMmPerSec", pyads.PLCTYPE_REAL, 0.0)
@@ -182,7 +182,7 @@ class _AdsWorker(QObject):
                     ),
                     light_barriers_stable=tuple(
                         bool(r(f"LightBarrierStable{i}", pyads.PLCTYPE_BOOL, False))
-                        for i in range(1, 7)
+                        for i in range(1, 9)
                     ),
                     reorientation_state=int(required_r("ReorientationState", pyads.PLCTYPE_UINT)),
                     reorientation_fault_code=int(
