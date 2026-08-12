@@ -195,7 +195,8 @@ VAR
 	ReorientationCycleAgeMs		: UDINT := 0;
 	ReorientationDrainAgeMs		: UDINT := 0;
 	ReorientationSafeLatch			: BOOL := FALSE;
-	// Latched diagnostic context for ReorientationFaultCode 96.
+	// Diagnostic context retained for non-fatal light-barrier warnings and for
+	// compatibility with older GUIs that reported these conditions as fault 96.
 	ReorientationFaultDetail		: UINT := 0; // 1=no clear, 2=queue mismatch, 3=sensor order
 	ReorientationFaultSensor		: UINT := 0;
 	ReorientationFaultExpectedSequence	: UDINT := 0;
@@ -203,6 +204,16 @@ VAR
 	ReorientationFaultQueueAck		: UDINT := 0;
 	ReorientationFaultQueueSlotSequence	: UDINT := 0;
 	ReorientationFaultBarrierStableMask	: BYTE := 0;
+	// Non-fatal resynchronization after an intentionally airborne workpiece
+	// skips barriers downstream of its final active nozzle array.
+	// 1=downstream barriers skipped, 2=airborne duplicate, 3=no-clear edge,
+	// 4=edge without matching queue slot, 5=out-of-order edge. All are non-fatal.
+	ReorientationWarningCode		: UINT := 0;
+	ReorientationWarningSensor		: UINT := 0;
+	ReorientationWarningSequence	: UDINT := 0;
+	ReorientationWarningPreviousSequence	: UDINT := 0;
+	ReorientationWarningSkippedBarrierMask	: BYTE := 0;
+	ReorientationWarningCounter		: UDINT := 0;
 	// Public continuous-run queue/result diagnostics.
 	ReorientationQueueDepth			: UINT := 0;
 	ReorientationQueueCapacity		: UINT := 128;
@@ -237,6 +248,10 @@ VAR
 	BatchQueueForceSingleMs			: ARRAY [0..127, 1..4] OF REAL;
 	BatchQueuePairStartMs			: ARRAY [0..127, 1..4] OF UDINT;
 	BatchQueueTriggeredMask			: ARRAY [0..127] OF BYTE;
+	// Unlike TriggeredMask, this is set only while a real valve output is
+	// commanded open. It marks this exact queued part as eligible for flight
+	// recovery; it cannot prove pneumatic pressure or actual part motion.
+	BatchQueueActuatedMask			: ARRAY [0..127] OF BYTE;
 	BatchQueueFinishedMask			: ARRAY [0..127] OF BYTE;
 	BatchQueueExitSeen				: ARRAY [0..127] OF BOOL;
 	BatchResultSequence				: ARRAY [0..127] OF UDINT;
@@ -256,6 +271,16 @@ VAR
 	PairedSecondBarrierLockStartMs	: ARRAY [1..4] OF UDINT;
 	PairedBarrierLockTimeoutMs		: UDINT := 500;
 	BatchSensorOrderInvalid			: BOOL := FALSE;
+	BatchCanResyncSkippedSensors	: BOOL := FALSE;
+	BatchCurrentFlightConfirmed	: BOOL := FALSE;
+	BatchIgnoreAirborneDuplicate	: BOOL := FALSE;
+	BatchLastRequiredSensor			: INT := 0;
+	BatchLastRequiredArrayMask		: BYTE := 0;
+	BatchPreviousSlotIndex			: INT := 0;
+	BatchPreviousLastRequiredSensor	: INT := 0;
+	BatchPreviousLastRequiredArrayMask	: BYTE := 0;
+	BatchResyncIndex					: INT := 0;
+	BatchSkippedBarrierMask			: BYTE := 0;
 	BatchCurrentBarrierStableMask	: BYTE := 0;
 	BatchNextCompleteSequence		: UDINT := 1;
 	BatchLastAcceptedCommit			: UDINT := 0;
@@ -679,6 +704,12 @@ IF GuiReorientationReset AND GuiReorientationControlActive THEN
 	ReorientationFaultQueueAck := 0;
 	ReorientationFaultQueueSlotSequence := 0;
 	ReorientationFaultBarrierStableMask := 0;
+	ReorientationWarningCode := 0;
+	ReorientationWarningSensor := 0;
+	ReorientationWarningSequence := 0;
+	ReorientationWarningPreviousSequence := 0;
+	ReorientationWarningSkippedBarrierMask := 0;
+	ReorientationWarningCounter := 0;
 	BatchNextCompleteSequence := 1;
 	BatchLastAcceptedCommit := 0;
 	BatchAcceptedResultAck := 0;
@@ -1515,6 +1546,7 @@ IF GuiReorientationControlActive AND (ReorientationState = 20)
 		BatchQueueForceSingleMs[BatchSlotIndex, 3] := GuiReorientationQueueForceSingleMs3;
 		BatchQueueForceSingleMs[BatchSlotIndex, 4] := GuiReorientationQueueForceSingleMs4;
 		BatchQueueTriggeredMask[BatchSlotIndex] := 0;
+		BatchQueueActuatedMask[BatchSlotIndex] := 0;
 		BatchQueueFinishedMask[BatchSlotIndex] := (NOT BatchQueueArrayMask[BatchSlotIndex]) AND BYTE#15;
 		BatchQueueExitSeen[BatchSlotIndex] := FALSE;
 		BatchLastAcceptedCommit := GuiReorientationQueueCommit;
@@ -1629,33 +1661,207 @@ IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (Reorientatio
 			IF BatchSensorNeedsClear[BatchLoopIndex] THEN
 				ReorientationFaultDetail := 1;
 				ReorientationFaultQueueSlotSequence := 0;
-				ReorientationFaultCode := 96; // sensor did not become clear between parts
-				ReorientationState := 96;
-				ReorientationSafeLatch := TRUE;
+				// Diagnostic mode: reject the ambiguous edge but keep production
+				// running. Never advance a cursor or trigger a nozzle from it.
+				ReorientationWarningCode := 3;
+				ReorientationWarningSensor := INT_TO_UINT(BatchLoopIndex);
+				ReorientationWarningSequence := BatchNextSensorSequence[BatchLoopIndex];
+				ReorientationWarningPreviousSequence := 0;
+				ReorientationWarningSkippedBarrierMask := BYTE#0;
+				ReorientationWarningCounter := ReorientationWarningCounter + 1;
+				IF (BatchLoopIndex MOD 2) = 1 THEN
+					BatchJobIndex := (BatchLoopIndex + 1) / 2;
+					PairedFirstBarrierLocked[BatchJobIndex] := TRUE;
+					PairedFirstBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+					PairedSecondBarrierLocked[BatchJobIndex] := FALSE;
+				ELSE
+					BatchJobIndex := BatchLoopIndex / 2;
+					PairedSecondBarrierLocked[BatchJobIndex] := TRUE;
+					PairedSecondBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+					PairedFirstBarrierLocked[BatchJobIndex] := FALSE;
+				END_IF
 			ELSE
 				BatchSensorNeedsClear[BatchLoopIndex] := TRUE;
 				BatchSlotIndex := UDINT_TO_INT((BatchNextSensorSequence[BatchLoopIndex] - 1) MOD 128);
 				// A normal TwinCAT AND does not guarantee short-circuit evaluation.
 				// Never form BatchSensorSequence[0] while processing sensor 1.
 				BatchSensorOrderInvalid := FALSE;
+				BatchCanResyncSkippedSensors := FALSE;
+				BatchCurrentFlightConfirmed := FALSE;
+				BatchIgnoreAirborneDuplicate := FALSE;
+				BatchLastRequiredSensor := 0;
+				BatchLastRequiredArrayMask := BYTE#0;
+				BatchPreviousLastRequiredSensor := 0;
+				BatchPreviousLastRequiredArrayMask := BYTE#0;
 				IF BatchLoopIndex > 1 THEN
 					ReorientationFaultPreviousSequence := BatchSensorSequence[BatchLoopIndex - 1];
 					BatchSensorOrderInvalid :=
 						BatchSensorSequence[BatchLoopIndex - 1] < BatchNextSensorSequence[BatchLoopIndex];
+					// The highest enabled array defines the final sensor pair that
+					// remains timing/actuation-critical for this queued part.
+					IF (BatchQueueArrayMask[BatchSlotIndex] AND BYTE#8) <> BYTE#0 THEN
+						BatchLastRequiredSensor := 8;
+						BatchLastRequiredArrayMask := BYTE#8;
+					ELSIF (BatchQueueArrayMask[BatchSlotIndex] AND BYTE#4) <> BYTE#0 THEN
+						BatchLastRequiredSensor := 6;
+						BatchLastRequiredArrayMask := BYTE#4;
+					ELSIF (BatchQueueArrayMask[BatchSlotIndex] AND BYTE#2) <> BYTE#0 THEN
+						BatchLastRequiredSensor := 4;
+						BatchLastRequiredArrayMask := BYTE#2;
+					ELSIF (BatchQueueArrayMask[BatchSlotIndex] AND BYTE#1) <> BYTE#0 THEN
+						BatchLastRequiredSensor := 2;
+						BatchLastRequiredArrayMask := BYTE#1;
+					END_IF
+					BatchCurrentFlightConfirmed :=
+						(BatchLastRequiredArrayMask <> BYTE#0)
+						AND ((BatchQueueActuatedMask[BatchSlotIndex]
+							AND BatchLastRequiredArrayMask) <> BYTE#0);
+					BatchCanResyncSkippedSensors := BatchSensorOrderInvalid
+						AND ((BatchLoopIndex - 1) > BatchLastRequiredSensor)
+						AND BatchCurrentFlightConfirmed;
+
+					// If this exact part has not yet been actuated, an edge behind the
+					// final array of the still-airborne previous part is its duplicate,
+					// not permission to advance the next queue sequence.
+					IF BatchSensorOrderInvalid
+						AND NOT BatchCanResyncSkippedSensors
+						AND (BatchNextSensorSequence[BatchLoopIndex] > 1) THEN
+						BatchPreviousSlotIndex := UDINT_TO_INT(
+							(BatchNextSensorSequence[BatchLoopIndex] - 2) MOD 128);
+						IF (BatchQueueArrayMask[BatchPreviousSlotIndex] AND BYTE#8) <> BYTE#0 THEN
+							BatchPreviousLastRequiredSensor := 8;
+							BatchPreviousLastRequiredArrayMask := BYTE#8;
+						ELSIF (BatchQueueArrayMask[BatchPreviousSlotIndex] AND BYTE#4) <> BYTE#0 THEN
+							BatchPreviousLastRequiredSensor := 6;
+							BatchPreviousLastRequiredArrayMask := BYTE#4;
+						ELSIF (BatchQueueArrayMask[BatchPreviousSlotIndex] AND BYTE#2) <> BYTE#0 THEN
+							BatchPreviousLastRequiredSensor := 4;
+							BatchPreviousLastRequiredArrayMask := BYTE#2;
+						ELSIF (BatchQueueArrayMask[BatchPreviousSlotIndex] AND BYTE#1) <> BYTE#0 THEN
+							BatchPreviousLastRequiredSensor := 2;
+							BatchPreviousLastRequiredArrayMask := BYTE#1;
+						END_IF
+						BatchIgnoreAirborneDuplicate :=
+							(BatchQueueSequence[BatchPreviousSlotIndex]
+								= (BatchNextSensorSequence[BatchLoopIndex] - 1))
+							AND NOT BatchQueueExitSeen[BatchPreviousSlotIndex]
+							AND (BatchPreviousLastRequiredArrayMask <> BYTE#0)
+							AND ((BatchQueueActuatedMask[BatchPreviousSlotIndex]
+								AND BatchPreviousLastRequiredArrayMask) <> BYTE#0)
+							AND (BatchLoopIndex > BatchPreviousLastRequiredSensor);
+					END_IF
 				END_IF
 				ReorientationFaultQueueSlotSequence := BatchQueueSequence[BatchSlotIndex];
 				IF (BatchNextSensorSequence[BatchLoopIndex] > ReorientationQueueEnqueueAck)
 					OR (BatchQueueSequence[BatchSlotIndex] <> BatchNextSensorSequence[BatchLoopIndex]) THEN
 					ReorientationFaultDetail := 2;
-					ReorientationFaultCode := 96; // queue underflow or sequence mismatch
-					ReorientationState := 96;
-					ReorientationSafeLatch := TRUE;
-				ELSIF BatchSensorOrderInvalid THEN
+					ReorientationWarningCode := 4;
+					ReorientationWarningSensor := INT_TO_UINT(BatchLoopIndex);
+					ReorientationWarningSequence := BatchNextSensorSequence[BatchLoopIndex];
+					ReorientationWarningPreviousSequence := ReorientationFaultPreviousSequence;
+					ReorientationWarningSkippedBarrierMask := BYTE#0;
+					ReorientationWarningCounter := ReorientationWarningCounter + 1;
+					IF (BatchLoopIndex MOD 2) = 1 THEN
+						BatchJobIndex := (BatchLoopIndex + 1) / 2;
+						PairedFirstBarrierLocked[BatchJobIndex] := TRUE;
+						PairedFirstBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+						PairedSecondBarrierLocked[BatchJobIndex] := FALSE;
+					ELSE
+						BatchJobIndex := BatchLoopIndex / 2;
+						PairedSecondBarrierLocked[BatchJobIndex] := TRUE;
+						PairedSecondBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+						PairedFirstBarrierLocked[BatchJobIndex] := FALSE;
+					END_IF
+				ELSIF BatchIgnoreAirborneDuplicate THEN
+					// The partner gate admitted another optical edge from the already
+					// actuated previous part. Keep the current cursor unchanged and
+					// restart this sensor's inhibit instead of faulting or misassigning it.
+					ReorientationWarningCode := 2;
+					ReorientationWarningSensor := INT_TO_UINT(BatchLoopIndex);
+					ReorientationWarningSequence := BatchNextSensorSequence[BatchLoopIndex];
+					ReorientationWarningPreviousSequence :=
+						BatchNextSensorSequence[BatchLoopIndex] - 1;
+					ReorientationWarningSkippedBarrierMask := BYTE#0;
+					ReorientationWarningCounter := ReorientationWarningCounter + 1;
+					IF (BatchLoopIndex MOD 2) = 1 THEN
+						BatchJobIndex := (BatchLoopIndex + 1) / 2;
+						PairedFirstBarrierLocked[BatchJobIndex] := TRUE;
+						PairedFirstBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+						PairedSecondBarrierLocked[BatchJobIndex] := FALSE;
+					ELSE
+						BatchJobIndex := BatchLoopIndex / 2;
+						PairedSecondBarrierLocked[BatchJobIndex] := TRUE;
+						PairedSecondBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+						PairedFirstBarrierLocked[BatchJobIndex] := FALSE;
+					END_IF
+				ELSIF BatchSensorOrderInvalid AND NOT BatchCanResyncSkippedSensors THEN
 					ReorientationFaultDetail := 3;
-					ReorientationFaultCode := 96; // part reached a sensor out of order
-					ReorientationState := 96;
-					ReorientationSafeLatch := TRUE;
+					ReorientationWarningCode := 5;
+					ReorientationWarningSensor := INT_TO_UINT(BatchLoopIndex);
+					ReorientationWarningSequence := BatchNextSensorSequence[BatchLoopIndex];
+					ReorientationWarningPreviousSequence := ReorientationFaultPreviousSequence;
+					ReorientationWarningSkippedBarrierMask := BYTE#0;
+					ReorientationWarningCounter := ReorientationWarningCounter + 1;
+					IF (BatchLoopIndex MOD 2) = 1 THEN
+						BatchJobIndex := (BatchLoopIndex + 1) / 2;
+						PairedFirstBarrierLocked[BatchJobIndex] := TRUE;
+						PairedFirstBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+						PairedSecondBarrierLocked[BatchJobIndex] := FALSE;
+					ELSE
+						BatchJobIndex := BatchLoopIndex / 2;
+						PairedSecondBarrierLocked[BatchJobIndex] := TRUE;
+						PairedSecondBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+						PairedFirstBarrierLocked[BatchJobIndex] := FALSE;
+					END_IF
 				ELSE
+					IF BatchCanResyncSkippedSensors THEN
+						BatchSkippedBarrierMask := BYTE#0;
+						FOR BatchResyncIndex := BatchLastRequiredSensor + 1 TO BatchLoopIndex - 1 DO
+							IF BatchSensorSequence[BatchResyncIndex]
+								< BatchNextSensorSequence[BatchLoopIndex] THEN
+								BatchSensorSequence[BatchResyncIndex] :=
+									BatchNextSensorSequence[BatchLoopIndex];
+								BatchNextSensorSequence[BatchResyncIndex] :=
+									BatchNextSensorSequence[BatchLoopIndex] + 1;
+								BatchSensorNeedsClear[BatchResyncIndex] := FALSE;
+								BatchSkippedBarrierMask := BatchSkippedBarrierMask
+									OR SHL(BYTE#1, BatchResyncIndex - 1);
+								// Advance the alternating pair gate just as the virtual sensor
+								// acceptance advances its sequence cursor.
+								IF (BatchResyncIndex MOD 2) = 1 THEN
+									BatchJobIndex := (BatchResyncIndex + 1) / 2;
+									PairedFirstBarrierLocked[BatchJobIndex] := TRUE;
+									PairedFirstBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+									PairedSecondBarrierLocked[BatchJobIndex] := FALSE;
+								ELSE
+									BatchJobIndex := BatchResyncIndex / 2;
+									PairedSecondBarrierLocked[BatchJobIndex] := TRUE;
+									PairedSecondBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+									PairedFirstBarrierLocked[BatchJobIndex] := FALSE;
+								END_IF
+							END_IF
+						END_FOR
+						// The physical current edge was evaluated before the virtual ones;
+						// re-apply it last so a skipped odd sensor in the same pair cannot
+						// overwrite the correct final gate phase.
+						IF (BatchLoopIndex MOD 2) = 1 THEN
+							BatchJobIndex := (BatchLoopIndex + 1) / 2;
+							PairedFirstBarrierLocked[BatchJobIndex] := TRUE;
+							PairedFirstBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+							PairedSecondBarrierLocked[BatchJobIndex] := FALSE;
+						ELSE
+							BatchJobIndex := BatchLoopIndex / 2;
+							PairedSecondBarrierLocked[BatchJobIndex] := TRUE;
+							PairedSecondBarrierLockStartMs[BatchJobIndex] := LightBarrierEventClockMs;
+							PairedFirstBarrierLocked[BatchJobIndex] := FALSE;
+						END_IF
+						ReorientationWarningCode := 1;
+						ReorientationWarningSensor := INT_TO_UINT(BatchLoopIndex);
+						ReorientationWarningSequence := BatchNextSensorSequence[BatchLoopIndex];
+						ReorientationWarningPreviousSequence := ReorientationFaultPreviousSequence;
+						ReorientationWarningSkippedBarrierMask := BatchSkippedBarrierMask;
+						ReorientationWarningCounter := ReorientationWarningCounter + 1;
+					END_IF
 					BatchSensorSequence[BatchLoopIndex] := BatchNextSensorSequence[BatchLoopIndex];
 					IF (BatchLoopIndex MOD 2) = 1 THEN
 						BatchJobIndex := (BatchLoopIndex + 1) / 2;
@@ -2336,6 +2542,11 @@ CASE State OF
 			OpenValve4 := GuiArrayEnabled1 AND GuiNozzleEnabled4 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
 			OpenValve17 := GuiArrayEnabled1 AND GuiNozzleEnabled5 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
 			OpenValve18 := GuiArrayEnabled1 AND GuiNozzleEnabled6 AND (Counter > LatchedDelayCycles1) AND (Counter <= LatchedNozzleEndCycles1);
+			IF GuiReorientationControlActive AND (BatchActiveSequence[1] > 0)
+				AND (OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4 OR OpenValve17 OR OpenValve18) THEN
+				BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[1] - 1) MOD 128);
+				BatchQueueActuatedMask[BatchSlotIndex] := BatchQueueActuatedMask[BatchSlotIndex] OR BYTE#1;
+			END_IF
 
 			IF OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4 OR OpenValve17 OR OpenValve18 THEN
 				PressureSum := PressureSum + NozzlePressure;
@@ -2430,6 +2641,11 @@ CASE State2 OF
 			OpenValve8 := GuiArrayEnabled2 AND GuiNozzleEnabled10 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
 			OpenValve19 := GuiArrayEnabled2 AND GuiNozzleEnabled11 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
 			OpenValve20 := GuiArrayEnabled2 AND GuiNozzleEnabled12 AND (Counter2 > LatchedDelayCycles2) AND (Counter2 <= LatchedNozzleEndCycles2);
+			IF GuiReorientationControlActive AND (BatchActiveSequence[2] > 0)
+				AND (OpenValve5 OR OpenValve6 OR OpenValve7 OR OpenValve8 OR OpenValve19 OR OpenValve20) THEN
+				BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[2] - 1) MOD 128);
+				BatchQueueActuatedMask[BatchSlotIndex] := BatchQueueActuatedMask[BatchSlotIndex] OR BYTE#2;
+			END_IF
 
 			IF Counter2 > LatchedNozzleEndCycles2 THEN
 				OpenValve5 := FALSE;
@@ -2491,6 +2707,11 @@ CASE State3 OF
 			OpenValve12 := GuiArrayEnabled3 AND GuiNozzleEnabled16 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
 			OpenValve21 := GuiArrayEnabled3 AND GuiNozzleEnabled17 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
 			OpenValve22 := GuiArrayEnabled3 AND GuiNozzleEnabled18 AND (Counter3 > LatchedDelayCycles3) AND (Counter3 <= LatchedNozzleEndCycles3);
+			IF GuiReorientationControlActive AND (BatchActiveSequence[3] > 0)
+				AND (OpenValve9 OR OpenValve10 OR OpenValve11 OR OpenValve12 OR OpenValve21 OR OpenValve22) THEN
+				BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[3] - 1) MOD 128);
+				BatchQueueActuatedMask[BatchSlotIndex] := BatchQueueActuatedMask[BatchSlotIndex] OR BYTE#4;
+			END_IF
 
 			IF Counter3 > LatchedNozzleEndCycles3 THEN
 				OpenValve9 := FALSE;
@@ -2552,6 +2773,11 @@ CASE State4 OF
 			OpenValve16 := GuiArrayEnabled4 AND GuiNozzleEnabled22 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
 			OpenValve23 := GuiArrayEnabled4 AND GuiNozzleEnabled23 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
 			OpenValve24 := GuiArrayEnabled4 AND GuiNozzleEnabled24 AND (Counter4 > LatchedDelayCycles4) AND (Counter4 <= LatchedNozzleEndCycles4);
+			IF GuiReorientationControlActive AND (BatchActiveSequence[4] > 0)
+				AND (OpenValve13 OR OpenValve14 OR OpenValve15 OR OpenValve16 OR OpenValve23 OR OpenValve24) THEN
+				BatchSlotIndex := UDINT_TO_INT((BatchActiveSequence[4] - 1) MOD 128);
+				BatchQueueActuatedMask[BatchSlotIndex] := BatchQueueActuatedMask[BatchSlotIndex] OR BYTE#8;
+			END_IF
 
 			IF Counter4 > LatchedNozzleEndCycles4 THEN
 				OpenValve13 := FALSE;

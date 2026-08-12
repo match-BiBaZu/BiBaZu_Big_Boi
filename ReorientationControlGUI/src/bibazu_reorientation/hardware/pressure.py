@@ -265,6 +265,32 @@ class _AdsWorker(QObject):
                     reorientation_fault_barrier_stable_mask=int(
                         r("ReorientationFaultBarrierStableMask", pyads.PLCTYPE_BYTE, 0)
                     ),
+                    reorientation_warning_code=int(
+                        r("ReorientationWarningCode", pyads.PLCTYPE_UINT, 0)
+                    ),
+                    reorientation_warning_sensor=int(
+                        r("ReorientationWarningSensor", pyads.PLCTYPE_UINT, 0)
+                    ),
+                    reorientation_warning_sequence=int(
+                        r("ReorientationWarningSequence", pyads.PLCTYPE_UDINT, 0)
+                    ),
+                    reorientation_warning_previous_sequence=int(
+                        r(
+                            "ReorientationWarningPreviousSequence",
+                            pyads.PLCTYPE_UDINT,
+                            0,
+                        )
+                    ),
+                    reorientation_warning_skipped_barrier_mask=int(
+                        r(
+                            "ReorientationWarningSkippedBarrierMask",
+                            pyads.PLCTYPE_BYTE,
+                            0,
+                        )
+                    ),
+                    reorientation_warning_counter=int(
+                        r("ReorientationWarningCounter", pyads.PLCTYPE_UDINT, 0)
+                    ),
                 )
             )
         except Exception as exc:

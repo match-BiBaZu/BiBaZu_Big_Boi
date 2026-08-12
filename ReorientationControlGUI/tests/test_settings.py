@@ -17,12 +17,17 @@ def valid_settings(tmp_path) -> AppSettings:
 def test_hardware_settings_validation(tmp_path) -> None:
     settings = valid_settings(tmp_path).validated()
     assert settings.camera_ip == "169.254.117.70"
+    assert settings.camera_exposure_time_us == 4_000.0
     with pytest.raises(ValueError, match="different addresses"):
         replace(settings, light_1_address="AA:BB", light_2_address="AA:BB").validated()
     with pytest.raises(ValueError, match="AMS Net ID"):
         replace(settings, plc_ams_net_id="invalid").validated()
     with pytest.raises(ValueError, match="Camera preview"):
         replace(settings, preview_fps=0).validated()
+    with pytest.raises(ValueError, match="Camera exposure"):
+        replace(settings, camera_exposure_time_us=999).validated()
+    with pytest.raises(ValueError, match="Camera exposure"):
+        replace(settings, camera_exposure_time_us=20_001).validated()
 
 
 def test_legacy_plc_ip_is_migrated() -> None:

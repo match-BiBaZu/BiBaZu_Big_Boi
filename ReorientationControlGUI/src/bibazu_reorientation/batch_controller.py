@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections import deque
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import numpy as np
@@ -95,6 +96,7 @@ class BatchController(QObject):
         self._initial_queue_staged = False
         self._conveyor_start_pending = False
         self._plc_reset_acknowledged = False
+        self._last_plc_warning_counter: int | None = None
         self._release_pending = False
         self._light_addresses = ("", "")
         self._config_hash = ""
@@ -498,6 +500,7 @@ class BatchController(QObject):
     def _on_snapshot(self, snapshot: PlcSnapshot) -> None:
         self.snapshot = snapshot
         self._emit_counters()
+        self._consume_plc_warning(snapshot)
         if self._handshake_phase == "batch_start_ack":
             if (
                 snapshot.reorientation_state == 20
@@ -556,6 +559,58 @@ class BatchController(QObject):
                 "MAIN.GuiReorientationFinish": False,
             }
             self.pressure.write("batch_release_safe", safe_values, True)
+
+    def _consume_plc_warning(self, snapshot: PlcSnapshot) -> None:
+        counter = snapshot.reorientation_warning_counter
+        if self._last_plc_warning_counter is None:
+            self._last_plc_warning_counter = counter
+            return
+        if counter == self._last_plc_warning_counter:
+            return
+        self._last_plc_warning_counter = counter
+        if snapshot.reorientation_warning_code == 1:
+            skipped = [
+                str(index)
+                for index in range(1, 9)
+                if snapshot.reorientation_warning_skipped_barrier_mask
+                & (1 << (index - 1))
+            ]
+            skipped_text = ", ".join(f"LB{index}" for index in skipped) or "unknown"
+            self._warn(
+                "plc_airborne_sensor_skip",
+                f"Part {snapshot.reorientation_warning_sequence} skipped {skipped_text} "
+                "after its final active nozzle array; "
+                f"tracking resumed at LB{snapshot.reorientation_warning_sensor}",
+            )
+        elif snapshot.reorientation_warning_code == 2:
+            self._warn(
+                "plc_airborne_duplicate_edge",
+                f"Ignored an extra edge from airborne part "
+                f"{snapshot.reorientation_warning_previous_sequence} at "
+                f"LB{snapshot.reorientation_warning_sensor}; still waiting for part "
+                f"{snapshot.reorientation_warning_sequence}",
+            )
+        elif snapshot.reorientation_warning_code == 3:
+            self._warn(
+                "plc_light_barrier_no_clear_ignored",
+                f"Ignored another edge at LB{snapshot.reorientation_warning_sensor} "
+                "because the sensor had not cleared; production continues",
+            )
+        elif snapshot.reorientation_warning_code == 4:
+            self._warn(
+                "plc_light_barrier_queue_edge_ignored",
+                f"Ignored LB{snapshot.reorientation_warning_sensor} edge for part "
+                f"{snapshot.reorientation_warning_sequence} because no matching queue "
+                "entry exists; production continues",
+            )
+        elif snapshot.reorientation_warning_code == 5:
+            self._warn(
+                "plc_light_barrier_order_edge_ignored",
+                f"Ignored out-of-order LB{snapshot.reorientation_warning_sensor} edge for "
+                f"part {snapshot.reorientation_warning_sequence} "
+                f"(previous sensor at part "
+                f"{snapshot.reorientation_warning_previous_sequence}); production continues",
+            )
 
     def _consume_result(self, result: PartResult) -> None:
         self._last_result_sequence = result.sequence_id
@@ -710,7 +765,7 @@ class BatchController(QObject):
 
     def _connection_changed(self, connected: bool, detail: str) -> None:
         if not connected:
-            self.snapshot.connected = False
+            self.snapshot = replace(self.snapshot, connected=False)
         if not connected and self.state in {
             BatchState.STARTING,
             BatchState.RUNNING,

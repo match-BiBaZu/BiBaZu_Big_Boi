@@ -9,6 +9,9 @@ from PyQt6.QtCore import QSettings
 
 DEFAULT_PLC_IP = "192.168.0.23"
 LEGACY_PLC_IPS = {"192.168.10.23"}
+CAMERA_EXPOSURE_MIN_US = 1_000.0
+CAMERA_EXPOSURE_MAX_US = 20_000.0
+CAMERA_EXPOSURE_DEFAULT_US = 4_000.0
 
 
 def _migrated_plc_ip(value: str) -> str:
@@ -22,6 +25,7 @@ class AppSettings:
     camera_serial: str = ""
     cti_path: str = r"C:\Program Files\Baumer Camera Explorer\bgapi2_gige.cti"
     preview_fps: float = 15.0
+    camera_exposure_time_us: float = CAMERA_EXPOSURE_DEFAULT_US
     handoff_line_percent: int = 30
     light_1_address: str = ""
     light_2_address: str = ""
@@ -43,6 +47,10 @@ class AppSettings:
             raise ValueError("The ADS port must be between 1 and 65535")
         if not 1.0 <= float(self.preview_fps) <= 60.0:
             raise ValueError("Camera preview must be between 1 and 60 FPS")
+        if not CAMERA_EXPOSURE_MIN_US <= float(
+            self.camera_exposure_time_us
+        ) <= CAMERA_EXPOSURE_MAX_US:
+            raise ValueError("Camera exposure must be between 1000 and 20000 microseconds")
         if not 5 <= int(self.handoff_line_percent) <= 80:
             raise ValueError("Handoff line must be between 5 and 80 percent")
         cti = Path(self.cti_path.strip()).expanduser()
@@ -55,6 +63,7 @@ class AppSettings:
             camera_ip=self.camera_ip.strip(),
             camera_serial=self.camera_serial.strip(),
             cti_path=str(cti.resolve()),
+            camera_exposure_time_us=float(self.camera_exposure_time_us),
             light_1_address=self.light_1_address.strip(),
             light_2_address=self.light_2_address.strip(),
             plc_ip=_migrated_plc_ip(self.plc_ip),
@@ -80,6 +89,10 @@ class AppSettings:
         for name, default in asdict(result).items():
             value = q.value(name, default)
             setattr(result, name, type(default)(value))
+        result.camera_exposure_time_us = max(
+            CAMERA_EXPOSURE_MIN_US,
+            min(CAMERA_EXPOSURE_MAX_US, result.camera_exposure_time_us),
+        )
         result.plc_ip = _migrated_plc_ip(result.plc_ip)
         return result
 

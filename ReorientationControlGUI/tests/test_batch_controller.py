@@ -357,6 +357,112 @@ def test_camera_and_yolo_loss_after_snapshot_are_warnings(tmp_path: Path) -> Non
     assert not any(name == "batch_abort" for name, _values, _verify in pressure.writes)
 
 
+def test_plc_airborne_sensor_skip_warns_without_aborting(tmp_path: Path) -> None:
+    controller, pressure = configured(tmp_path)
+    warnings = []
+    controller.warning_raised.connect(lambda code, text: warnings.append((code, text)))
+    controller._last_plc_warning_counter = 0
+    controller.state = BatchState.DRAINING
+
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            reorientation_state=30,
+            heartbeat_alive=True,
+            reorientation_warning_code=1,
+            reorientation_warning_sensor=7,
+            reorientation_warning_sequence=2,
+            reorientation_warning_previous_sequence=1,
+            reorientation_warning_skipped_barrier_mask=0x30,
+            reorientation_warning_counter=1,
+        )
+    )
+
+    assert warnings == [
+        (
+            "plc_airborne_sensor_skip",
+            "Part 2 skipped LB5, LB6 after its final active nozzle array; "
+            "tracking resumed at LB7",
+        )
+    ]
+    assert controller.state == BatchState.DRAINING
+    assert not any(name == "batch_abort" for name, _values, _verify in pressure.writes)
+
+
+def test_plc_airborne_duplicate_edge_warns_without_advancing_or_aborting(
+    tmp_path: Path,
+) -> None:
+    controller, pressure = configured(tmp_path)
+    warnings = []
+    controller.warning_raised.connect(lambda code, text: warnings.append((code, text)))
+    controller._last_plc_warning_counter = 0
+    controller.state = BatchState.DRAINING
+
+    snapshot = PlcSnapshot(
+        connected=True,
+        reorientation_state=30,
+        heartbeat_alive=True,
+        reorientation_warning_code=2,
+        reorientation_warning_sensor=5,
+        reorientation_warning_sequence=3,
+        reorientation_warning_previous_sequence=2,
+        reorientation_warning_skipped_barrier_mask=0,
+        reorientation_warning_counter=1,
+    )
+    controller._on_snapshot(snapshot)
+    # Re-reading the same PLC warning must not duplicate the GUI notification.
+    controller._on_snapshot(snapshot)
+
+    assert len(warnings) == 1
+    warning_code, warning_text = warnings[0]
+    assert warning_code == "plc_airborne_duplicate_edge"
+    assert "LB5" in warning_text
+    assert "part 2" in warning_text.lower()
+    assert "part 3" in warning_text.lower()
+    assert controller.state == BatchState.DRAINING
+    assert not any(name == "batch_abort" for name, _values, _verify in pressure.writes)
+
+
+@pytest.mark.parametrize(
+    ("warning_number", "warning_code", "expected_text"),
+    (
+        (3, "plc_light_barrier_no_clear_ignored", "had not cleared"),
+        (4, "plc_light_barrier_queue_edge_ignored", "no matching queue entry"),
+        (5, "plc_light_barrier_order_edge_ignored", "out-of-order"),
+    ),
+)
+def test_plc_light_barrier_detection_faults_warn_without_aborting(
+    tmp_path: Path,
+    warning_number: int,
+    warning_code: str,
+    expected_text: str,
+) -> None:
+    controller, pressure = configured(tmp_path)
+    warnings = []
+    controller.warning_raised.connect(lambda code, text: warnings.append((code, text)))
+    controller._last_plc_warning_counter = 0
+    controller.state = BatchState.RUNNING
+
+    controller._on_snapshot(
+        PlcSnapshot(
+            connected=True,
+            reorientation_state=20,
+            heartbeat_alive=True,
+            reorientation_warning_code=warning_number,
+            reorientation_warning_sensor=6,
+            reorientation_warning_sequence=3,
+            reorientation_warning_previous_sequence=2,
+            reorientation_warning_counter=1,
+        )
+    )
+
+    assert len(warnings) == 1
+    assert warnings[0][0] == warning_code
+    assert expected_text in warnings[0][1]
+    assert controller.state == BatchState.RUNNING
+    assert not any(name == "batch_abort" for name, _values, _verify in pressure.writes)
+
+
 def test_uncertain_snapshot_part_warns_and_remains_in_queue(tmp_path: Path) -> None:
     controller, pressure = configured(tmp_path)
     warnings = []

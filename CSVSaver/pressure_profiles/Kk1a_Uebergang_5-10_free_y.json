@@ -1,6 +1,6 @@
 {
   "version": 9,
-  "created_at": "2026-08-11T20:20:51",
+  "created_at": "2026-08-11T22:13:04",
   "ur_ry_angle_deg": 18.0,
   "light_barrier_debounce_ms": 10,
   "light_barrier_inverted": [
@@ -14,14 +14,14 @@
     true
   ],
   "light_barrier_debounce_enabled": [
-    false,
-    false,
-    false,
-    false,
-    false,
-    false,
-    false,
-    false
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
   ],
   "sensor_spacing_12_mm": 40.0,
   "sensor_spacing_34_mm": 40.0,

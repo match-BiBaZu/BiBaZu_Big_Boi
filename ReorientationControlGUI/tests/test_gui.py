@@ -243,12 +243,19 @@ def test_roadmap_profile_conflicts_require_explicit_machine_values(
     window.pressure.shutdown()
 
 
-def test_camera_status_enables_log_exposure_slider_and_shows_fps(
+def test_camera_status_limits_restores_and_saves_exposure_slider(
     qtbot, tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    window = MainWindow(AppSettings())
+    settings = AppSettings(camera_exposure_time_us=7_500.0)
+    window = MainWindow(settings)
     qtbot.addWidget(window)
+    requested: list[float] = []
+    monkeypatch.setattr(
+        window.camera,
+        "set_exposure_time",
+        lambda value: requested.append(value) or True,
+    )
     window.camera._set_state(ConnectionState.CONNECTED, "700006383255")
     window._camera_status_changed(
         CameraStatus(
@@ -265,22 +272,64 @@ def test_camera_status_enables_log_exposure_slider_and_shows_fps(
     )
 
     assert window.exposure_slider.isEnabled()
-    assert window.exposure_value.text() == "10 000 µs"
+    assert window._exposure_min_us == 1_000.0
+    assert window._exposure_max_us == 20_000.0
+    assert requested[-1] == pytest.approx(7_500.0, rel=0.02)
+    assert window.exposure_value.text() == "7 500 µs"
     assert window.camera_fps.text() == "FPS: 47.5 cam · 46.8 raw · 14.9 view"
-    exposure = window._slider_to_exposure(window.exposure_slider.value(), 10.0, 1_000_000.0)
-    assert exposure == pytest.approx(10_000.0, rel=0.02)
-
-    requested: list[float] = []
-    monkeypatch.setattr(
-        window.camera,
-        "set_exposure_time",
-        lambda value: requested.append(value) or True,
+    exposure = window._slider_to_exposure(
+        window.exposure_slider.value(),
+        window._exposure_min_us,
+        window._exposure_max_us,
     )
-    window.exposure_slider.setValue(window._exposure_to_slider(25_000.0, 10.0, 1_000_000.0))
+    assert exposure == pytest.approx(7_500.0, rel=0.02)
+
+    window.exposure_slider.setValue(
+        window._exposure_to_slider(
+            25_000.0,
+            window._exposure_min_us,
+            window._exposure_max_us,
+        )
+    )
     window.exposure_apply_timer.stop()
     window._apply_camera_exposure()
-    assert requested[-1] == pytest.approx(25_000.0, rel=0.02)
+    assert requested[-1] == pytest.approx(20_000.0, rel=0.02)
 
+    saved = []
+    monkeypatch.setattr(AppSettings, "save", lambda _self: saved.append(True))
+    window._camera_exposure_applied(requested[-1])
+    assert settings.camera_exposure_time_us == pytest.approx(20_000.0, rel=0.02)
+    assert saved == [True]
+
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_production_warning_uses_persistent_bottom_banner(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    original_status = window.cycle_status.text()
+
+    window._production_warning("plc_light_barrier_order_edge_ignored", "LB6 ignored")
+
+    assert not window.warning_banner.isHidden()
+    assert "WARNUNG" in window.warning_banner.text()
+    assert "LB6 ignored" in window.warning_banner.text()
+    assert "Produktion läuft weiter" in window.warning_banner.text()
+    assert window.warning_display_timer.interval() == 15_000
+    assert window.warning_display_timer.isActive()
+    assert window.cycle_status.text() == original_status
+
+    # Normal state updates no longer overwrite the dedicated warning area.
+    window._cycle_state_changed(BatchState.RUNNING, "normal status update")
+    assert "LB6 ignored" in window.warning_banner.text()
+    window._clear_warning_banner()
+    assert window.warning_banner.isHidden()
+
+    window.close()
     window.camera.shutdown()
     window.pressure.shutdown()
 

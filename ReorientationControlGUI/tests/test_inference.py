@@ -12,6 +12,7 @@ from bibazu_reorientation.inference import (
     draw_overlay,
     extract_detections,
     overlay_labels,
+    suppress_duplicate_detections,
     validate_model_classes,
 )
 from bibazu_reorientation.models import Detection, InferenceFrame
@@ -55,6 +56,63 @@ def test_detect_and_obb_extraction() -> None:
     )
     oriented = SimpleNamespace(boxes=None, obb=obb, names={1: "Pose 2"})
     assert extract_detections(oriented)[0].kind == "obb"
+
+
+def test_overlapping_pose_classes_are_suppressed_by_confidence() -> None:
+    lower = Detection(
+        0,
+        "Pose 1",
+        0.72,
+        ((5, 5), (25, 5), (25, 25), (5, 25)),
+        "detect",
+    )
+    higher = Detection(
+        1,
+        "Pose 2",
+        0.91,
+        ((6, 6), (24, 6), (24, 24), (6, 24)),
+        "detect",
+    )
+
+    assert suppress_duplicate_detections((lower, higher)) == (higher,)
+
+
+def test_overlapping_detections_of_the_same_class_are_suppressed() -> None:
+    lower = Detection(
+        1,
+        "Pose 2",
+        0.80,
+        ((5, 5), (25, 5), (25, 25), (5, 25)),
+        "detect",
+    )
+    higher = Detection(
+        1,
+        "Pose 2",
+        0.94,
+        ((5.5, 5.5), (24.5, 5.5), (24.5, 24.5), (5.5, 24.5)),
+        "detect",
+    )
+
+    assert suppress_duplicate_detections((lower, higher)) == (higher,)
+
+
+def test_separate_or_slightly_overlapping_parts_are_preserved() -> None:
+    first = Detection(
+        0,
+        "Pose 1",
+        0.90,
+        ((5, 5), (20, 5), (20, 20), (5, 20)),
+        "detect",
+    )
+    second = Detection(
+        1,
+        "Pose 2",
+        0.85,
+        ((17, 5), (32, 5), (32, 20), (17, 20)),
+        "detect",
+    )
+
+    assert suppress_duplicate_detections((first, second)) == (first, second)
 
 
 def test_model_class_contract() -> None:

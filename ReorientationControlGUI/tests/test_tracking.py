@@ -58,6 +58,35 @@ def test_snapshot_queue_freezes_every_detection_in_leading_order() -> None:
     assert all(item.reason == "snapshot_confirmed" for item in update.handoffs)
 
 
+def test_snapshot_queue_does_not_queue_overlapping_duplicate_classes() -> None:
+    lower = Detection(
+        0,
+        "class 0",
+        0.75,
+        ((40, 30), (60, 30), (60, 50), (40, 50)),
+        "detect",
+    )
+    higher = Detection(
+        1,
+        "class 1",
+        0.95,
+        ((41, 31), (59, 31), (59, 49), (41, 49)),
+        "detect",
+    )
+    duplicate_frame = InferenceFrame(
+        np.zeros((100, 100, 3), np.uint8),
+        (lower, higher),
+        1.0,
+        1.0,
+    )
+
+    update = snapshot_queue(duplicate_frame, {0: 10, 1: 5})
+
+    assert len(update.handoffs) == 1
+    assert update.handoffs[0].pose_id == 5
+    assert update.handoffs[0].confidence == 0.95
+
+
 def test_wrong_class_resets_five_frame_streak() -> None:
     tracker = MultiPartTracker(handoff_line_ratio=0.20)
     mapping = {0: 10, 1: 5}

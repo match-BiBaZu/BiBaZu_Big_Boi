@@ -68,6 +68,56 @@ def _name(names: Any, class_id: int) -> str:
         return f"Class {class_id}"
 
 
+def _overlap_ratios(first: Detection, second: Detection) -> tuple[float, float]:
+    """Return polygon IoU and intersection over the smaller detection."""
+    first_polygon = np.asarray(first.corners, dtype=np.float32).reshape(-1, 2)
+    second_polygon = np.asarray(second.corners, dtype=np.float32).reshape(-1, 2)
+    first_area = abs(float(cv2.contourArea(first_polygon)))
+    second_area = abs(float(cv2.contourArea(second_polygon)))
+    if first_area <= 0.0 or second_area <= 0.0:
+        return 0.0, 0.0
+    try:
+        intersection = float(
+            cv2.intersectConvexConvex(first_polygon, second_polygon)[0]
+        )
+    except cv2.error:
+        return 0.0, 0.0
+    intersection = max(0.0, intersection)
+    union = first_area + second_area - intersection
+    return (
+        intersection / max(1e-9, union),
+        intersection / max(1e-9, min(first_area, second_area)),
+    )
+
+
+def suppress_duplicate_detections(
+    detections: tuple[Detection, ...],
+    *,
+    iou_threshold: float = 0.75,
+    containment_threshold: float = 0.90,
+) -> tuple[Detection, ...]:
+    """Apply conservative class-agnostic suppression to physical duplicates."""
+    if len(detections) < 2:
+        return detections
+    selected_indices: list[int] = []
+    by_confidence = sorted(
+        range(len(detections)),
+        key=lambda index: detections[index].confidence,
+        reverse=True,
+    )
+    for candidate_index in by_confidence:
+        candidate = detections[candidate_index]
+        duplicate = False
+        for selected_index in selected_indices:
+            iou, containment = _overlap_ratios(candidate, detections[selected_index])
+            if iou >= iou_threshold or containment >= containment_threshold:
+                duplicate = True
+                break
+        if not duplicate:
+            selected_indices.append(candidate_index)
+    return tuple(detections[index] for index in sorted(selected_indices))
+
+
 def validate_model_classes(
     names: Any, expected_class_ids: tuple[int, ...] | None = None
 ) -> dict[int, str]:
@@ -349,7 +399,11 @@ class InferenceWorker(QThread):
                     verbose=False,
                 )
                 result = results[0] if results else None
-                detections = () if result is None else extract_detections(result)
+                detections = (
+                    ()
+                    if result is None
+                    else suppress_duplicate_detections(extract_detections(result))
+                )
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 self.frame_ready.emit(
                     InferenceFrame(

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 import cv2
 import numpy as np
 
-from bibazu_reorientation.inference import fully_visible
+from bibazu_reorientation.inference import fully_visible, suppress_duplicate_detections
 from bibazu_reorientation.models import (
     Detection,
     InferenceFrame,
@@ -72,7 +72,8 @@ def snapshot_queue(
 ) -> TrackerUpdate:
     """Freeze one camera frame into the physical left-to-right PLC queue order."""
     height, width = frame.image.shape[:2]
-    ordered = sorted(frame.detections, key=lambda detection: _center(_bbox(detection))[0])
+    detections = suppress_duplicate_detections(frame.detections)
+    ordered = sorted(detections, key=lambda detection: _center(_bbox(detection))[0])
     tracks: list[TrackedPart] = []
     decisions: list[PartDecision] = []
     for track_id, detection in enumerate(ordered, start=1):
@@ -214,7 +215,7 @@ class MultiPartTracker:
     ) -> TrackerUpdate:
         height, width = frame.image.shape[:2]
         line_x = width * self.handoff_line_ratio
-        detections = list(frame.detections)
+        detections = list(suppress_duplicate_detections(frame.detections))
         boxes = [_bbox(detection) for detection in detections]
         centers = [_center(box) for box in boxes]
         previous_order = tuple(

@@ -54,13 +54,18 @@ from bibazu_reorientation.profiles import (
     compose_pressure_profiles,
     load_pressure_profile,
 )
-from bibazu_reorientation.settings import AppSettings
+from bibazu_reorientation.settings import (
+    CAMERA_EXPOSURE_MAX_US,
+    CAMERA_EXPOSURE_MIN_US,
+    AppSettings,
+)
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
 from bibazu_reorientation.ui.roadmap_setup_dialog import RoadmapSetupDialog
 from bibazu_reorientation.ui.setup_dialog import SetupDialog
 
 LOGGER = logging.getLogger(__name__)
 EXPOSURE_SLIDER_STEPS = 1000
+WARNING_DISPLAY_MS = 15_000
 
 
 class LightPanel(QGroupBox):
@@ -141,8 +146,9 @@ class MainWindow(QMainWindow):
         self.ur_worker: UrAngleWorker | None = None
         self._last_camera_frame = 0.0
         self._camera_status_data = CameraStatus()
-        self._exposure_min_us = 1.0
-        self._exposure_max_us = 1.0
+        self._exposure_min_us = CAMERA_EXPOSURE_MIN_US
+        self._exposure_max_us = CAMERA_EXPOSURE_MAX_US
+        self._restore_camera_exposure = True
         self._updating_exposure_ui = False
         self._preflight_ok = False
         self._displayed_preflight_checks: dict[str, bool] | None = None
@@ -164,6 +170,10 @@ class MainWindow(QMainWindow):
         self.exposure_apply_timer.setSingleShot(True)
         self.exposure_apply_timer.setInterval(250)
         self.exposure_apply_timer.timeout.connect(self._apply_camera_exposure)
+        self.warning_display_timer = QTimer(self)
+        self.warning_display_timer.setSingleShot(True)
+        self.warning_display_timer.setInterval(WARNING_DISPLAY_MS)
+        self.warning_display_timer.timeout.connect(self._clear_warning_banner)
 
     def _build_ui(self) -> None:
         menu = self.menuBar().addMenu("Configuration")
@@ -225,8 +235,8 @@ class MainWindow(QMainWindow):
         self.exposure_slider.setEnabled(False)
         self.exposure_slider.setMinimumWidth(110)
         self.exposure_slider.setToolTip(
-            "Logarithmic exposure-time control; the selected value is applied after "
-            "250 ms without another change."
+            "Logarithmic exposure-time control from 1 000 to 20 000 µs; the selected "
+            "value is applied after 250 ms without another change and restored next time."
         )
         self.exposure_slider.valueChanged.connect(self._exposure_slider_changed)
         self.exposure_value = QLabel("– µs")
@@ -353,7 +363,20 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
-        self.setCentralWidget(splitter)
+        self.warning_banner = QLabel()
+        self.warning_banner.setWordWrap(True)
+        self.warning_banner.setMinimumHeight(58)
+        self.warning_banner.setStyleSheet(
+            "background:#fef3c7;color:#7c2d12;border:2px solid #f59e0b;"
+            "border-radius:6px;padding:10px;font-weight:bold;font-size:13px;"
+        )
+        self.warning_banner.hide()
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.addWidget(splitter, 1)
+        central_layout.addWidget(self.warning_banner)
+        self.setCentralWidget(central)
 
     def _wire(self) -> None:
         self.pressure.connection_changed.connect(self._plc_connection_changed)
@@ -562,6 +585,7 @@ class MainWindow(QMainWindow):
         if state is not ConnectionState.CONNECTED:
             self.exposure_apply_timer.stop()
             self.exposure_slider.setEnabled(False)
+            self._restore_camera_exposure = True
             if state in {ConnectionState.DISCONNECTED, ConnectionState.ERROR}:
                 self.camera_fps.setText("FPS: –")
 
@@ -592,11 +616,41 @@ class MainWindow(QMainWindow):
 
     def _camera_status_changed(self, status: CameraStatus) -> None:
         self._camera_status_data = status
-        minimum = max(1.0, float(status.exposure_min_us or 1.0))
-        maximum = max(minimum, float(status.exposure_max_us or minimum))
-        self._exposure_min_us = minimum
-        self._exposure_max_us = maximum
-        if (
+        camera_minimum = max(1.0, float(status.exposure_min_us or 1.0))
+        camera_maximum = max(
+            camera_minimum, float(status.exposure_max_us or camera_minimum)
+        )
+        minimum = max(CAMERA_EXPOSURE_MIN_US, camera_minimum)
+        maximum = min(CAMERA_EXPOSURE_MAX_US, camera_maximum)
+        range_supported = minimum <= maximum
+        if range_supported:
+            self._exposure_min_us = minimum
+            self._exposure_max_us = maximum
+        can_control = (
+            range_supported
+            and self.camera.state is ConnectionState.CONNECTED
+            and status.exposure_writable
+        )
+        self.exposure_slider.setEnabled(can_control)
+
+        restoring = can_control and self._restore_camera_exposure
+        if restoring:
+            desired = max(
+                minimum,
+                min(maximum, float(self.settings.camera_exposure_time_us)),
+            )
+            self._updating_exposure_ui = True
+            self.exposure_slider.setValue(
+                self._exposure_to_slider(desired, minimum, maximum)
+            )
+            self._updating_exposure_ui = False
+            self.exposure_value.setText(self._format_exposure(desired))
+            self._restore_camera_exposure = False
+            if status.exposure_time_us is None or not math.isclose(
+                status.exposure_time_us, desired, abs_tol=0.5
+            ):
+                self.camera.set_exposure_time(desired)
+        elif (
             status.exposure_time_us is not None
             and not self.exposure_slider.isSliderDown()
             and not self.exposure_apply_timer.isActive()
@@ -606,10 +660,9 @@ class MainWindow(QMainWindow):
                 self._exposure_to_slider(status.exposure_time_us, minimum, maximum)
             )
             self._updating_exposure_ui = False
-        self.exposure_value.setText(self._format_exposure(status.exposure_time_us))
-        self.exposure_slider.setEnabled(
-            self.camera.state is ConnectionState.CONNECTED and status.exposure_writable
-        )
+            self.exposure_value.setText(self._format_exposure(status.exposure_time_us))
+        elif not restoring:
+            self.exposure_value.setText(self._format_exposure(status.exposure_time_us))
         camera_fps = "–" if status.camera_fps is None else f"{status.camera_fps:.1f}"
         self.camera_fps.setText(
             f"FPS: {camera_fps} cam · {status.stream_fps:.1f} raw · {status.preview_fps:.1f} view"
@@ -633,6 +686,14 @@ class MainWindow(QMainWindow):
 
     def _camera_exposure_applied(self, exposure_time_us: float) -> None:
         self.exposure_value.setText(self._format_exposure(exposure_time_us))
+        self.settings.camera_exposure_time_us = max(
+            CAMERA_EXPOSURE_MIN_US,
+            min(CAMERA_EXPOSURE_MAX_US, float(exposure_time_us)),
+        )
+        try:
+            self.settings.save()
+        except ValueError as exc:
+            LOGGER.error("Camera exposure setting could not be saved: %s", exc)
 
     def open_hardware_settings(self) -> None:
         dialog = HardwareSettingsDialog(self.settings, self)
@@ -1287,9 +1348,16 @@ class MainWindow(QMainWindow):
 
     def _production_warning(self, code: str, detail: str) -> None:
         LOGGER.warning("Production warning %s: %s", code, detail)
-        self.cycle_status.setText(
-            f"{self.controller.state}: warning {code} – {detail} (run continues)"
+        self.warning_banner.setText(
+            f"⚠ WARNUNG · {time.strftime('%H:%M:%S')} · {code}\n"
+            f"{detail}\nDie Produktion läuft weiter."
         )
+        self.warning_banner.show()
+        self.warning_display_timer.start()
+
+    def _clear_warning_banner(self) -> None:
+        self.warning_banner.clear()
+        self.warning_banner.hide()
 
     def _start(self) -> None:
         try:
@@ -1311,6 +1379,7 @@ class MainWindow(QMainWindow):
         self._yolo_reload_pending = False
         self.freshness_timer.stop()
         self.exposure_apply_timer.stop()
+        self.warning_display_timer.stop()
         super().closeEvent(event)
 
     async def shutdown_async(self) -> None:
@@ -1318,6 +1387,7 @@ class MainWindow(QMainWindow):
         self._yolo_reload_pending = False
         self.freshness_timer.stop()
         self.exposure_apply_timer.stop()
+        self.warning_display_timer.stop()
         if self._light_connect_task and not self._light_connect_task.done():
             self._light_connect_task.cancel()
             done, pending = await asyncio.wait({self._light_connect_task}, timeout=1.0)

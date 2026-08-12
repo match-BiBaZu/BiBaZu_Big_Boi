@@ -384,6 +384,12 @@ class PlcSnapshot:
     reorientation_fault_queue_ack: int = 0
     reorientation_fault_queue_slot_sequence: int = 0
     reorientation_fault_barrier_stable_mask: int = 0
+    reorientation_warning_code: int = 0
+    reorientation_warning_sensor: int = 0
+    reorientation_warning_sequence: int = 0
+    reorientation_warning_previous_sequence: int = 0
+    reorientation_warning_skipped_barrier_mask: int = 0
+    reorientation_warning_counter: int = 0
 
 
 @dataclass(slots=True, frozen=True)
