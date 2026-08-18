@@ -74,9 +74,10 @@ class RoadmapPoseDialog(QDialog):
         button.setIconSize(QSize(190, 130))
         button.setFixedSize(210, 195)
         pixmap = QPixmap()
-        if pose.thumbnail_png:
-            pixmap.loadFromData(pose.thumbnail_png, "PNG")
-        if pixmap.isNull() and self.roadmap.mesh_path is not None:
+        # Render from the CAD orientation first so every pose uses the current
+        # chute camera convention. Embedded thumbnails are retained only for
+        # roadmaps whose source mesh is no longer available.
+        if self.roadmap.mesh_path is not None and self.roadmap.mesh_path.is_file():
             try:
                 pixmap = render_mesh_preview(
                     self.roadmap.mesh_path,
@@ -87,6 +88,8 @@ class RoadmapPoseDialog(QDialog):
                 )
             except (OSError, ValueError):
                 pixmap = QPixmap()
+        if pixmap.isNull() and pose.thumbnail_png:
+            pixmap.loadFromData(pose.thumbnail_png, "PNG")
         if not pixmap.isNull():
             button.setIcon(
                 QIcon(

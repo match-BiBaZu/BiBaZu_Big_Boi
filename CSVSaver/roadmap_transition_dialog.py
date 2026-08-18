@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pose_preview import render_mesh_preview
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
@@ -38,6 +40,8 @@ class RoadmapPose:
     floor_contact: str
     wall_contact: str
     thumbnail_png: bytes | None
+    quaternion_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+    mesh_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +83,7 @@ class RoadmapTransition:
 class RoadmapDocument:
     path: Path
     part_name: str
+    mesh_path: Path | None
     cad_status: str
     poses: tuple[RoadmapPose, ...]
     transitions: tuple[RoadmapTransition, ...]
@@ -117,6 +122,27 @@ def _decode_thumbnail(value: Any) -> bytes | None:
         return None
 
 
+def _mesh_path(roadmap_path: Path, value: Any) -> Path | None:
+    if value in (None, ""):
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = roadmap_path.parent / path
+    return path.resolve()
+
+
+def _quaternion(value: Any) -> tuple[float, float, float, float]:
+    if value is None:
+        return (0.0, 0.0, 0.0, 1.0)
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        raise ValueError("Roadmap pose quaternion must contain four values")
+    quaternion = tuple(float(component) for component in value)
+    norm = math.sqrt(sum(component * component for component in quaternion))
+    if not math.isfinite(norm) or norm < 1e-12:
+        raise ValueError("Roadmap pose quaternion must be finite and non-zero")
+    return tuple(component / norm for component in quaternion)  # type: ignore[return-value]
+
+
 def load_roadmap_document(path: str | Path) -> RoadmapDocument:
     source = Path(path).expanduser().resolve()
     payload = json.loads(source.read_text(encoding="utf-8"))
@@ -126,6 +152,8 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
     raw_edges = payload.get("edges")
     if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
         raise TypeError("Roadmap JSON must contain node and edge lists")
+
+    mesh_path = _mesh_path(source, payload.get("source"))
 
     poses: list[RoadmapPose] = []
     for node in raw_nodes:
@@ -142,6 +170,8 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
                 floor_contact=str(node.get("floor_contact_topology", "unknown")),
                 wall_contact=str(node.get("wall_contact_topology", "unknown")),
                 thumbnail_png=_decode_thumbnail(node.get("thumbnail_png_base64")),
+                quaternion_xyzw=_quaternion(node.get("representative_quaternion_xyzw")),
+                mesh_path=mesh_path,
             )
         )
 
@@ -182,6 +212,7 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
     return RoadmapDocument(
         path=source,
         part_name=part_name,
+        mesh_path=mesh_path,
         cad_status=str(payload.get("geometry_status", "unknown")),
         poses=tuple(poses),
         transitions=tuple(transitions),
@@ -245,6 +276,17 @@ def _build_multi_reorientation_transitions(
 
 
 def pose_pixmap(pose: RoadmapPose, width: int, height: int) -> QPixmap:
+    if pose.mesh_path is not None and pose.mesh_path.is_file():
+        try:
+            return render_mesh_preview(
+                pose.mesh_path,
+                width,
+                height,
+                quaternion_xyzw=pose.quaternion_xyzw,
+                caption=f"Roadmap pose {pose.pose_id}",
+            )
+        except (ImportError, OSError, ValueError):
+            pass
     pixmap = QPixmap()
     if pose.thumbnail_png and pixmap.loadFromData(pose.thumbnail_png, "PNG"):
         return pixmap.scaled(

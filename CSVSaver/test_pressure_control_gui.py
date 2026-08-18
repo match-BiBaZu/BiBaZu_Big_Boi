@@ -1059,6 +1059,33 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
         finally:
             directory.cleanup()
 
+    def test_pressure_pose_preview_uses_shared_rotated_cad_renderer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mesh = root / "Df1a.STL"
+            mesh.write_text(
+                "solid part\n"
+                "facet normal 0 0 1\nouter loop\n"
+                "vertex 0 0 0\nvertex 2 0 0\nvertex 0 1 1\n"
+                "endloop\nendfacet\nendsolid part\n",
+                encoding="utf-8",
+            )
+            payload = self.roadmap_payload()
+            payload["source"] = str(mesh)
+            payload["nodes"][0]["representative_quaternion_xyzw"] = [0, 0, 1, 0]
+            roadmap_path = root / "Df1a_roadmap.json"
+            roadmap_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            document = gui.load_roadmap_document(roadmap_path)
+            pose = document.pose(1)
+            preview = gui.pose_pixmap(pose, 180, 120)
+
+            self.assertEqual(document.mesh_path, mesh.resolve())
+            self.assertEqual(pose.quaternion_xyzw, (0.0, 0.0, 1.0, 0.0))
+            self.assertFalse(preview.isNull())
+            self.assertEqual(preview.width(), 180)
+            self.assertEqual(preview.height(), 120)
+
     def test_two_flip_transition_is_exposed_as_experimental_option(self):
         payload = self.roadmap_payload()
         payload["nodes"].append(
@@ -1184,6 +1211,99 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertEqual(result["minimum"], 14.0)
         self.assertEqual(result["maximum"], 16.0)
         self.assertAlmostEqual(result["mean_error_percent"], 0.0)
+
+    def test_barrier_run_analysis_flags_400_to_100_speed_drop(self):
+        spacings = (40.0, 196.0, 40.0, 196.0, 40.0, 196.0, 40.0)
+        event_times = (0, 133, 623, 1023, 2983, 3383, 5343, 5743)
+
+        result = setup_gui.analyze_barrier_run(event_times, spacings, 50.0)
+
+        self.assertAlmostEqual(result["speeds"][0], 300.75, places=2)
+        self.assertAlmostEqual(result["speeds"][1], 400.0, places=2)
+        self.assertAlmostEqual(result["speeds"][2], 100.0, places=2)
+        self.assertFalse(result["consistent"])
+        self.assertEqual(len(result["accelerations"]), 6)
+        self.assertIn("75.0%", result["diagnoses"][0])
+
+    def test_barrier_run_analysis_accepts_plc_clock_wraparound(self):
+        spacings = (40.0,) * 7
+        start = 0xFFFFFF00
+        event_times = tuple((start + 100 * index) & 0xFFFFFFFF for index in range(8))
+
+        result = setup_gui.analyze_barrier_run(event_times, spacings, 10.0)
+
+        self.assertTrue(result["consistent"])
+        self.assertEqual(result["speeds"], [400.0] * 7)
+
+    def test_barrier_run_collector_keeps_overlapping_parts_separate(self):
+        collector = setup_gui.BarrierRunCollector(True)
+        counts = [0] * 8
+        times = [0] * 8
+        states = [False] * 8
+        collector.start(counts)
+
+        def event(sensor, event_time):
+            counts[sensor - 1] += 1
+            times[sensor - 1] = event_time
+            states[sensor - 1] = True
+            completed, missed = collector.process(
+                {
+                    "light_barrier_event_counts": counts,
+                    "light_barrier_event_times_ms": times,
+                    "light_barriers": states,
+                }
+            )
+            states[sensor - 1] = False
+            return completed, missed
+
+        event(1, 100)
+        event(2, 200)
+        event(1, 250)
+        for sensor in range(3, 9):
+            completed, missed = event(sensor, sensor * 100)
+
+        self.assertFalse(missed)
+        self.assertEqual(completed, [(100, 200, 300, 400, 500, 600, 700, 800)])
+        self.assertEqual(collector.active_runs, [[250]])
+
+    def test_consistency_tab_logs_a_complete_part_in_the_table(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        counts = [0] * 8
+        times = [0] * 8
+        states = [False] * 8
+        status = {
+            "light_barrier_event_counts": counts,
+            "light_barrier_event_times_ms": times,
+            "light_barriers": states,
+        }
+        window.connected = True
+        window.have_setup_status = True
+        window.latest_status = status
+        window._append_consistency_log = lambda sample: None
+        window._start_consistency_monitor()
+
+        event_time = 1000
+        for sensor, distance in enumerate(
+            setup_gui.DEFAULT_ADJACENT_SPACINGS_MM, start=1
+        ):
+            counts[sensor - 1] += 1
+            times[sensor - 1] = event_time
+            states[sensor - 1] = True
+            window._process_consistency_monitor(status)
+            event_time += round(distance * 2.5)
+        counts[7] += 1
+        times[7] = event_time
+        states[7] = True
+        window._process_consistency_monitor(status)
+
+        self.assertEqual(len(window.consistency_samples), 1)
+        self.assertTrue(window.consistency_samples[0]["consistent"])
+        self.assertEqual(window.consistency_table.rowCount(), 1)
+        self.assertEqual(window.consistency_table.item(0, 10).text(), "OK")
+        self.assertIn("1 parts, 0 flagged", window.consistency_summary_label.text())
+        window.ads.connected = False
+        window.close()
 
     def test_ur_speed_monitor_uses_plc_event_timestamps_in_both_directions(self):
         with patch.object(gui.AdsController, "start"):

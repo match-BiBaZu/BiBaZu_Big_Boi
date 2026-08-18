@@ -7,6 +7,12 @@ import numpy as np
 from PyQt6.QtCore import QPointF
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
 
+COORDINATE_AXIS_COLORS = {
+    "X": "#ef4444",
+    "Y": "#22c55e",
+    "Z": "#3b82f6",
+}
+
 
 def load_mesh_triangles(path: Path) -> np.ndarray:
     """Load triangle vertices from the small STL/OBJ workpiece files."""
@@ -60,6 +66,65 @@ def _quaternion_matrix(
         ],
         dtype=np.float64,
     )
+
+
+def _display_rotation_matrix() -> np.ndarray:
+    """Front view: +X right, +Z up, and +Y out toward the viewer."""
+    return np.asarray(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _draw_coordinate_axes(
+    painter: QPainter,
+    width: int,
+    height: int,
+    view_matrix: np.ndarray,
+) -> None:
+    """Draw a compact world-coordinate triad using the pose plot's camera."""
+    origin = np.asarray((width - 42.0, 39.0), dtype=np.float64)
+    axis_length = max(13.0, min(25.0, width * 0.11, height * 0.16))
+    axes = (
+        ("X", np.asarray((1.0, 0.0, 0.0))),
+        ("Z", np.asarray((0.0, 0.0, 1.0))),
+        ("Y", np.asarray((0.0, 1.0, 0.0))),
+    )
+    for label, axis in axes:
+        transformed = axis @ view_matrix.T
+        direction = transformed[:2].copy()
+        direction[1] *= -1.0
+        length = float(np.linalg.norm(direction))
+        if length < 1e-9:
+            color = QColor(COORDINATE_AXIS_COLORS[label])
+            painter.setPen(QPen(color, 2.0))
+            painter.setBrush(QColor("#111827"))
+            painter.drawEllipse(QPointF(*origin), 6.0, 6.0)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(*origin), 2.0, 2.0)
+            painter.drawText(QPointF(origin[0] - 15.0, origin[1] + 5.0), label)
+            continue
+        unit = direction / length
+        end = origin + unit * axis_length
+        color = QColor(COORDINATE_AXIS_COLORS[label])
+        painter.setPen(QPen(color, 2.2))
+        painter.drawLine(QPointF(*origin), QPointF(*end))
+        perpendicular = np.asarray((-unit[1], unit[0]))
+        arrow = QPolygonF(
+            [
+                QPointF(*end),
+                QPointF(*(end - unit * 6.0 + perpendicular * 3.0)),
+                QPointF(*(end - unit * 6.0 - perpendicular * 3.0)),
+            ]
+        )
+        painter.setBrush(color)
+        painter.drawPolygon(arrow)
+        text_position = end + unit * 8.0 + np.asarray((0.0, 4.0))
+        painter.drawText(QPointF(*text_position), label)
 
 
 def slerp_quaternion(
@@ -123,40 +188,69 @@ def render_triangles_preview(
         raise ValueError("Triangle data must have shape (N, 3, 3)")
     points = triangles.reshape(-1, 3)
     center = (points.min(axis=0) + points.max(axis=0)) * 0.5
-    centered = triangles - center
+    oriented = triangles - center
     if quaternion_xyzw is not None:
-        centered = centered @ _quaternion_matrix(quaternion_xyzw).T
+        oriented = oriented @ _quaternion_matrix(quaternion_xyzw).T
 
-    azimuth = np.deg2rad(-40.0)
-    elevation = np.deg2rad(24.0)
-    rotate_z = np.array(
-        [
-            [np.cos(azimuth), -np.sin(azimuth), 0.0],
-            [np.sin(azimuth), np.cos(azimuth), 0.0],
-            [0.0, 0.0, 1.0],
-        ]
+    # Put every orientation back into the physical chute corner: floor z=0,
+    # wall y=0, and +Y points into the chute and toward the front-view camera.
+    oriented_points = oriented.reshape(-1, 3)
+    oriented = oriented + np.asarray(
+        (0.0, -oriented_points[:, 1].min(), -oriented_points[:, 2].min())
     )
-    rotate_x = np.array(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, np.cos(elevation), -np.sin(elevation)],
-            [0.0, np.sin(elevation), np.cos(elevation)],
-        ]
-    )
-    camera_triangles = centered @ (rotate_x @ rotate_z).T
-    projected = camera_triangles[..., :2].copy()
-    projected[..., 1] *= -1.0
-    flat = projected.reshape(-1, 2)
+    oriented_points = oriented.reshape(-1, 3)
+    minimum = oriented_points.min(axis=0)
+    maximum = oriented_points.max(axis=0)
+    object_span = np.maximum(maximum - minimum, 1e-9)
+    margin = 0.12 * float(np.max(object_span))
+    x0, x1 = minimum[0] - margin, maximum[0] + margin
+    y1 = maximum[1] + margin
+    z1 = maximum[2] + margin
+    floor = np.asarray([(x0, 0.0, 0.0), (x1, 0.0, 0.0), (x1, y1, 0.0), (x0, y1, 0.0)])
+    wall = np.asarray([(x0, 0.0, 0.0), (x1, 0.0, 0.0), (x1, 0.0, z1), (x0, 0.0, z1)])
+
+    view_matrix = _display_rotation_matrix()
+    camera_triangles = oriented @ view_matrix.T
+    camera_floor = floor @ view_matrix.T
+    camera_wall = wall @ view_matrix.T
+
+    def project(values: np.ndarray) -> np.ndarray:
+        result = values[..., :2].copy()
+        result[..., 1] *= -1.0
+        return result
+
+    projected = project(camera_triangles)
+    projected_floor = project(camera_floor)
+    projected_wall = project(camera_wall)
+    flat = np.concatenate((projected.reshape(-1, 2), projected_floor, projected_wall), axis=0)
     span = np.maximum(flat.max(axis=0) - flat.min(axis=0), 1e-9)
-    scale = min((width - 28) / span[0], (height - 28) / span[1])
-    projected = (projected - (flat.min(axis=0) + flat.max(axis=0)) * 0.5) * scale
-    projected[..., 0] += width * 0.5
-    projected[..., 1] += height * 0.5
+    drawing_height = max(1, height - 22)
+    scale = min((width - 24) / span[0], (drawing_height - 14) / span[1])
+    scene_center = (flat.min(axis=0) + flat.max(axis=0)) * 0.5
+
+    def place(values: np.ndarray) -> np.ndarray:
+        result = (values - scene_center) * scale
+        result[..., 0] += width * 0.5
+        result[..., 1] += drawing_height * 0.5 + 2.0
+        return result
+
+    projected = place(projected)
+    projected_floor = place(projected_floor)
+    projected_wall = place(projected_wall)
 
     pixmap = QPixmap(width, height)
     pixmap.fill(QColor("#111827"))
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor("#9a7548"), 0.8))
+    painter.setBrush(QColor(227, 201, 168, 70))
+    painter.drawPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in projected_wall]))
+    painter.setPen(QPen(QColor("#7d8590"), 0.8))
+    painter.setBrush(QColor(201, 209, 217, 62))
+    painter.drawPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in projected_floor]))
+    seam = projected_wall[:2]
+    painter.setPen(QPen(QColor("#cbd5e1"), 1.5))
+    painter.drawLine(QPointF(*seam[0]), QPointF(*seam[1]))
     light = np.asarray((-0.35, -0.45, 0.82))
     order = np.argsort(camera_triangles[..., 2].mean(axis=1))
     for index in order:
@@ -168,6 +262,7 @@ def render_triangles_preview(
         painter.setBrush(QColor(*(int(value) for value in np.clip(base, 0, 255))))
         painter.setPen(QPen(QColor("#164e63"), 0.7))
         painter.drawPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in projected[index]]))
+    _draw_coordinate_axes(painter, width, height, view_matrix)
     painter.setPen(QPen(QColor("#94a3b8"), 1.0))
     painter.drawText(8, height - 8, caption)
     painter.end()

@@ -6,7 +6,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QObject,
+    QSignalBlocker,
+    QThread,
+    QTimer,
+    pyqtSignal,
+    pyqtSlot,
+)
+from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,11 +27,15 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QHeaderView,
+    QMessageBox,
     QPushButton,
     QStatusBar,
     QStyle,
     QSpinBox,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +62,27 @@ SENSOR_SPACING_SYMBOLS = {
     (5, 6): "MAIN.GuiSensorSpacing56Mm",
     (7, 8): "MAIN.GuiSensorSpacing78Mm",
 }
+
+ADJACENT_BARRIER_PAIRS = tuple(
+    (sensor, sensor + 1) for sensor in range(1, LIGHT_BARRIER_COUNT)
+)
+DEFAULT_ADJACENT_SPACINGS_MM = (40.0, 196.0, 40.0, 196.0, 40.0, 196.0, 40.0)
+CONSISTENCY_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_consistency.csv"
+CONSISTENCY_LOG_HEADER = [
+    "local_timestamp",
+    "part_number",
+    "edge",
+    *[f"distance_{first}_{second}_mm" for first, second in ADJACENT_BARRIER_PAIRS],
+    *[f"plc_time_lb{sensor}_ms" for sensor in range(1, LIGHT_BARRIER_COUNT + 1)],
+    *[f"speed_{first}_{second}_mm_per_sec" for first, second in ADJACENT_BARRIER_PAIRS],
+    *[
+        f"acceleration_after_lb{sensor}_mm_per_sec2"
+        for sensor in range(2, LIGHT_BARRIER_COUNT)
+    ],
+    "maximum_speed_change_percent",
+    "consistent",
+    "diagnosis",
+]
 
 BARRIER_STATUS_TEXT = {
     0: "Ready",
@@ -114,6 +147,222 @@ def calculate_speed_statistics(
             else 0.0
         ),
     }
+
+
+def analyze_barrier_run(
+    event_times_ms: list[int] | tuple[int, ...],
+    spacings_mm: list[float] | tuple[float, ...],
+    maximum_speed_change_percent: float,
+) -> dict:
+    """Calculate one chute traversal from eight PLC event timestamps."""
+    if len(event_times_ms) != LIGHT_BARRIER_COUNT:
+        raise ValueError(f"Exactly {LIGHT_BARRIER_COUNT} event timestamps are required")
+    if len(spacings_mm) != LIGHT_BARRIER_COUNT - 1:
+        raise ValueError(f"Exactly {LIGHT_BARRIER_COUNT - 1} spacings are required")
+    if any(float(distance) <= 0.0 for distance in spacings_mm):
+        raise ValueError("All light barrier spacings must be positive")
+    if maximum_speed_change_percent <= 0.0:
+        raise ValueError("Maximum speed change must be positive")
+
+    elapsed_times_ms = []
+    speeds = []
+    for start, end, distance in zip(
+        event_times_ms, event_times_ms[1:], spacings_mm
+    ):
+        elapsed_ms = (int(end) - int(start)) & 0xFFFFFFFF
+        if elapsed_ms <= 0 or elapsed_ms > 60_000:
+            raise ValueError("Barrier events are not a plausible ordered traversal")
+        elapsed_times_ms.append(elapsed_ms)
+        speeds.append(float(distance) * 1000.0 / elapsed_ms)
+
+    positions = [0.0]
+    for distance in spacings_mm:
+        positions.append(positions[-1] + float(distance))
+    segment_centres = [
+        (start + end) / 2.0 for start, end in zip(positions, positions[1:])
+    ]
+    accelerations = []
+    speed_changes_percent = []
+    diagnoses = []
+    for index, (first_speed, second_speed) in enumerate(zip(speeds, speeds[1:])):
+        centre_distance = segment_centres[index + 1] - segment_centres[index]
+        accelerations.append(
+            (second_speed**2 - first_speed**2) / (2.0 * centre_distance)
+        )
+        change_percent = (
+            abs(second_speed - first_speed) / max(first_speed, second_speed) * 100.0
+        )
+        speed_changes_percent.append(change_percent)
+        if change_percent > maximum_speed_change_percent:
+            first_pair = ADJACENT_BARRIER_PAIRS[index]
+            second_pair = ADJACENT_BARRIER_PAIRS[index + 1]
+            diagnoses.append(
+                f"LB {first_pair[0]}-{first_pair[1]} -> "
+                f"LB {second_pair[0]}-{second_pair[1]}: "
+                f"speed change {change_percent:.1f}%"
+            )
+
+    return {
+        "elapsed_times_ms": elapsed_times_ms,
+        "speeds": speeds,
+        "positions": positions,
+        "segment_centres": segment_centres,
+        "accelerations": accelerations,
+        "speed_changes_percent": speed_changes_percent,
+        "maximum_speed_change_percent": max(speed_changes_percent, default=0.0),
+        "consistent": not diagnoses,
+        "diagnoses": diagnoses,
+    }
+
+
+class BarrierRunCollector:
+    """Join individual PLC barrier events into forward LB1-to-LB8 traversals."""
+
+    def __init__(self, edge_state: bool) -> None:
+        self.edge_state = bool(edge_state)
+        self.event_counts = None
+        self.active_runs: list[list[int]] = []
+
+    def start(self, event_counts: list[int] | tuple[int, ...]) -> None:
+        if len(event_counts) != LIGHT_BARRIER_COUNT:
+            raise ValueError("An event count is required for every light barrier")
+        self.event_counts = [int(value) for value in event_counts]
+        self.active_runs = []
+
+    def process(self, status: dict) -> tuple[list[tuple[int, ...]], bool]:
+        counts = status.get("light_barrier_event_counts")
+        event_times = status.get("light_barrier_event_times_ms")
+        states = status.get("light_barriers")
+        if (
+            self.event_counts is None
+            or counts is None
+            or event_times is None
+            or states is None
+        ):
+            return [], False
+
+        events = []
+        missed_event = False
+        for index in range(LIGHT_BARRIER_COUNT):
+            current_count = int(counts[index])
+            event_delta = (current_count - self.event_counts[index]) & 0xFFFFFFFF
+            self.event_counts[index] = current_count
+            if event_delta == 1:
+                events.append((index + 1, int(event_times[index]), bool(states[index])))
+            elif event_delta > 1:
+                missed_event = True
+
+        if missed_event:
+            self.active_runs = []
+
+        completed = []
+        for sensor, event_time, edge_state in events:
+            if edge_state != self.edge_state:
+                continue
+            if sensor == 1:
+                self.active_runs.append([event_time])
+                continue
+            matching_run = next(
+                (run for run in self.active_runs if len(run) + 1 == sensor), None
+            )
+            if matching_run is None:
+                continue
+            matching_run.append(event_time)
+            if sensor == LIGHT_BARRIER_COUNT:
+                completed.append(tuple(matching_run))
+                self.active_runs.remove(matching_run)
+        return completed, missed_event
+
+
+class SpeedCurveWidget(QWidget):
+    COLORS = (
+        "#2563eb",
+        "#16a34a",
+        "#dc2626",
+        "#9333ea",
+        "#ea580c",
+        "#0891b2",
+    )
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.samples = []
+        self.setMinimumSize(760, 440)
+
+    def set_samples(self, samples: list[dict]) -> None:
+        self.samples = list(samples)
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#ffffff"))
+        left, top, right, bottom = 70, 30, 25, 60
+        plot_width = max(1, self.width() - left - right)
+        plot_height = max(1, self.height() - top - bottom)
+        painter.setPen(QPen(QColor("#374151"), 1))
+        painter.drawLine(left, top, left, top + plot_height)
+        painter.drawLine(
+            left, top + plot_height, left + plot_width, top + plot_height
+        )
+        painter.drawText(8, top + plot_height // 2, "mm/s")
+        painter.drawText(
+            left + plot_width // 2 - 45, self.height() - 14, "Position [mm]"
+        )
+        if not self.samples:
+            painter.drawText(left + 20, top + 35, "No completed part traversals yet")
+            return
+
+        all_x = [x for sample in self.samples for x in sample["segment_centres"]]
+        all_y = [speed for sample in self.samples for speed in sample["speeds"]]
+        x_max = max(all_x, default=1.0)
+        y_max = max(all_y, default=1.0) * 1.1
+        painter.setPen(QPen(QColor("#9ca3af"), 1))
+        for step in range(6):
+            y_value = y_max * step / 5.0
+            py = top + plot_height - round(y_value / y_max * plot_height)
+            painter.drawLine(left - 4, py, left + plot_width, py)
+            painter.drawText(10, py + 4, f"{y_value:.0f}")
+        for step in range(6):
+            x_value = x_max * step / 5.0
+            px = left + round(x_value / x_max * plot_width)
+            painter.drawText(px - 16, top + plot_height + 20, f"{x_value:.0f}")
+
+        for index, sample in enumerate(self.samples):
+            color = QColor(self.COLORS[index % len(self.COLORS)])
+            if not sample["consistent"]:
+                color = QColor("#dc2626")
+            painter.setPen(QPen(color, 2))
+            points = []
+            for x_value, y_value in zip(sample["segment_centres"], sample["speeds"]):
+                px = left + round(x_value / x_max * plot_width)
+                py = top + plot_height - round(y_value / y_max * plot_height)
+                points.append((px, py))
+            for first, second in zip(points, points[1:]):
+                painter.drawLine(first[0], first[1], second[0], second[1])
+            for px, py in points:
+                painter.drawEllipse(px - 3, py - 3, 6, 6)
+
+
+class SpeedPlotDialog(QDialog):
+    def __init__(self, samples: list[dict], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Light Barrier Speed Curves")
+        self.resize(900, 560)
+        layout = QVBoxLayout(self)
+        self.summary = QLabel()
+        self.curve = SpeedCurveWidget()
+        layout.addWidget(self.summary)
+        layout.addWidget(self.curve, 1)
+        self.set_samples(samples)
+
+    def set_samples(self, samples: list[dict]) -> None:
+        inconsistent = sum(not sample["consistent"] for sample in samples)
+        self.summary.setText(
+            f"{len(samples)} parts; {inconsistent} with abrupt speed changes. "
+            "Red curves are flagged."
+        )
+        self.curve.set_samples(samples)
 
 
 class UrPoseWorker(QObject):
@@ -380,6 +629,12 @@ class ConveyorSetupWindow(QMainWindow):
         self.ur_monitor_event_counts = None
         self.ur_monitor_pending_edges = {False: None, True: None}
         self.ur_monitor_samples = []
+        self.consistency_monitor_active = False
+        self.consistency_collector = None
+        self.consistency_samples = []
+        self.consistency_session_spacings = None
+        self.consistency_spacings_initialized = False
+        self.consistency_plot_dialog = None
 
         self.setWindowTitle("Conveyor and Light Barrier Setup")
         self.resize(900, 790)
@@ -618,6 +873,99 @@ class ConveyorSetupWindow(QMainWindow):
         ur_layout.setColumnStretch(0, 1)
         ur_layout.setColumnStretch(1, 1)
         self.calibration_tabs.addTab(ur_group, "UR TCP")
+
+        consistency_tab = QWidget()
+        consistency_layout = QVBoxLayout(consistency_tab)
+        consistency_layout.setContentsMargins(8, 8, 8, 8)
+
+        distances_group = QGroupBox("Adjacent Light Barrier Distances")
+        distances_layout = QGridLayout(distances_group)
+        self.consistency_spacing_inputs = []
+        for index, (pair, default_distance) in enumerate(
+            zip(ADJACENT_BARRIER_PAIRS, DEFAULT_ADJACENT_SPACINGS_MM)
+        ):
+            distance_input = QDoubleSpinBox()
+            distance_input.setRange(0.1, 2000.0)
+            distance_input.setDecimals(3)
+            distance_input.setSuffix(" mm")
+            distance_input.setValue(default_distance)
+            distance_input.setToolTip(
+                "Loaded from the PLC"
+                if pair in SENSOR_SPACING_SYMBOLS
+                else "Editable assumed distance; initially 196 mm"
+            )
+            row = index // 4
+            column = (index % 4) * 2
+            distances_layout.addWidget(
+                QLabel(f"LB {pair[0]}-{pair[1]}"), row, column
+            )
+            distances_layout.addWidget(distance_input, row, column + 1)
+            self.consistency_spacing_inputs.append(distance_input)
+        self.consistency_reload_distances_button = QPushButton(
+            "Reload 1-2 / 3-4 / 5-6 / 7-8 from PLC"
+        )
+        distances_layout.addWidget(
+            self.consistency_reload_distances_button, 2, 0, 1, 8
+        )
+        consistency_layout.addWidget(distances_group)
+
+        controls_group = QGroupBox("Traversal Logging and Consistency Check")
+        controls_layout = QGridLayout(controls_group)
+        self.consistency_edge = QComboBox()
+        self.consistency_edge.addItem("ON transition", True)
+        self.consistency_edge.addItem("OFF transition", False)
+        self.consistency_tolerance = QDoubleSpinBox()
+        self.consistency_tolerance.setRange(1.0, 100.0)
+        self.consistency_tolerance.setDecimals(1)
+        self.consistency_tolerance.setSuffix(" %")
+        self.consistency_tolerance.setValue(50.0)
+        self.consistency_tolerance.setToolTip(
+            "Maximum allowed speed change between two neighboring chute sections"
+        )
+        self.consistency_start_button = QPushButton("Start New Log")
+        self.consistency_start_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self.consistency_stop_button = QPushButton("Stop")
+        self.consistency_stop_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
+        self.consistency_clear_button = QPushButton("Clear Table")
+        self.consistency_plot_button = QPushButton("Open Speed Curves")
+        self.consistency_state_label = QLabel("Ready")
+        controls_layout.addWidget(QLabel("Recorded edge"), 0, 0)
+        controls_layout.addWidget(self.consistency_edge, 0, 1)
+        controls_layout.addWidget(QLabel("Maximum adjacent speed change"), 0, 2)
+        controls_layout.addWidget(self.consistency_tolerance, 0, 3)
+        controls_layout.addWidget(self.consistency_start_button, 1, 0)
+        controls_layout.addWidget(self.consistency_stop_button, 1, 1)
+        controls_layout.addWidget(self.consistency_clear_button, 1, 2)
+        controls_layout.addWidget(self.consistency_plot_button, 1, 3)
+        controls_layout.addWidget(QLabel("State"), 2, 0)
+        controls_layout.addWidget(self.consistency_state_label, 2, 1, 1, 3)
+        controls_layout.setColumnStretch(3, 1)
+        consistency_layout.addWidget(controls_group)
+
+        self.consistency_table = QTableWidget(0, 11)
+        self.consistency_table.setHorizontalHeaderLabels(
+            [
+                "Part",
+                "Timestamp",
+                *[f"LB {first}-{second}" for first, second in ADJACENT_BARRIER_PAIRS],
+                "Max dV",
+                "Result",
+            ]
+        )
+        self.consistency_table.setAlternatingRowColors(True)
+        self.consistency_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.consistency_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.consistency_table.horizontalHeader().setStretchLastSection(True)
+        consistency_layout.addWidget(self.consistency_table, 1)
+        self.consistency_summary_label = QLabel("No completed parts")
+        consistency_layout.addWidget(self.consistency_summary_label)
+        self.calibration_tabs.addTab(consistency_tab, "Consistency")
         layout.addWidget(self.calibration_tabs)
 
         spacing_group = QGroupBox("Velocity Sensor Spacings")
@@ -655,6 +1003,17 @@ class ConveyorSetupWindow(QMainWindow):
         self.ur_monitor_start_button.clicked.connect(self._start_ur_speed_monitor)
         self.ur_monitor_stop_button.clicked.connect(
             lambda: self._stop_ur_speed_monitor()
+        )
+        self.consistency_start_button.clicked.connect(self._start_consistency_monitor)
+        self.consistency_stop_button.clicked.connect(
+            lambda: self._stop_consistency_monitor()
+        )
+        self.consistency_clear_button.clicked.connect(
+            self._clear_consistency_samples
+        )
+        self.consistency_plot_button.clicked.connect(self._open_consistency_plot)
+        self.consistency_reload_distances_button.clicked.connect(
+            self._reload_consistency_distances
         )
         self.ur_first_sensor.currentIndexChanged.connect(self._update_ur_controls)
         self.ur_second_sensor.currentIndexChanged.connect(self._update_ur_controls)
@@ -1010,6 +1369,202 @@ class ConveyorSetupWindow(QMainWindow):
         except OSError as exc:
             self.statusBar().showMessage(f"UR speed log failed: {exc}")
 
+    def _consistency_spacings(self) -> tuple[float, ...]:
+        return tuple(spin_box.value() for spin_box in self.consistency_spacing_inputs)
+
+    def _reload_consistency_distances(self) -> None:
+        if not self.latest_status:
+            return
+        plc_spacings = self.latest_status.get("sensor_spacings")
+        if plc_spacings is None:
+            return
+        for plc_index, pair in enumerate(LIGHT_BARRIER_PAIRS):
+            adjacent_index = ADJACENT_BARRIER_PAIRS.index(pair)
+            self.consistency_spacing_inputs[adjacent_index].setValue(
+                float(plc_spacings[plc_index])
+            )
+        self.consistency_spacings_initialized = True
+        self.consistency_state_label.setText(
+            "Loaded paired distances from PLC; intermediate distances remain assumptions"
+        )
+
+    def _start_consistency_monitor(self) -> None:
+        if not self.latest_status:
+            return
+        event_counts = self.latest_status.get("light_barrier_event_counts")
+        event_times = self.latest_status.get("light_barrier_event_times_ms")
+        if event_counts is None or event_times is None:
+            self.consistency_state_label.setText("PLC event timestamps unavailable")
+            return
+        spacings = self._consistency_spacings()
+        if (
+            self.consistency_samples
+            and self.consistency_session_spacings is not None
+            and spacings != self.consistency_session_spacings
+        ):
+            self._clear_consistency_samples()
+        self.consistency_session_spacings = spacings
+        self.consistency_collector = BarrierRunCollector(
+            bool(self.consistency_edge.currentData())
+        )
+        self.consistency_collector.start(event_counts)
+        self.consistency_monitor_active = True
+        self.consistency_state_label.setText(
+            "Monitoring forward traversals from LB 1 through LB 8"
+        )
+        self._update_consistency_controls()
+
+    def _stop_consistency_monitor(self, message: str = "Stopped") -> None:
+        self.consistency_monitor_active = False
+        self.consistency_collector = None
+        self.consistency_state_label.setText(message)
+        self._update_consistency_controls()
+
+    def _process_consistency_monitor(self, status: dict) -> None:
+        if (
+            not self.consistency_monitor_active
+            or self.consistency_collector is None
+        ):
+            return
+        completed_runs, missed_event = self.consistency_collector.process(status)
+        if missed_event:
+            self.consistency_state_label.setText(
+                "A PLC event was missed between polls; incomplete traversals were discarded"
+            )
+        for event_times in completed_runs:
+            try:
+                result = analyze_barrier_run(
+                    event_times,
+                    self.consistency_session_spacings,
+                    self.consistency_tolerance.value(),
+                )
+            except ValueError as exc:
+                self.consistency_state_label.setText(f"Rejected traversal: {exc}")
+                continue
+            sample = {
+                **result,
+                "event_times_ms": tuple(event_times),
+                "spacings_mm": tuple(self.consistency_session_spacings),
+                "part_number": len(self.consistency_samples) + 1,
+                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "edge": "ON" if self.consistency_collector.edge_state else "OFF",
+            }
+            self.consistency_samples.append(sample)
+            self._append_consistency_log(sample)
+            self._append_consistency_table_row(sample)
+            self.consistency_state_label.setText(
+                f"Captured part {sample['part_number']}: "
+                f"{'consistent' if sample['consistent'] else '; '.join(sample['diagnoses'])}"
+            )
+        if completed_runs:
+            self._update_consistency_summary()
+            if self.consistency_plot_dialog is not None:
+                self.consistency_plot_dialog.set_samples(self.consistency_samples)
+
+    def _append_consistency_table_row(self, sample: dict) -> None:
+        row = self.consistency_table.rowCount()
+        self.consistency_table.insertRow(row)
+        values = [
+            str(sample["part_number"]),
+            sample["timestamp"].split("T")[-1],
+            *[f"{speed:.1f} mm/s" for speed in sample["speeds"]],
+            f"{sample['maximum_speed_change_percent']:.1f}%",
+            "OK" if sample["consistent"] else "CHECK",
+        ]
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            if not sample["consistent"]:
+                item.setBackground(QColor("#fee2e2"))
+                item.setToolTip("; ".join(sample["diagnoses"]))
+            self.consistency_table.setItem(row, column, item)
+
+    def _append_consistency_log(self, sample: dict) -> None:
+        row = [
+            sample["timestamp"],
+            sample["part_number"],
+            sample["edge"],
+            *sample["spacings_mm"],
+            *sample["event_times_ms"],
+            *sample["speeds"],
+            *sample["accelerations"],
+            sample["maximum_speed_change_percent"],
+            sample["consistent"],
+            "; ".join(sample["diagnoses"]),
+        ]
+        try:
+            write_header = not CONSISTENCY_LOG_FILE.exists()
+            with CONSISTENCY_LOG_FILE.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                if write_header:
+                    writer.writerow(CONSISTENCY_LOG_HEADER)
+                writer.writerow(row)
+        except OSError as exc:
+            self.statusBar().showMessage(f"Consistency log failed: {exc}")
+
+    def _clear_consistency_samples(self) -> None:
+        self.consistency_samples = []
+        self.consistency_table.setRowCount(0)
+        self.consistency_session_spacings = None
+        self._update_consistency_summary()
+        if self.consistency_plot_dialog is not None:
+            self.consistency_plot_dialog.set_samples([])
+
+    def _update_consistency_summary(self) -> None:
+        if not self.consistency_samples:
+            self.consistency_summary_label.setText("No completed parts")
+            self.consistency_plot_button.setEnabled(False)
+            return
+        inconsistent = sum(
+            not sample["consistent"] for sample in self.consistency_samples
+        )
+        section_means = [
+            sum(sample["speeds"][index] for sample in self.consistency_samples)
+            / len(self.consistency_samples)
+            for index in range(LIGHT_BARRIER_COUNT - 1)
+        ]
+        means_text = ", ".join(
+            f"{pair[0]}-{pair[1]} {mean:.1f}"
+            for pair, mean in zip(ADJACENT_BARRIER_PAIRS, section_means)
+        )
+        self.consistency_summary_label.setText(
+            f"{len(self.consistency_samples)} parts, {inconsistent} flagged; "
+            f"section means [mm/s]: {means_text}"
+        )
+        self.consistency_plot_button.setEnabled(True)
+
+    def _open_consistency_plot(self) -> None:
+        if not self.consistency_samples:
+            return
+        if self.consistency_plot_dialog is None:
+            self.consistency_plot_dialog = SpeedPlotDialog(
+                self.consistency_samples, self
+            )
+            self.consistency_plot_dialog.finished.connect(
+                lambda _result: setattr(self, "consistency_plot_dialog", None)
+            )
+        self.consistency_plot_dialog.show()
+        self.consistency_plot_dialog.raise_()
+        self.consistency_plot_dialog.activateWindow()
+
+    def _update_consistency_controls(self) -> None:
+        ready = self.connected and self.have_setup_status
+        self.consistency_start_button.setEnabled(
+            ready and not self.consistency_monitor_active
+        )
+        self.consistency_stop_button.setEnabled(self.consistency_monitor_active)
+        settings_enabled = not self.consistency_monitor_active
+        self.consistency_edge.setEnabled(settings_enabled)
+        self.consistency_tolerance.setEnabled(settings_enabled)
+        self.consistency_reload_distances_button.setEnabled(
+            ready and settings_enabled
+        )
+        for distance_input in self.consistency_spacing_inputs:
+            distance_input.setEnabled(settings_enabled)
+        self.consistency_clear_button.setEnabled(
+            bool(self.consistency_samples) and not self.consistency_monitor_active
+        )
+        self.consistency_plot_button.setEnabled(bool(self.consistency_samples))
+
     def _set_controls_enabled(self, enabled: bool) -> None:
         self.calibrate_button.setEnabled(enabled)
         self.jog_button.setEnabled(enabled and self.mm_per_full_step > 0.0)
@@ -1022,6 +1577,11 @@ class ConveyorSetupWindow(QMainWindow):
         self.ur_apply_button.setEnabled(False)
         self.ur_monitor_start_button.setEnabled(False)
         self.ur_monitor_stop_button.setEnabled(False)
+        self.consistency_start_button.setEnabled(False)
+        self.consistency_stop_button.setEnabled(False)
+        self.consistency_reload_distances_button.setEnabled(False)
+        self.consistency_clear_button.setEnabled(False)
+        self.consistency_plot_button.setEnabled(False)
         for checkbox in self.barrier_inverted:
             checkbox.setEnabled(enabled)
 
@@ -1056,10 +1616,13 @@ class ConveyorSetupWindow(QMainWindow):
             self.ur_capture_active = False
             if self.ur_monitor_active:
                 self._stop_ur_speed_monitor("Stopped: ADS connection lost")
+            if self.consistency_monitor_active:
+                self._stop_consistency_monitor("Stopped: ADS connection lost")
             self.statusBar().showMessage(f"ADS offline: {message or 'reconnecting'}")
             for index in range(LIGHT_BARRIER_COUNT):
                 self._set_barrier_indicator(index, None)
         self._update_ur_controls()
+        self._update_consistency_controls()
 
     @pyqtSlot(object)
     def _on_initial_snapshot(self, snapshot: dict) -> None:
@@ -1094,6 +1657,9 @@ class ConveyorSetupWindow(QMainWindow):
             self._set_barrier_indicator(index, barrier_state)
         self._process_ur_capture(status["light_barriers"])
         self._process_ur_speed_monitor(status)
+        if not self.consistency_spacings_initialized and status.get("sensor_spacings"):
+            self._reload_consistency_distances()
+        self._process_consistency_monitor(status)
 
         if status["conveyor_calibration_valid"]:
             self.mm_per_full_step = float(status["mm_per_full_step"])
@@ -1164,6 +1730,7 @@ class ConveyorSetupWindow(QMainWindow):
             checkbox.setEnabled(self.connected and settings_enabled)
         self._update_apply_state()
         self._update_ur_controls()
+        self._update_consistency_controls()
 
         if (
             self.pending_measurement

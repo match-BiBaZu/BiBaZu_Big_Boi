@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 
 from bibazu_reorientation.mesh_preview import (
+    COORDINATE_AXIS_COLORS,
+    _display_rotation_matrix,
     load_mesh_triangles,
     render_mesh_preview,
     render_triangles_preview,
@@ -88,3 +90,29 @@ def test_loaded_triangles_can_be_reused_for_animation(qtbot, tmp_path: Path) -> 
     assert first.size() == second.size()
     assert not first.isNull()
     assert not second.isNull()
+
+
+def test_pose_display_uses_front_view_axis_convention() -> None:
+    axes = np.eye(3)
+
+    transformed = axes @ _display_rotation_matrix().T
+
+    # Camera X is screen-right, camera Y becomes screen-up after the renderer's
+    # vertical inversion, and positive camera depth points toward the viewer.
+    assert np.allclose(
+        transformed,
+        ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+        atol=1e-12,
+    )
+
+
+def test_pose_preview_contains_xyz_coordinate_triad(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "part.STL"
+    _binary_stl(source)
+
+    image = render_mesh_preview(source, 220, 160).toImage()
+    colors = {
+        image.pixelColor(x, y).name() for y in range(image.height()) for x in range(image.width())
+    }
+
+    assert set(COORDINATE_AXIS_COLORS.values()) <= colors

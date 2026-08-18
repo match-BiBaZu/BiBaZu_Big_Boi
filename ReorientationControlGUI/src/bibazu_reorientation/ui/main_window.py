@@ -54,6 +54,7 @@ from bibazu_reorientation.profiles import (
     compose_pressure_profiles,
     load_pressure_profile,
 )
+from bibazu_reorientation.roadmap import load_pose_roadmap
 from bibazu_reorientation.settings import (
     CAMERA_EXPOSURE_MAX_US,
     CAMERA_EXPOSURE_MIN_US,
@@ -811,7 +812,13 @@ class MainWindow(QMainWindow):
         else:
             try:
                 self.model_label.setText("")
-                self.model_label.setPixmap(render_mesh_preview(part.mesh_path))
+                quaternion = None
+                if part.roadmap_path is not None and part.target_roadmap_pose_id is not None:
+                    roadmap = load_pose_roadmap(part.roadmap_path)
+                    quaternion = roadmap.pose(part.target_roadmap_pose_id).quaternion_xyzw
+                self.model_label.setPixmap(
+                    render_mesh_preview(part.mesh_path, quaternion_xyzw=quaternion)
+                )
                 self.model_label.setToolTip(str(part.mesh_path))
             except Exception as exc:
                 self.model_label.setPixmap(QPixmap())
@@ -839,8 +846,16 @@ class MainWindow(QMainWindow):
         )
         if part.mesh_path is not None:
             try:
+                roadmap = load_pose_roadmap(part.roadmap_path)
+                target_pose = roadmap.pose(part.target_pose)
                 self.model_label.setText("")
-                self.model_label.setPixmap(render_mesh_preview(part.mesh_path))
+                self.model_label.setPixmap(
+                    render_mesh_preview(
+                        part.mesh_path,
+                        quaternion_xyzw=target_pose.quaternion_xyzw,
+                        caption=f"Target orientation · roadmap pose {target_pose.pose_id}",
+                    )
+                )
                 self.model_label.setToolTip(str(part.mesh_path))
             except Exception as exc:
                 self.model_label.setPixmap(QPixmap())
