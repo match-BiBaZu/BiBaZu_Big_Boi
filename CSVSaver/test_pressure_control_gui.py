@@ -1059,6 +1059,56 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
         finally:
             directory.cleanup()
 
+    def test_two_flip_transition_is_exposed_as_experimental_option(self):
+        payload = self.roadmap_payload()
+        payload["nodes"].append(
+            {
+                "node_id": 4,
+                "pose_ids": [4],
+                "kind": "robust",
+                "floor_contact_topology": "face",
+                "wall_contact_topology": "face",
+            }
+        )
+        payload["edges"].append(
+            {
+                "edge_id": "a1:2->4:free_z",
+                "source": 2,
+                "target": 4,
+                "transition_kind": "actuated",
+                "actuation": "free_z",
+                "signed_angle_deg": 90.0,
+                "capture_width_deg": 30.0,
+                "geometric_score": 0.4,
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Df1a_roadmap.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            document = gui.load_roadmap_document(path)
+            multi = next(
+                edge for edge in document.transitions if edge.edge_id == "multi2:1->2->4"
+            )
+            self.assertEqual(multi.via_pose_ids, (2,))
+            self.assertEqual(multi.flip_count, 2)
+            self.assertTrue(multi.calibratable)
+
+            dialog = gui.RoadmapTransitionDialog(document)
+            row = next(
+                row
+                for row in range(dialog.transition_table.rowCount())
+                if dialog.transition_table.item(row, 0).data(gui.Qt.ItemDataRole.UserRole)
+                == multi.edge_id
+            )
+            self.assertEqual(
+                dialog.transition_table.item(row, 0).background().color().name(),
+                "#fff3cd",
+            )
+            self.assertIn("experimentell", dialog.transition_table.item(row, 3).text())
+            dialog.transition_table.selectRow(row)
+            dialog._accept_selected_transition()
+            self.assertEqual(dialog.selected_transition.transition.edge_id, multi.edge_id)
+
     def test_selected_transition_sets_banner_and_profile_name_suggestion(self):
         directory, document = self.load_document()
         try:

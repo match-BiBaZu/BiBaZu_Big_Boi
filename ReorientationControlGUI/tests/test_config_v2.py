@@ -47,7 +47,11 @@ def test_v2_roundtrip_uses_portable_paths_and_optional_profiles(tmp_path: Path) 
     assert loaded.part_name == "Df1a edited"
     assert loaded.target_pose == 35
     assert {pose.id: pose.model_class_id for pose in loaded.poses} == {9: 3, 24: 7, 35: 8, 60: 12}
-    assert len(loaded.transitions) == 6
+    assert len(loaded.transitions) == 14
+    assert (
+        len([edge for edge in loaded.transitions if edge.transition_kind == "multi_reorientation"])
+        == 8
+    )
     assert all(edge.pressure_profile is None for edge in loaded.transitions)
     assert not Path(payload["roadmap_path"]).is_absolute()
     assert not Path(payload["mesh_path"]).is_absolute()

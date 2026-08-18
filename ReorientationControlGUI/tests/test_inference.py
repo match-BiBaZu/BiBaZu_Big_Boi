@@ -9,6 +9,7 @@ import pytest
 from bibazu_reorientation.inference import (
     InferenceConfig,
     PoseConsensus,
+    before_pose_cutoff,
     draw_overlay,
     extract_detections,
     overlay_labels,
@@ -115,6 +116,31 @@ def test_separate_or_slightly_overlapping_parts_are_preserved() -> None:
     assert suppress_duplicate_detections((first, second)) == (first, second)
 
 
+def test_shadow_inflated_heavily_overlapping_parts_with_separate_centers_are_preserved() -> None:
+    first = Detection(
+        0,
+        "Pose 1",
+        0.90,
+        ((0, 0), (100, 0), (100, 30), (0, 30)),
+        "obb",
+    )
+    second = Detection(
+        0,
+        "Pose 1",
+        0.88,
+        ((14, 0), (114, 0), (114, 30), (14, 30)),
+        "obb",
+    )
+
+    assert suppress_duplicate_detections((first, second)) == (first, second)
+
+
+def test_default_nms_iou_preserves_more_overlapping_candidates(tmp_path) -> None:
+    config = InferenceConfig(tmp_path / "best.pt").validated(require_model=False)
+
+    assert config.nms_iou == pytest.approx(0.90)
+
+
 def test_model_class_contract() -> None:
     assert validate_model_classes({0: "Pose 1", 1: "Pose 2"})[1] == "Pose 2"
     with pytest.raises(ValueError):
@@ -157,7 +183,13 @@ def test_overlay_promotes_mapped_roadmap_pose_over_yolo_class(tmp_path) -> None:
 
 
 def test_mapped_confidence_is_drawn_beside_pose_not_on_box(monkeypatch) -> None:
-    detection = frame(class_id=1).detections[0]
+    detection = Detection(
+        1,
+        "Pose 2",
+        0.9,
+        ((100, 5), (120, 5), (120, 20), (100, 20)),
+        "detect",
+    )
     calls: list[tuple[str, tuple[int, int]]] = []
 
     def record_text(_image, text, origin, *_args):
@@ -170,3 +202,25 @@ def test_mapped_confidence_is_drawn_beside_pose_not_on_box(monkeypatch) -> None:
     assert [text for text, _origin in calls] == ["Pose 10", "90%"]
     assert calls[1][1][0] > calls[0][1][0]
     assert calls[1][1][1] == calls[0][1][1]
+
+
+def test_pose_prediction_is_ignored_at_ten_percent_left_cutoff(monkeypatch) -> None:
+    crossing = Detection(
+        1,
+        "Pose 2",
+        0.99,
+        ((35, 5), (60, 5), (60, 25), (35, 25)),
+        "detect",
+    )
+    calls: list[str] = []
+
+    def record_text(_image, text, *_args):
+        calls.append(text)
+        return _image
+
+    monkeypatch.setattr("bibazu_reorientation.inference.cv2.putText", record_text)
+    assert not before_pose_cutoff(crossing, 400)
+
+    draw_overlay(np.zeros((100, 400, 3), np.uint8), (crossing,), {1: 10})
+
+    assert calls == []

@@ -95,6 +95,54 @@ def test_transition_resolver_rejects_ambiguous_two_step_path(tmp_path: Path) -> 
         TransitionResolver(definition).plan(1)
 
 
+def test_multi_reorientation_profile_overrides_composed_flips(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    definition = PartDefinition(
+        schema_version=2,
+        part_name="Df1a",
+        model_path=tmp_path / "best.pt",
+        poses=tuple(PoseDefinition(index, f"Pose {index}", index) for index in (9, 35, 60)),
+        target_pose=35,
+        transitions=(
+            TransitionSpec(60, 9, profile, "60-9"),
+            TransitionSpec(9, 35, profile, "9-35"),
+            TransitionSpec(
+                60,
+                35,
+                profile,
+                "multi2:60->9->35",
+                transition_kind="multi_reorientation",
+                flip_count=2,
+                via_pose_ids=(9,),
+            ),
+        ),
+    )
+
+    plan = TransitionResolver(definition).plan(60)
+
+    assert [edge.edge_id for edge in plan] == ["multi2:60->9->35"]
+
+
+def test_transition_resolver_supports_three_individual_flips(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    definition = PartDefinition(
+        schema_version=2,
+        part_name="Roadmap part",
+        model_path=tmp_path / "best.pt",
+        poses=tuple(PoseDefinition(index, f"Pose {index}", index) for index in (1, 2, 3, 4)),
+        target_pose=4,
+        transitions=(
+            TransitionSpec(1, 2, profile, "a"),
+            TransitionSpec(2, 3, profile, "b"),
+            TransitionSpec(3, 4, profile, "c"),
+        ),
+    )
+
+    assert [edge.edge_id for edge in TransitionResolver(definition).plan(1)] == ["a", "b", "c"]
+
+
 def test_stable_roadmap_target_roundtrip(tmp_path: Path) -> None:
     model = tmp_path / "best.pt"
     profile = tmp_path / "2-to-1.json"

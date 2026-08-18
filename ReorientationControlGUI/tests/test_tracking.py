@@ -58,6 +58,16 @@ def test_snapshot_queue_freezes_every_detection_in_leading_order() -> None:
     assert all(item.reason == "snapshot_confirmed" for item in update.handoffs)
 
 
+def test_snapshot_keeps_cutoff_workpiece_but_ignores_its_pose() -> None:
+    update = snapshot_queue(
+        frame((1, 14, 30), (0, 50, 70), timestamp=1.0),
+        {0: 10, 1: 5},
+    )
+
+    assert [(item.track_id, item.pose_id) for item in update.handoffs] == [(1, None), (2, 10)]
+    assert update.handoffs[0].reason == "snapshot_past_pose_cutoff"
+
+
 def test_snapshot_queue_does_not_queue_overlapping_duplicate_classes() -> None:
     lower = Detection(
         0,

@@ -88,7 +88,7 @@ class RoadmapSetupDialog(QDialog):
                 "Action",
                 "Target angle",
                 "Geometric score",
-                "Experiment",
+                "Category / experiment",
                 "Motion",
                 "Pressure profile",
                 "Status",
@@ -124,9 +124,7 @@ class RoadmapSetupDialog(QDialog):
             1,
         )
         layout.addWidget(
-            self._group(
-                "Actuated robust-to-robust transitions (profiles optional)", self.profile_table
-            ),
+            self._group("Robust-to-robust transitions (profiles optional)", self.profile_table),
             2,
         )
         layout.addWidget(
@@ -207,7 +205,8 @@ class RoadmapSetupDialog(QDialog):
         self.summary.setText(
             f"<b>{roadmap.part_name}</b> · {len(roadmap.poses)} poses "
             f"({len(roadmap.robust_poses)} robust) · {len(roadmap.transitions)} "
-            f"directed edges · {len(roadmap.profile_transitions)} profile-eligible edges"
+            f"directed edges · {len(roadmap.calibratable_transitions)} profile-eligible "
+            f"options ({len(roadmap.multi_reorientation_transitions)} multi-reorientation)"
         )
         warnings: list[str] = []
         if roadmap.cad_status == "provisional":
@@ -272,12 +271,16 @@ class RoadmapSetupDialog(QDialog):
             else {}
         )
         self.profile_inputs.clear()
-        self.profile_table.setRowCount(len(self.roadmap.profile_transitions))
-        for row, edge in enumerate(self.roadmap.profile_transitions):
+        self.profile_table.setRowCount(len(self.roadmap.calibratable_transitions))
+        for row, edge in enumerate(self.roadmap.calibratable_transitions):
             self.profile_table.setItem(
                 row, 0, QTableWidgetItem(f"{edge.from_pose} → {edge.to_pose}")
             )
-            self.profile_table.setItem(row, 1, QTableWidgetItem(edge.actuation))
+            action = edge.actuation
+            if edge.transition_kind == "multi_reorientation":
+                via = " → ".join(map(str, edge.via_pose_ids))
+                action = f"{edge.flip_count} flips via {via}"
+            self.profile_table.setItem(row, 1, QTableWidgetItem(action))
             self.profile_table.setItem(
                 row,
                 2,
@@ -292,7 +295,16 @@ class RoadmapSetupDialog(QDialog):
                     "–" if edge.geometric_score is None else f"{edge.geometric_score:.3f}"
                 ),
             )
-            self.profile_table.setItem(row, 4, QTableWidgetItem(edge.experimental_status))
+            category = edge.experimental_status
+            if edge.transition_kind == "multi_reorientation":
+                category = "MULTIPLE REORIENTATION · experimental · non-preferred"
+            category_item = QTableWidgetItem(category)
+            if edge.transition_kind == "multi_reorientation":
+                category_item.setToolTip(
+                    "Optional direct empirical profile. When assigned, it overrides "
+                    "composition of the individual flip profiles for these endpoints."
+                )
+            self.profile_table.setItem(row, 4, category_item)
             preview = QPushButton("Preview …")
             preview.setObjectName(f"transition_preview_{row}")
             preview.setToolTip(f"Show the orientation change for {edge.from_pose} → {edge.to_pose}")
@@ -385,17 +397,21 @@ class RoadmapSetupDialog(QDialog):
         values = [spin.value() for spin in self.class_inputs.values() if spin.value() >= 0]
         duplicates = len(values) != len(set(values))
         missing_profiles = [
-            edge_id for edge_id, edit in self.profile_inputs.items() if not edit.text().strip()
+            edge.edge_id
+            for edge in self.roadmap.profile_transitions
+            if edge.edge_id not in self.profile_inputs
+            or not self.profile_inputs[edge.edge_id].text().strip()
         ]
         available = {
             edge_id for edge_id, edit in self.profile_inputs.items() if edit.text().strip()
         }
-        parallel_assignments: dict[tuple[int, int], list[str]] = {}
-        for edge in self.roadmap.profile_transitions:
+        parallel_assignments: dict[tuple[int, int, str], list[str]] = {}
+        for edge in self.roadmap.calibratable_transitions:
             if edge.edge_id in available:
-                parallel_assignments.setdefault((edge.from_pose, edge.to_pose), []).append(
-                    f"{edge.edge_id} ({edge.actuation})"
-                )
+                category = "multi" if edge.transition_kind == "multi_reorientation" else "ordinary"
+                parallel_assignments.setdefault(
+                    (edge.from_pose, edge.to_pose, category), []
+                ).append(f"{edge.edge_id} ({edge.actuation})")
         ambiguous = {
             direction: edge_ids
             for direction, edge_ids in parallel_assignments.items()
@@ -413,7 +429,7 @@ class RoadmapSetupDialog(QDialog):
             else f"Class mapping incomplete/ambiguous: {missing_mapping}"
         )
         parts.append("Roadmap hash will be recorded again when saving")
-        for (start, target), edge_ids in ambiguous.items():
+        for (start, target, _category), edge_ids in ambiguous.items():
             parts.append(
                 f"Execution ambiguous for {start} → {target}: {', '.join(edge_ids)}; "
                 "assign exactly one parallel edge"
@@ -426,8 +442,9 @@ class RoadmapSetupDialog(QDialog):
         ):
             parts.append("CAD path intentionally differs from the roadmap")
         parts.append(
-            "Draft can be saved; execution requires a unique path with at most one "
-            "intermediate pose"
+            "Draft can be saved; execution supports a unique path with at most two "
+            "intermediate poses. An assigned multi-reorientation profile overrides "
+            "composed individual flips for the same endpoints."
         )
         self.readiness.setText("<br>".join(f"• {part}" for part in parts))
 
@@ -438,7 +455,7 @@ class RoadmapSetupDialog(QDialog):
         changed = True
         while changed:
             changed = False
-            for edge in self.roadmap.profile_transitions:
+            for edge in self.roadmap.calibratable_transitions:
                 if (
                     edge.edge_id in available_edge_ids
                     and edge.to_pose in reachable

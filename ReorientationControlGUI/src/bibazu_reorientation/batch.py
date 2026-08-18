@@ -65,7 +65,7 @@ class PartQueuePlanner:
         elif pose_id is not None:
             try:
                 if self.part.is_roadmap_configuration:
-                    transitions = TransitionResolver(self.part).plan(pose_id, max_transitions=2)
+                    transitions = TransitionResolver(self.part).plan(pose_id, max_transitions=3)
                     edge_ids = tuple(transition.edge_id for transition in transitions)
                     source_profiles = tuple(
                         self.profiles_by_edge[transition.edge_id] for transition in transitions

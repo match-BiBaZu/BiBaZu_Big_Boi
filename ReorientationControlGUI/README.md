@@ -4,7 +4,7 @@ Fixed-batch control from one frozen production snapshot. When **Start production
 run** is pressed, the latest Baumer/YOLO frame establishes every workpiece, its
 initial pose and its physical left-to-right queue order. Legacy schema-v1 projects
 support Pose 1/2; schema-v2 roadmap projects resolve either a direct transition or
-one unique path with one intermediate pose and combine its active PressureControl
+one unique path with up to two intermediate poses and combine its active PressureControl
 arrays into one immutable PLC queue record per part.
 All operator-facing labels, dialogs, status messages, and validation errors in the
 application are in English.
@@ -52,6 +52,13 @@ restarted. If CAD rendering is unavailable, the dialog keeps the roadmap's start
 and target images with a direction arrow. This is an orientation aid, not a
 simulation of the physical trajectory through the chute.
 
+The setup dialog also derives optional **MULTIPLE REORIENTATION** choices from every
+simple roadmap path containing two or three actuated flips. These choices are marked
+experimental and non-preferred because they are empirical direct profiles rather than
+new geometry edges. If such a profile is assigned, execution uses that one profile for
+the complete start-to-target transfer and overrides composition of its individual flip
+profiles. For Df1a this includes `multi2:60->9->35`.
+
 ### Bauteil, YOLO-Modell und Pressure-Profil auswählen
 
 In der Anwendung gibt es dafür zwei gleichwertige Wege: die Schaltflächen oberhalb
@@ -98,9 +105,15 @@ Produktionslaufs sind Neu, Öffnen und Bearbeiten gesperrt.
 4. Alle Werkstücke müssen im Kamerabild liegen. Danach **Start production run**
    drücken. Genau der zu diesem Zeitpunkt letzte frische YOLO-Frame wird kopiert;
    spätere Bilder ändern weder Reihenfolge noch Pose noch Profil.
+   Die gelbe vertikale Linie bei 10 % der Bildbreite markiert die Pose-Gültigkeits-
+   grenze. Sobald eine Bounding Box diese Linie erreicht oder links davon liegt,
+   blendet die Vorschau ihre Pose aus und die Startaufnahme ignoriert die Vorhersage.
 5. Die GUI sortiert alle Detektionen von links nach rechts (das führende Teil
    zuerst), erzeugt pro Teil genau einen unveränderlichen Queue-Datensatz und wartet
    auf jede SPS-Bestätigung. Erst danach wird das Förderband eingeschaltet.
+   Stark überlappende Boxen bleiben als getrennte Werkstücke erhalten, solange ihre
+   Mittelpunkte nicht nahezu zusammenfallen; dies reduziert Zusammenführungen durch
+   schattenbedingt lange Ql1i-OBBs.
    Zielpose, unbekannte Klasse, angeschnittene Detektion oder nicht eindeutiger Pfad
    werden mit Maske null eingereiht und passieren ohne Düsen; dies erzeugt eine
    Warnung, stoppt den Lauf aber nicht.
@@ -234,5 +247,5 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
-The current Reorientation offscreen suite contains 114 tests; the shared
-Pressure/Conveyor suite contains 54 tests.
+The current Reorientation offscreen suite contains 139 tests; the shared
+Pressure/Conveyor suite contains 55 tests.

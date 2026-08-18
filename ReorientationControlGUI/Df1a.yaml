@@ -1,16 +1,35 @@
-schema_version: 1
+schema_version: 2
+roadmap_path: ../../bibazu_geometry_to_pose/Poses_Found_Robust/Df1a_roadmap_provisional/Df1a_roadmap.json
+roadmap_sha256: 8593e96c25c8c0eab6ba95f4b3b612692abc0f8ece6f2386aae29785addd22bb
 part_name: Df1a
-model_path: C:\Users\Administrator\Pictures\Df1a\YOLO\Df1a_best.pt
+mesh_path: ../../bibazu_geometry_to_pose/Werkstücke_STL_grob/Df1a.STL
+model_path: ../../../../Pictures/Df1a/YOLO/Df1a_best.pt
 poses:
-- id: 1
-  label: Pose 1
-  model_class_id: 0
-- id: 2
-  label: Pose 2
+- id: 9
+  label: Pose 9
   model_class_id: 1
-target_pose: 1
-transitions:
-- from_pose: 2
-  to_pose: 1
-  pressure_profile: C:\Users\Administrator\Documents\Dashas_ws\BiBaZu_Big_Boi\pressure_profiles\Tobias_90.json
-mesh_path: C:\Users\Administrator\Documents\Dashas_ws\bibazu_geometry_to_pose\Werkstücke_STL_grob\Df1a.STL
+- id: 24
+  label: Pose 24
+  model_class_id: 0
+- id: 35
+  label: Pose 35
+  model_class_id: 3
+- id: 60
+  label: Pose 60
+  model_class_id: 2
+target_pose: 35
+transition_profiles:
+  a0:9->35:wall_main_neg_x: ../CSVSaver/pressure_profiles/Df1a_Uebergang_9-35_wall_main_neg_x.json
+  a15:60->9:free_z: ../CSVSaver/pressure_profiles/Df1a_Uebergang_60-35_free_y.json
+  a1:9->60:free_z: null
+  a2:24->35:free_y: null
+  a3:24->60:floor_main_pos_x: null
+  a4:35->24:free_y: null
+  multi2:24->60->9: null
+  multi2:35->24->60: null
+  multi2:60->9->35: ../CSVSaver/pressure_profiles/Df1a_Uebergang_60-35_multiple_reorientation_2.json
+  multi2:9->35->24: null
+  multi3:24->60->9->35: null
+  multi3:35->24->60->9: null
+  multi3:60->9->35->24: null
+  multi3:9->35->24->60: null

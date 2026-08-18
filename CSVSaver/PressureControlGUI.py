@@ -3350,12 +3350,24 @@ class PressureControlWindow(QMainWindow):
     ) -> None:
         self.selected_roadmap_transition = selection
         transition = selection.transition
+        angle = (
+            "kein einzelner Sollwinkel"
+            if transition.signed_angle_deg is None
+            else f"{transition.signed_angle_deg:+.1f}°"
+        )
+        via = (
+            f"<br><span style='color:#8a5a00;'>Experimentell / nicht bevorzugt · "
+            f"{transition.flip_count} Flips über "
+            f"{' → '.join(map(str, transition.via_pose_ids))}</span>"
+            if transition.is_multi_reorientation
+            else ""
+        )
         self.transition_context_text.setText(
             f"{selection.part_name}<br>"
             f"{transition.display_name}<br>"
             f"<span style='font-size: 13px; font-weight: 500;'>"
             f"{action_display_label(transition.actuation)} · "
-            f"{transition.signed_angle_deg:+.1f}°</span>"
+            f"{angle}</span>{via}"
         )
         self._set_transition_pose_image(
             self.transition_source_image,

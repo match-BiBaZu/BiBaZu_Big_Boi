@@ -3,7 +3,7 @@ roadmap_path: ../../bibazu_geometry_to_pose/Poses_Found_Robust/Ql1i_roadmap/Ql1i
 roadmap_sha256: 4bd74c5a9ffc8f3164350c152d9ab79d270d6fd5064d91c459b555bf76a224be
 part_name: Ql1i
 mesh_path: ../../bibazu_geometry_to_pose/Werkstücke_STL_grob/Ql1i.STL
-model_path: D:\pictures\Ql1i\YOLO_final_20260809\runs\Ql1i_yolo26n_obb_960_20260809\weights\best.pt
+model_path: ../../automated_image_capture/artifacts/Ql1i_YOLO_tight_ends_20260812/runs/ql1i_tight_ends_20260812/weights/best.pt
 poses:
 - id: 2
   label: Pose 2

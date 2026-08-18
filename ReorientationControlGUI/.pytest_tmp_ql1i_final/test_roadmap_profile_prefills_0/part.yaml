@@ -1,0 +1,35 @@
+schema_version: 2
+roadmap_path: ../../../../bibazu_geometry_to_pose/Poses_Found_Robust/Df1a_roadmap_provisional/Df1a_roadmap.yaml
+roadmap_sha256: 7ca3aabea03ddd1ab1724ad96692b6401fed010ddd558f338b9b6fc2c639a54b
+part_name: Df1a
+mesh_path: ../../../../bibazu_geometry_to_pose/Werkstücke_STL_grob/Df1a.STL
+model_path: best.pt
+poses:
+- id: 9
+  label: Pose 9
+  model_class_id: 0
+- id: 24
+  label: Pose 24
+  model_class_id: 1
+- id: 35
+  label: Pose 35
+  model_class_id: 2
+- id: 60
+  label: Pose 60
+  model_class_id: 3
+target_pose: 35
+transition_profiles:
+  a0:9->35:wall_main_neg_x: 9-to-35.json
+  a15:60->9:free_z: null
+  a1:9->60:free_z: null
+  a2:24->35:free_y: null
+  a3:24->60:floor_main_pos_x: null
+  a4:35->24:free_y: null
+  multi2:24->60->9: null
+  multi2:35->24->60: null
+  multi2:60->9->35: null
+  multi2:9->35->24: null
+  multi3:24->60->9->35: null
+  multi3:35->24->60->9: null
+  multi3:60->9->35->24: null
+  multi3:9->35->24->60: null

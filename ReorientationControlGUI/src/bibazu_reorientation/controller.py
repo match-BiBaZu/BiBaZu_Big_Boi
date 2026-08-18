@@ -336,7 +336,7 @@ class ReorientationController(QObject):
             return
         if self.part is None or self._transport_profile is None:
             raise ValueError("Roadmap execution is not configured")
-        transitions = TransitionResolver(self.part).plan(start_pose, max_transitions=2)
+        transitions = TransitionResolver(self.part).plan(start_pose, max_transitions=3)
         if not transitions:
             self.profile = self._transport_profile
             self._selected_transitions = ()

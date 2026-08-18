@@ -211,9 +211,18 @@ def _load_v2(
     raw_profiles = payload.get("transition_profiles")
     if not isinstance(raw_profiles, dict):
         raise ValueError("transition_profiles must map edge_id to a path or null")
-    valid_edges = {edge.edge_id: edge for edge in roadmap.profile_transitions}
+    required_edge_ids = {edge.edge_id for edge in roadmap.profile_transitions}
+    valid_edges = {edge.edge_id: edge for edge in roadmap.calibratable_transitions}
     previous_edge_ids = set(raw_profiles)
-    if not changed and set(raw_profiles) != set(valid_edges):
+    previous_raw_edge_ids = {
+        edge_id
+        for edge_id in previous_edge_ids
+        if not edge_id.startswith(("multi2:", "multi3:"))
+    }
+    unknown_edge_ids = previous_edge_ids - set(valid_edges)
+    if not changed and unknown_edge_ids:
+        raise ValueError(f"transition_profiles contains unknown edges: {sorted(unknown_edge_ids)}")
+    if not changed and not required_edge_ids.issubset(previous_edge_ids):
         raise ValueError("transition_profiles must contain every actuated robust-to-robust edge")
     transitions: list[TransitionSpec] = []
     for edge_id, edge in valid_edges.items():
@@ -234,6 +243,9 @@ def _load_v2(
                 signed_angle_deg=edge.signed_angle_deg,
                 geometric_score=edge.geometric_score,
                 experimental_status=edge.experimental_status,
+                flip_count=edge.flip_count,
+                via_pose_ids=edge.via_pose_ids,
+                component_edge_ids=edge.component_edge_ids,
             )
         )
     return PartDefinition(
@@ -251,10 +263,10 @@ def _load_v2(
         roadmap_changed=changed,
         roadmap_added_pose_ids=tuple(sorted(robust_ids - previous_pose_ids)) if changed else (),
         roadmap_removed_pose_ids=tuple(sorted(previous_pose_ids - robust_ids)) if changed else (),
-        roadmap_added_edge_ids=tuple(sorted(set(valid_edges) - previous_edge_ids))
+        roadmap_added_edge_ids=tuple(sorted(required_edge_ids - previous_raw_edge_ids))
         if changed
         else (),
-        roadmap_removed_edge_ids=tuple(sorted(previous_edge_ids - set(valid_edges)))
+        roadmap_removed_edge_ids=tuple(sorted(previous_raw_edge_ids - required_edge_ids))
         if changed
         else (),
     )
@@ -355,12 +367,15 @@ def save_roadmap_part_definition(
         raise ValueError("Model classes must be unique and non-negative")
     if target_pose not in robust_ids:
         raise ValueError("The target pose must be robust")
-    edge_ids = {edge.edge_id for edge in roadmap.profile_transitions}
-    if set(transition_profiles) != edge_ids:
+    required_edge_ids = {edge.edge_id for edge in roadmap.profile_transitions}
+    edge_ids = {edge.edge_id for edge in roadmap.calibratable_transitions}
+    if not required_edge_ids.issubset(transition_profiles) or not set(transition_profiles).issubset(
+        edge_ids
+    ):
         raise ValueError("A table row is required for every actuated robust-to-robust edge")
     serialized_profiles: dict[str, str | None] = {}
     for edge_id in sorted(edge_ids):
-        profile = transition_profiles[edge_id]
+        profile = transition_profiles.get(edge_id)
         if profile is None or not str(profile).strip():
             serialized_profiles[edge_id] = None
             continue
@@ -419,7 +434,9 @@ def roadmap_readiness(
                 queue.append(predecessor)
     return RoadmapReadiness(
         missing_profile_edge_ids=tuple(
-            edge.edge_id for edge in definition.transitions if edge.pressure_profile is None
+            edge.edge_id
+            for edge in definition.transitions
+            if edge.pressure_profile is None and edge.transition_kind != "multi_reorientation"
         ),
         reachable_pose_ids=tuple(sorted(reachable & robust)),
         unreachable_pose_ids=tuple(sorted(robust - reachable)),
@@ -440,47 +457,89 @@ class TransitionResolver:
         start_pose: int,
         target_pose: int | None = None,
         *,
-        max_transitions: int = 2,
+        max_transitions: int = 3,
     ) -> tuple[TransitionSpec, ...]:
         target = self.definition.target_pose if target_pose is None else target_pose
         if start_pose == target:
             return ()
-        if max_transitions not in {1, 2}:
-            raise ValueError("Only direct paths or paths with one intermediate pose are supported")
+        if max_transitions not in {1, 2, 3}:
+            raise ValueError("Only paths of one, two, or three transitions are supported")
         available = tuple(
             transition
             for transition in self.definition.transitions
             if transition.pressure_profile is not None
         )
-        direct = tuple(
+        ordinary_direct = tuple(
             transition
             for transition in available
-            if transition.from_pose == start_pose and transition.to_pose == target
+            if transition.from_pose == start_pose
+            and transition.to_pose == target
+            and transition.transition_kind != "multi_reorientation"
         )
-        if direct:
-            if len(direct) != 1:
+        if ordinary_direct:
+            if len(ordinary_direct) != 1:
                 choices = ", ".join(
                     f"{transition.edge_id} ({transition.actuation or 'actuated'})"
-                    for transition in direct
+                    for transition in ordinary_direct
                 )
                 raise ValueError(
                     f"Transition {start_pose} → {target} is ambiguous: {choices}. "
                     "Assign a pressure profile to exactly one of these parallel edges."
                 )
-            return direct
+            return ordinary_direct
+        multi_direct = tuple(
+            transition
+            for transition in available
+            if transition.from_pose == start_pose
+            and transition.to_pose == target
+            and transition.transition_kind == "multi_reorientation"
+        )
+        if multi_direct:
+            if len(multi_direct) != 1:
+                choices = ", ".join(transition.edge_id for transition in multi_direct)
+                raise ValueError(
+                    f"Multi-reorientation {start_pose} → {target} is ambiguous: {choices}. "
+                    "Assign a pressure profile to exactly one option."
+                )
+            return multi_direct
         if max_transitions == 1:
             raise ValueError(f"No transition {start_pose} → {target} is configured")
-        paths = tuple(
-            (first, second)
-            for first in available
-            if first.from_pose == start_pose and first.to_pose not in {start_pose, target}
-            for second in available
-            if second.from_pose == first.to_pose and second.to_pose == target
+        ordinary = tuple(
+            transition
+            for transition in available
+            if transition.transition_kind != "multi_reorientation"
         )
-        if len(paths) != 1:
-            reason = "No" if not paths else "No unique"
+
+        def paths_of_length(length: int) -> tuple[tuple[TransitionSpec, ...], ...]:
+            found: list[tuple[TransitionSpec, ...]] = []
+
+            def walk(pose: int, visited: frozenset[int], path: tuple[TransitionSpec, ...]) -> None:
+                if len(path) == length:
+                    if pose == target:
+                        found.append(path)
+                    return
+                for transition in ordinary:
+                    if transition.from_pose != pose or transition.to_pose in visited:
+                        continue
+                    walk(
+                        transition.to_pose,
+                        visited | {transition.to_pose},
+                        path + (transition,),
+                    )
+
+            walk(start_pose, frozenset({start_pose}), ())
+            return tuple(found)
+
+        for length in range(2, max_transitions + 1):
+            paths = paths_of_length(length)
+            if not paths:
+                continue
+            if len(paths) == 1:
+                return paths[0]
             raise ValueError(
-                f"{reason} path {start_pose} → … → {target} with at most one "
-                "intermediate pose is configured"
+                f"No unique path ({length} transitions) {start_pose} → … → {target} is configured"
             )
-        return paths[0]
+        raise ValueError(
+            f"No path {start_pose} → … → {target} with at most {max_transitions} "
+            "transitions is configured"
+        )

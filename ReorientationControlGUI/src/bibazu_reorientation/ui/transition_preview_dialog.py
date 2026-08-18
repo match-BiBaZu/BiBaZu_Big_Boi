@@ -81,6 +81,18 @@ class TransitionPreviewDialog(QDialog):
         metadata.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(metadata)
 
+        if self.transition.transition_kind == "multi_reorientation":
+            via = " → ".join(map(str, self.transition.via_pose_ids))
+            category = QLabel(
+                f"<b>Multiple reorientation ({self.transition.flip_count} flips)</b> "
+                f"via pose(s) {via}. Experimental and non-preferred; use this as one "
+                "direct calibrated profile when it is more robust than composing the "
+                "individual flip profiles."
+            )
+            category.setWordWrap(True)
+            category.setStyleSheet("background:#fff3cd;color:#664d03;padding:7px;")
+            layout.addWidget(category)
+
         endpoints = QHBoxLayout()
         self.start_image = self._image_label()
         self.end_image = self._image_label()

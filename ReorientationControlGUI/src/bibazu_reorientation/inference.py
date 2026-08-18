@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -19,11 +20,16 @@ from bibazu_reorientation.models import (
     PoseObservation,
 )
 
+POSE_CUTOFF_RATIO = 0.10
+DEFAULT_NMS_IOU = 0.90
+DEFAULT_DUPLICATE_CENTER_DISTANCE = 0.25
+
 
 @dataclass(slots=True, frozen=True)
 class InferenceConfig:
     model_path: Path
     confidence: float = 0.5
+    nms_iou: float = DEFAULT_NMS_IOU
     image_size: int = 640
     max_fps: float = 5.0
     device: str = "auto"
@@ -36,6 +42,8 @@ class InferenceConfig:
             raise ValueError(f"YOLO model not found: {model_path}")
         if not 0.01 <= self.confidence <= 1.0:
             raise ValueError("Confidence must be between 0.01 and 1.00")
+        if not 0.01 <= self.nms_iou <= 1.0:
+            raise ValueError("NMS IoU must be between 0.01 and 1.00")
         if self.image_size < 32 or self.image_size % 32:
             raise ValueError("Image size must be a multiple of 32")
         if not 0.2 <= self.max_fps <= 60:
@@ -90,13 +98,32 @@ def _overlap_ratios(first: Detection, second: Detection) -> tuple[float, float]:
     )
 
 
+def _normalized_center_distance(first: Detection, second: Detection) -> float:
+    """Return centroid separation relative to the smaller polygon's area scale."""
+    first_polygon = np.asarray(first.corners, dtype=np.float32).reshape(-1, 2)
+    second_polygon = np.asarray(second.corners, dtype=np.float32).reshape(-1, 2)
+    first_area = abs(float(cv2.contourArea(first_polygon)))
+    second_area = abs(float(cv2.contourArea(second_polygon)))
+    if first_area <= 0.0 or second_area <= 0.0:
+        return float("inf")
+    first_center = first_polygon.mean(axis=0)
+    second_center = second_polygon.mean(axis=0)
+    distance = float(np.linalg.norm(first_center - second_center))
+    return distance / max(1e-9, math.sqrt(min(first_area, second_area)))
+
+
 def suppress_duplicate_detections(
     detections: tuple[Detection, ...],
     *,
     iou_threshold: float = 0.75,
     containment_threshold: float = 0.90,
+    center_distance_threshold: float = DEFAULT_DUPLICATE_CENTER_DISTANCE,
 ) -> tuple[Detection, ...]:
-    """Apply conservative class-agnostic suppression to physical duplicates."""
+    """Suppress near-coincident duplicates without rejecting neighbouring parts.
+
+    Shadow-inflated OBBs from separate long workpieces may overlap heavily. Treat
+    detections as duplicates only when their polygon centres also nearly coincide.
+    """
     if len(detections) < 2:
         return detections
     selected_indices: list[int] = []
@@ -110,7 +137,13 @@ def suppress_duplicate_detections(
         duplicate = False
         for selected_index in selected_indices:
             iou, containment = _overlap_ratios(candidate, detections[selected_index])
-            if iou >= iou_threshold or containment >= containment_threshold:
+            centers_coincide = (
+                _normalized_center_distance(candidate, detections[selected_index])
+                <= center_distance_threshold
+            )
+            if centers_coincide and (
+                iou >= iou_threshold or containment >= containment_threshold
+            ):
                 duplicate = True
                 break
         if not duplicate:
@@ -196,6 +229,17 @@ def fully_visible(detection: Detection, width: int, height: int, margin: float =
     )
 
 
+def before_pose_cutoff(
+    detection: Detection,
+    width: int,
+    *,
+    cutoff_ratio: float = POSE_CUTOFF_RATIO,
+) -> bool:
+    """Return whether the whole detection remains right of the pose cutoff."""
+    cutoff_x = width * cutoff_ratio
+    return min(x for x, _y in detection.corners) > cutoff_x
+
+
 def overlay_labels(
     detection: Detection, class_to_pose: dict[int, int] | None = None
 ) -> tuple[str, str]:
@@ -212,8 +256,19 @@ def draw_overlay(
     class_to_pose: dict[int, int] | None = None,
 ) -> np.ndarray:
     annotated = np.ascontiguousarray(image).copy()
+    cutoff_x = round(annotated.shape[1] * POSE_CUTOFF_RATIO)
+    cv2.line(
+        annotated,
+        (cutoff_x, 0),
+        (cutoff_x, annotated.shape[0] - 1),
+        (250, 204, 21),
+        2,
+        cv2.LINE_AA,
+    )
     palette = ((34, 197, 94), (249, 115, 22))
     for detection in detections:
+        if not before_pose_cutoff(detection, annotated.shape[1]):
+            continue
         color = palette[detection.class_id % len(palette)]
         points = np.rint(np.asarray(detection.corners)).astype(np.int32)
         cv2.polylines(annotated, [points], True, color, 2, cv2.LINE_AA)
@@ -370,6 +425,7 @@ class InferenceWorker(QThread):
                 source=np.zeros((self._config.image_size, self._config.image_size, 3), np.uint8),
                 imgsz=self._config.image_size,
                 conf=self._config.confidence,
+                iou=self._config.nms_iou,
                 device=device,
                 verbose=False,
             )
@@ -395,6 +451,7 @@ class InferenceWorker(QThread):
                     source=bgr,
                     imgsz=self._config.image_size,
                     conf=self._config.confidence,
+                    iou=self._config.nms_iou,
                     device=device,
                     verbose=False,
                 )

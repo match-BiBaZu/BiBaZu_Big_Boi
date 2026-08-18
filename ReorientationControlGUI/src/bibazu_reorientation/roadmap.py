@@ -44,6 +44,9 @@ class RoadmapTransition:
     signed_angle_deg: float | None
     geometric_score: float | None
     experimental_status: str
+    flip_count: int = 1
+    via_pose_ids: tuple[int, ...] = ()
+    component_edge_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +77,19 @@ class PoseRoadmap:
         )
 
     @property
+    def multi_reorientation_transitions(self) -> tuple[RoadmapTransition, ...]:
+        """Synthetic direct-profile choices backed by 2/3-edge roadmap paths.
+
+        These do not modify the geometry roadmap. They let an operator calibrate one
+        empirical pressure profile for a complete multi-flip transfer.
+        """
+        return _build_multi_reorientation_transitions(self.profile_transitions)
+
+    @property
+    def calibratable_transitions(self) -> tuple[RoadmapTransition, ...]:
+        return self.profile_transitions + self.multi_reorientation_transitions
+
+    @property
     def informational_transitions(self) -> tuple[RoadmapTransition, ...]:
         profile_ids = {edge.edge_id for edge in self.profile_transitions}
         return tuple(edge for edge in self.transitions if edge.edge_id not in profile_ids)
@@ -85,7 +101,7 @@ class PoseRoadmap:
         raise KeyError(pose_id)
 
     def edge(self, edge_id: str) -> RoadmapTransition:
-        for edge in self.transitions:
+        for edge in self.calibratable_transitions + self.informational_transitions:
             if edge.edge_id == edge_id:
                 return edge
         raise KeyError(edge_id)
@@ -94,6 +110,68 @@ class PoseRoadmap:
 # Kept for source compatibility with the first target-pose dialog implementation.
 StableRoadmapPose = RoadmapPose
 StablePoseRoadmap = PoseRoadmap
+
+
+def _build_multi_reorientation_transitions(
+    transitions: tuple[RoadmapTransition, ...],
+) -> tuple[RoadmapTransition, ...]:
+    """Return deterministic simple paths of exactly two or three actuated flips."""
+    adjacency: dict[int, list[RoadmapTransition]] = {}
+    for edge in transitions:
+        adjacency.setdefault(edge.from_pose, []).append(edge)
+    for edges in adjacency.values():
+        edges.sort(key=lambda edge: (edge.to_pose, edge.edge_id))
+
+    candidates: list[tuple[tuple[int, ...], tuple[RoadmapTransition, ...]]] = []
+
+    def walk(
+        pose_ids: tuple[int, ...],
+        edges: tuple[RoadmapTransition, ...],
+    ) -> None:
+        if len(edges) in {2, 3}:
+            candidates.append((pose_ids, edges))
+        if len(edges) == 3:
+            return
+        for edge in adjacency.get(pose_ids[-1], []):
+            if edge.to_pose in pose_ids:
+                continue
+            walk(pose_ids + (edge.to_pose,), edges + (edge,))
+
+    for start in sorted(adjacency):
+        walk((start,), ())
+
+    candidates.sort(
+        key=lambda item: (
+            len(item[1]),
+            item[0],
+            tuple(edge.edge_id for edge in item[1]),
+        )
+    )
+    base_counts: dict[str, int] = {}
+    result: list[RoadmapTransition] = []
+    for pose_ids, edges in candidates:
+        flip_count = len(edges)
+        base_id = f"multi{flip_count}:" + "->".join(map(str, pose_ids))
+        option = base_counts.get(base_id, 0) + 1
+        base_counts[base_id] = option
+        edge_id = base_id if option == 1 else f"{base_id}:option{option}"
+        result.append(
+            RoadmapTransition(
+                edge_id=edge_id,
+                from_pose=pose_ids[0],
+                to_pose=pose_ids[-1],
+                directed=True,
+                transition_kind="multi_reorientation",
+                actuation=f"multiple_reorientation_{flip_count}",
+                signed_angle_deg=None,
+                geometric_score=None,
+                experimental_status="experimental_non_preferred",
+                flip_count=flip_count,
+                via_pose_ids=pose_ids[1:-1],
+                component_edge_ids=tuple(edge.edge_id for edge in edges),
+            )
+        )
+    return tuple(result)
 
 
 def _required_mapping(value: Any, label: str) -> dict[str, Any]:

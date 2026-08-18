@@ -5,7 +5,11 @@ from dataclasses import dataclass, field, replace
 import cv2
 import numpy as np
 
-from bibazu_reorientation.inference import fully_visible, suppress_duplicate_detections
+from bibazu_reorientation.inference import (
+    before_pose_cutoff,
+    fully_visible,
+    suppress_duplicate_detections,
+)
 from bibazu_reorientation.models import (
     Detection,
     InferenceFrame,
@@ -81,11 +85,14 @@ def snapshot_queue(
         center = _center(box)
         mapped_pose_id = class_to_pose.get(detection.class_id)
         visible = fully_visible(detection, width, height)
-        pose_id = mapped_pose_id if visible else None
+        before_cutoff = before_pose_cutoff(detection, width)
+        pose_id = mapped_pose_id if visible and before_cutoff else None
         if mapped_pose_id is None:
             reason = "snapshot_unmapped_class"
         elif not visible:
             reason = "snapshot_partially_visible"
+        elif not before_cutoff:
+            reason = "snapshot_past_pose_cutoff"
         else:
             reason = "snapshot_confirmed"
         observations = (

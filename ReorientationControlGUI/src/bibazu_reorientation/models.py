@@ -70,6 +70,9 @@ class TransitionSpec:
     signed_angle_deg: float | None = None
     geometric_score: float | None = None
     experimental_status: str = ""
+    flip_count: int = 1
+    via_pose_ids: tuple[int, ...] = ()
+    component_edge_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

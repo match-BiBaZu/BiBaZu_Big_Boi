@@ -29,6 +29,25 @@ def test_df1a_yaml_and_json_normalize_identically() -> None:
         "a4:35->24:free_y",
         "a15:60->9:free_z",
     ]
+    multi = {edge.edge_id: edge for edge in yaml_roadmap.multi_reorientation_transitions}
+    assert set(multi) == {
+        "multi2:9->35->24",
+        "multi2:24->60->9",
+        "multi2:35->24->60",
+        "multi2:60->9->35",
+        "multi3:9->35->24->60",
+        "multi3:24->60->9->35",
+        "multi3:35->24->60->9",
+        "multi3:60->9->35->24",
+    }
+    requested = multi["multi2:60->9->35"]
+    assert requested.transition_kind == "multi_reorientation"
+    assert requested.flip_count == 2
+    assert requested.via_pose_ids == (9,)
+    assert requested.component_edge_ids == (
+        "a15:60->9:free_z",
+        "a0:9->35:wall_main_neg_x",
+    )
     assert all(pose.thumbnail_png for pose in yaml_roadmap.poses)
     assert {
         (edge.edge_id, edge.from_pose, edge.to_pose, edge.transition_kind)
