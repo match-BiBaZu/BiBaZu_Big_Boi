@@ -184,10 +184,16 @@ class AdsThreadTests(unittest.TestCase):
             project,
         )
         self.assertIn("GuiSensorSpacing78Mm\t: REAL := 40.0;", main)
-        self.assertIn("IF LightBarrier7FallingEdge THEN", main)
-        self.assertIn("IF LightBarrier8FallingEdge THEN", main)
         self.assertIn(
-            "IF NOT GuiReorientationControlActive AND LightBarrier8FallingEdge "
+            "PairedFirstBarrierFalling[4] := LightBarrier7FallingEdge", main
+        )
+        self.assertIn(
+            "PairedSecondBarrierFalling[4] := LightBarrier8FallingEdge", main
+        )
+        self.assertIn("IF LightBarrierStable7 <> LastLightBarrier7 THEN", main)
+        self.assertIn("IF LightBarrierStable8 <> LastLightBarrier8 THEN", main)
+        self.assertIn(
+            "IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[4] "
             "AND Array4Active",
             main,
         )
@@ -500,6 +506,77 @@ class AdsThreadTests(unittest.TestCase):
         )
         controller.shutdown()
 
+    def test_force_response_delay_write_batches_all_arrays(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        writes = []
+        controller.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        controller.set_all_force_response_delays(
+            [16.0, 17.0, 18.0, 19.0],
+            [20.0, 21.0, 22.0, 23.0],
+        )
+
+        values, context = writes[0]
+        self.assertEqual(context, "force_response_delays_all_arrays")
+        self.assertEqual(len(values), 8)
+        self.assertEqual(values["MAIN.GuiForceSingleNozzleResponseDelayMs1"], 16.0)
+        self.assertEqual(values["MAIN.GuiForceResponseDelayMs4"], 23.0)
+        self.assertEqual(
+            controller.force_single_nozzle_response_delays_ms,
+            [16.0, 17.0, 18.0, 19.0],
+        )
+        self.assertEqual(
+            controller.force_response_delays_ms,
+            [20.0, 21.0, 22.0, 23.0],
+        )
+        controller.shutdown()
+
+    def test_force_delay_settings_support_all_arrays_and_15_ms_reset(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        controller.force_single_nozzle_response_delays_ms = [16.0, 17.0, 18.0, 19.0]
+        controller.force_response_delays_ms = [20.0, 21.0, 22.0, 23.0]
+        writes = []
+        controller.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+        dialog = gui.ForceDelaySettingsDialog(
+            controller,
+            20,
+            [False, True, False, True, False, True, False, True],
+        )
+
+        self.assertEqual(
+            [control.value() for control in dialog.single_nozzle_inputs],
+            [16.0, 17.0, 18.0, 19.0],
+        )
+        self.assertEqual(
+            [control.value() for control in dialog.four_nozzle_inputs],
+            [20.0, 21.0, 22.0, 23.0],
+        )
+        self.assertEqual(
+            [label.text() for label in dialog.trigger_debounce_labels],
+            ["Enabled (20 ms)"] * 4,
+        )
+        dialog._restore_defaults()
+        self.assertEqual(
+            [control.value() for control in dialog.single_nozzle_inputs],
+            [15.0] * 4,
+        )
+        self.assertEqual(
+            [control.value() for control in dialog.four_nozzle_inputs],
+            [15.0] * 4,
+        )
+        dialog._apply()
+
+        self.assertEqual(writes[0][1], "force_response_delays_all_arrays")
+        self.assertEqual(len(writes[0][0]), 8)
+        dialog.close()
+        controller.shutdown()
+
     def test_force_response_delay_interpolates_nozzle_count(self):
         self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 1), 34.0)
         self.assertAlmostEqual(
@@ -598,13 +675,17 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 84)
+        self.assertEqual(len(plc.read_calls[0]), 85)
+        self.assertIn("MAIN.LightBarrierEventClockMs", plc.read_calls[0])
         self.assertEqual(snapshot["light_barriers"], [False] * 8)
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 8)
         self.assertEqual(snapshot["light_barrier_inverted"], [False] * 8)
         self.assertEqual(snapshot["light_barrier_debounce_enabled"], [False] * 8)
         self.assertEqual(snapshot["light_barrier_event_counts"], [0] * 8)
         self.assertEqual(snapshot["light_barrier_event_times_ms"], [0] * 8)
+        self.assertEqual(snapshot["plc_event_clock_ms"], 0)
+        self.assertGreater(snapshot["sampled_monotonic_ns"], 0)
+        self.assertGreaterEqual(snapshot["ads_roundtrip_ns"], 0)
         self.assertEqual(snapshot["debounce_ms"], 0)
 
     def test_barrier_calibration_start_is_one_safe_batch(self):
@@ -1302,6 +1383,79 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertEqual(window.consistency_table.rowCount(), 1)
         self.assertEqual(window.consistency_table.item(0, 10).text(), "OK")
         self.assertIn("1 parts, 0 flagged", window.consistency_summary_label.text())
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_is_the_fourth_calibration_tab(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+
+        self.assertEqual(window.calibration_tabs.count(), 4)
+        self.assertEqual(window.calibration_tabs.tabText(3), "Pressure Delay")
+        self.assertFalse(window.pressure_delay_tab.record_button.isEnabled())
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_uses_the_selected_falling_barrier_edge(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        captured = []
+        tab = window.pressure_delay_tab
+        tab.session = SimpleNamespace(
+            light_barrier=2,
+            event_host_ns=None,
+            post_trigger_ms=200,
+            set_trigger=lambda *values: captured.append(values),
+        )
+        tab.trigger_baseline_count = 10
+        base_status = {
+            "light_barriers": [False] * 8,
+            "light_barrier_event_counts": [0, 11, 0, 0, 0, 0, 0, 0],
+            "light_barrier_event_times_ms": [0, 1_000, 0, 0, 0, 0, 0, 0],
+            "sampled_monotonic_ns": 5_000_000_000,
+            "plc_event_clock_ms": 1_010,
+            "ads_roundtrip_ns": 2_000_000,
+        }
+        rising_status = dict(base_status)
+        rising_status["light_barriers"] = [False, True, False, False, False, False, False, False]
+
+        tab.process_setup_status(rising_status)
+        self.assertEqual(captured, [])
+        self.assertEqual(tab.trigger_baseline_count, 11)
+
+        falling_status = dict(base_status)
+        falling_status["light_barrier_event_counts"] = [0, 12, 0, 0, 0, 0, 0, 0]
+        tab.process_setup_status(falling_status)
+
+        self.assertEqual(captured[0][0:2], (12, 1_000))
+        self.assertEqual(captured[0][2], 4_990_000_000)
+        tab.session = None
+        window.ads.connected = False
+        window.close()
+
+    def test_consistency_tab_starts_and_stops_conveyor_at_selected_speed(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        window.ads.connected = True
+        window.connected = True
+        window.have_setup_status = True
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+        window.consistency_conveyor_speed.setValue(123.4)
+
+        window._start_consistency_conveyor()
+        window._stop_consistency_conveyor()
+
+        start_values, start_context = writes[0]
+        self.assertEqual(start_context, "velocity_check_start")
+        self.assertEqual(start_values["MAIN.GuiConveyorSpeedMmPerSec"], 123.4)
+        self.assertTrue(start_values["MAIN.GuiConveyorEnabled"])
+        self.assertTrue(start_values["MAIN.GuiVelocityCheckMode"])
+        self.assertEqual(writes[1][1], "setup_stop")
+        self.assertFalse(writes[1][0]["MAIN.GuiConveyorEnabled"])
+        self.assertEqual(window.consistency_conveyor_state_label.text(), "Stopped")
         window.ads.connected = False
         window.close()
 

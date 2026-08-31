@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 )
 from read_ur_tcp_pose import read_tcp_pose_from_connection
 from plc_control_lease import PlcControlLease
+from high_speed_calibration import PressureDelayTab
 
 from PressureControlGUI import (
     ADS_TIMEOUT_MS,
@@ -630,6 +631,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.ur_monitor_pending_edges = {False: None, True: None}
         self.ur_monitor_samples = []
         self.consistency_monitor_active = False
+        self.consistency_conveyor_running = False
         self.consistency_collector = None
         self.consistency_samples = []
         self.consistency_session_spacings = None
@@ -932,6 +934,21 @@ class ConveyorSetupWindow(QMainWindow):
         )
         self.consistency_clear_button = QPushButton("Clear Table")
         self.consistency_plot_button = QPushButton("Open Speed Curves")
+        self.consistency_conveyor_speed = QDoubleSpinBox()
+        self.consistency_conveyor_speed.setRange(0.1, 1000.0)
+        self.consistency_conveyor_speed.setDecimals(2)
+        self.consistency_conveyor_speed.setSingleStep(10.0)
+        self.consistency_conveyor_speed.setSuffix(" mm/s")
+        self.consistency_conveyor_speed.setValue(100.0)
+        self.consistency_conveyor_start_button = QPushButton("Start Conveyor")
+        self.consistency_conveyor_start_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self.consistency_conveyor_stop_button = QPushButton("Stop Conveyor")
+        self.consistency_conveyor_stop_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
+        self.consistency_conveyor_state_label = QLabel("Stopped")
         self.consistency_state_label = QLabel("Ready")
         controls_layout.addWidget(QLabel("Recorded edge"), 0, 0)
         controls_layout.addWidget(self.consistency_edge, 0, 1)
@@ -941,8 +958,16 @@ class ConveyorSetupWindow(QMainWindow):
         controls_layout.addWidget(self.consistency_stop_button, 1, 1)
         controls_layout.addWidget(self.consistency_clear_button, 1, 2)
         controls_layout.addWidget(self.consistency_plot_button, 1, 3)
-        controls_layout.addWidget(QLabel("State"), 2, 0)
-        controls_layout.addWidget(self.consistency_state_label, 2, 1, 1, 3)
+        controls_layout.addWidget(QLabel("Conveyor speed"), 2, 0)
+        controls_layout.addWidget(self.consistency_conveyor_speed, 2, 1)
+        controls_layout.addWidget(self.consistency_conveyor_start_button, 2, 2)
+        controls_layout.addWidget(self.consistency_conveyor_stop_button, 2, 3)
+        controls_layout.addWidget(QLabel("Conveyor"), 3, 0)
+        controls_layout.addWidget(
+            self.consistency_conveyor_state_label, 3, 1, 1, 3
+        )
+        controls_layout.addWidget(QLabel("Logging"), 4, 0)
+        controls_layout.addWidget(self.consistency_state_label, 4, 1, 1, 3)
         controls_layout.setColumnStretch(3, 1)
         consistency_layout.addWidget(controls_group)
 
@@ -966,6 +991,9 @@ class ConveyorSetupWindow(QMainWindow):
         self.consistency_summary_label = QLabel("No completed parts")
         consistency_layout.addWidget(self.consistency_summary_label)
         self.calibration_tabs.addTab(consistency_tab, "Consistency")
+
+        self.pressure_delay_tab = PressureDelayTab(self)
+        self.calibration_tabs.addTab(self.pressure_delay_tab, "Pressure Delay")
         layout.addWidget(self.calibration_tabs)
 
         spacing_group = QGroupBox("Velocity Sensor Spacings")
@@ -988,6 +1016,9 @@ class ConveyorSetupWindow(QMainWindow):
         self.ads.setup_status_ready.connect(self._on_setup_status)
         self.ads.operation_failed.connect(self._on_ads_error)
         self.ads.write_finished.connect(self._on_write_finished)
+        self.pressure_delay_tab.status_message.connect(
+            self.statusBar().showMessage
+        )
         self.calibrate_button.clicked.connect(self._open_conveyor_calibration)
         self.jog_button.clicked.connect(self._open_conveyor_jogging)
         self.plausibility_button.clicked.connect(self._open_plausibility_check)
@@ -1015,6 +1046,12 @@ class ConveyorSetupWindow(QMainWindow):
         self.consistency_reload_distances_button.clicked.connect(
             self._reload_consistency_distances
         )
+        self.consistency_conveyor_start_button.clicked.connect(
+            self._start_consistency_conveyor
+        )
+        self.consistency_conveyor_stop_button.clicked.connect(
+            self._stop_consistency_conveyor
+        )
         self.ur_first_sensor.currentIndexChanged.connect(self._update_ur_controls)
         self.ur_second_sensor.currentIndexChanged.connect(self._update_ur_controls)
         for index, checkbox in enumerate(self.barrier_inverted, start=1):
@@ -1034,6 +1071,8 @@ class ConveyorSetupWindow(QMainWindow):
     def _on_calibration_tab_changed(self, index: int) -> None:
         if index == 1:
             self._start_ur_worker()
+        elif index == 3:
+            self.pressure_delay_tab.activate()
 
     def _start_ur_worker(self) -> None:
         if hasattr(self, "ur_thread") and self.ur_thread.isRunning():
@@ -1414,6 +1453,24 @@ class ConveyorSetupWindow(QMainWindow):
         )
         self._update_consistency_controls()
 
+    def _start_consistency_conveyor(self) -> None:
+        if not self.connected or not self.have_setup_status:
+            return
+        speed = self.consistency_conveyor_speed.value()
+        self.ads.start_velocity_check(speed)
+        self.consistency_conveyor_running = True
+        self.consistency_conveyor_state_label.setText(
+            f"Running at {speed:.2f} mm/s (safe setup mode)"
+        )
+        self._update_consistency_controls()
+
+    def _stop_consistency_conveyor(self) -> None:
+        if self.connected:
+            self.ads.stop_setup_motion()
+        self.consistency_conveyor_running = False
+        self.consistency_conveyor_state_label.setText("Stopped")
+        self._update_consistency_controls()
+
     def _stop_consistency_monitor(self, message: str = "Stopped") -> None:
         self.consistency_monitor_active = False
         self.consistency_collector = None
@@ -1552,6 +1609,13 @@ class ConveyorSetupWindow(QMainWindow):
             ready and not self.consistency_monitor_active
         )
         self.consistency_stop_button.setEnabled(self.consistency_monitor_active)
+        self.consistency_conveyor_speed.setEnabled(
+            ready and not self.consistency_conveyor_running
+        )
+        self.consistency_conveyor_start_button.setEnabled(
+            ready and not self.consistency_conveyor_running
+        )
+        self.consistency_conveyor_stop_button.setEnabled(self.connected)
         settings_enabled = not self.consistency_monitor_active
         self.consistency_edge.setEnabled(settings_enabled)
         self.consistency_tolerance.setEnabled(settings_enabled)
@@ -1579,6 +1643,9 @@ class ConveyorSetupWindow(QMainWindow):
         self.ur_monitor_stop_button.setEnabled(False)
         self.consistency_start_button.setEnabled(False)
         self.consistency_stop_button.setEnabled(False)
+        self.consistency_conveyor_speed.setEnabled(False)
+        self.consistency_conveyor_start_button.setEnabled(False)
+        self.consistency_conveyor_stop_button.setEnabled(False)
         self.consistency_reload_distances_button.setEnabled(False)
         self.consistency_clear_button.setEnabled(False)
         self.consistency_plot_button.setEnabled(False)
@@ -1606,6 +1673,7 @@ class ConveyorSetupWindow(QMainWindow):
     @pyqtSlot(bool, str)
     def _on_connection_changed(self, connected: bool, message: str) -> None:
         self.connected = connected
+        self.pressure_delay_tab.set_ads_connected(connected)
         self.have_setup_status = False
         self.debounce_initialized = False
         self._set_controls_enabled(connected)
@@ -1614,6 +1682,8 @@ class ConveyorSetupWindow(QMainWindow):
         else:
             self.pending_measurement = None
             self.ur_capture_active = False
+            self.consistency_conveyor_running = False
+            self.consistency_conveyor_state_label.setText("Stopped: ADS connection lost")
             if self.ur_monitor_active:
                 self._stop_ur_speed_monitor("Stopped: ADS connection lost")
             if self.consistency_monitor_active:
@@ -1636,6 +1706,7 @@ class ConveyorSetupWindow(QMainWindow):
     def _on_setup_status(self, status: dict) -> None:
         self.have_setup_status = True
         self.latest_status = status
+        self.pressure_delay_tab.process_setup_status(status)
         if not self.debounce_initialized:
             blockers = [
                 QSignalBlocker(self.debounce_time),
@@ -1869,6 +1940,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.statusBar().showMessage(f"{context}: {message}")
 
     def closeEvent(self, event) -> None:
+        self.pressure_delay_tab.shutdown()
         if hasattr(self, "ur_thread") and self.ur_thread.isRunning():
             self.ur_stop_requested.emit()
             if not self.ur_thread.wait(1500):

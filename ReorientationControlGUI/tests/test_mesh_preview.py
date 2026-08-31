@@ -92,18 +92,31 @@ def test_loaded_triangles_can_be_reused_for_animation(qtbot, tmp_path: Path) -> 
     assert not second.isNull()
 
 
-def test_pose_display_uses_front_view_axis_convention() -> None:
+def test_pose_display_uses_requested_z_up_axis_arrangement() -> None:
     axes = np.eye(3)
 
     transformed = axes @ _display_rotation_matrix().T
 
-    # Camera X is screen-right, camera Y becomes screen-up after the renderer's
-    # vertical inversion, and positive camera depth points toward the viewer.
+    horizontal = 1.0 / np.sqrt(2.0)
+    vertical = 1.0 / np.sqrt(6.0)
+    depth = 1.0 / np.sqrt(3.0)
     assert np.allclose(
         transformed,
-        ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+        (
+            (-horizontal, -vertical, -depth),
+            (horizontal, -vertical, -depth),
+            (0.0, 2.0 * vertical, -depth),
+        ),
         atol=1e-12,
     )
+
+    # Qt screen Y increases downward: +X is therefore down-left/downhill,
+    # +Y down-right, and +Z vertically upward, matching the roadmap plots.
+    screen_directions = transformed[:, :2] * np.asarray((1.0, -1.0))
+    assert screen_directions[0, 0] < 0.0 and screen_directions[0, 1] > 0.0
+    assert screen_directions[1, 0] > 0.0 and screen_directions[1, 1] > 0.0
+    assert np.isclose(screen_directions[2, 0], 0.0)
+    assert screen_directions[2, 1] < 0.0
 
 
 def test_pose_preview_contains_xyz_coordinate_triad(qtbot, tmp_path: Path) -> None:

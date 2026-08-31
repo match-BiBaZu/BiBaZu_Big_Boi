@@ -965,6 +965,7 @@ class AdsWorker(QObject):
                 f"MAIN.LightBarrierLastEventTimeMs{index}"
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
+            "MAIN.LightBarrierEventClockMs",
             "MAIN.StepperInternalPosition",
             "MAIN.StepperPosReadyToExecute",
             "MAIN.StepperPosBusy",
@@ -1002,7 +1003,9 @@ class AdsWorker(QObject):
             "MAIN.EstimatedVelocityMmPerSec3",
             "MAIN.EstimatedVelocityMmPerSec4",
         ]
+        read_started_ns = time.perf_counter_ns()
         values = self.read_values(names)
+        read_finished_ns = time.perf_counter_ns()
         return {
             "light_barriers": [
                 bool(values[f"MAIN.LightBarrierStable{index}"])
@@ -1028,6 +1031,9 @@ class AdsWorker(QObject):
                 int(values[f"MAIN.LightBarrierLastEventTimeMs{index}"])
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
+            "plc_event_clock_ms": int(values["MAIN.LightBarrierEventClockMs"]),
+            "sampled_monotonic_ns": (read_started_ns + read_finished_ns) // 2,
+            "ads_roundtrip_ns": read_finished_ns - read_started_ns,
             "internal_position": int(values["MAIN.StepperInternalPosition"]),
             "ready_to_execute": bool(values["MAIN.StepperPosReadyToExecute"]),
             "drive_busy": bool(values["MAIN.StepperPosBusy"]),
@@ -1466,6 +1472,34 @@ class AdsController(QObject):
             },
             f"force_response_delays_array_{array_index}",
         )
+
+    def set_all_force_response_delays(
+        self, single_nozzle_ms: list[float], four_nozzle_ms: list[float]
+    ) -> None:
+        if (
+            len(single_nozzle_ms) != ARRAY_COUNT
+            or len(four_nozzle_ms) != ARRAY_COUNT
+        ):
+            raise ValueError("Force response delay lists must contain four values")
+        single_values = [
+            max(0.0, min(1000.0, float(value))) for value in single_nozzle_ms
+        ]
+        four_values = [
+            max(0.0, min(1000.0, float(value))) for value in four_nozzle_ms
+        ]
+        self.force_single_nozzle_response_delays_ms = single_values
+        self.force_response_delays_ms = four_values
+        values = {
+            f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}": single_values[index - 1]
+            for index in range(1, ARRAY_COUNT + 1)
+        }
+        values.update(
+            {
+                f"MAIN.GuiForceResponseDelayMs{index}": four_values[index - 1]
+                for index in range(1, ARRAY_COUNT + 1)
+            }
+        )
+        self.write_now(values, "force_response_delays_all_arrays")
 
     def start_barrier_calibration(
         self,
@@ -2284,6 +2318,139 @@ class ConveyorJogDialog(QDialog):
         super().closeEvent(event)
 
 
+class ForceDelaySettingsDialog(QDialog):
+    TRIGGER_BARRIERS = (2, 4, 6, 8)
+
+    def __init__(
+        self,
+        ads: AdsController,
+        debounce_ms: int,
+        debounce_enabled: list[bool],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.ads = ads
+        self.debounce_ms = int(debounce_ms)
+        self.debounce_enabled = list(debounce_enabled)
+        self.single_nozzle_inputs: list[QDoubleSpinBox] = []
+        self.four_nozzle_inputs: list[QDoubleSpinBox] = []
+        self.trigger_debounce_labels: list[QLabel] = []
+        self.setWindowTitle("Force Delay Settings")
+        self.setModal(True)
+        self.setMinimumWidth(700)
+        self._build_ui()
+
+    @staticmethod
+    def _delay_input(value: float) -> QDoubleSpinBox:
+        control = QDoubleSpinBox()
+        control.setRange(0.0, 1000.0)
+        control.setDecimals(1)
+        control.setSingleStep(0.1)
+        control.setSuffix(" ms")
+        control.setKeyboardTracking(False)
+        control.setValue(value)
+        return control
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        description = QLabel(
+            "Set the valve-to-force response compensation for each nozzle array. "
+            "The PLC uses the one-nozzle value for one active nozzle, the four-nozzle "
+            "value for four or more, and interpolates for two or three."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        table = QGridLayout()
+        table.setHorizontalSpacing(16)
+        table.setVerticalSpacing(8)
+        for column, title in enumerate(
+            (
+                "Array",
+                "Trigger",
+                "One nozzle",
+                "Four or more nozzles",
+                "Trigger debounce",
+            )
+        ):
+            label = QLabel(title)
+            label.setStyleSheet("font-weight: 600;")
+            table.addWidget(label, 0, column)
+
+        for array_index, barrier in enumerate(self.TRIGGER_BARRIERS, start=1):
+            single_input = self._delay_input(
+                self.ads.force_single_nozzle_response_delays_ms[array_index - 1]
+            )
+            four_input = self._delay_input(
+                self.ads.force_response_delays_ms[array_index - 1]
+            )
+            self.single_nozzle_inputs.append(single_input)
+            self.four_nozzle_inputs.append(four_input)
+            enabled = (
+                barrier <= len(self.debounce_enabled)
+                and self.debounce_enabled[barrier - 1]
+            )
+            debounce_text = f"Enabled ({self.debounce_ms} ms)" if enabled else "Disabled"
+            debounce_label = QLabel(debounce_text)
+            self.trigger_debounce_labels.append(debounce_label)
+            table.addWidget(QLabel(f"Array {array_index}"), array_index, 0)
+            table.addWidget(QLabel(f"LB{barrier}"), array_index, 1)
+            table.addWidget(single_input, array_index, 2)
+            table.addWidget(four_input, array_index, 3)
+            table.addWidget(debounce_label, array_index, 4)
+        layout.addLayout(table)
+
+        debounce_note = QLabel(
+            "Debouncing delays the accepted trigger edge by approximately the configured "
+            "debounce time. Keep that trigger delay separate from the valve-to-force values "
+            "shown here; changing debounce can shift the physical force position. If both "
+            "barriers in a velocity pair use the same debounce, most of the delay cancels "
+            "from the velocity measurement, but it does not cancel from the final trigger."
+        )
+        debounce_note.setWordWrap(True)
+        debounce_note.setStyleSheet("color: #9a6700;")
+        layout.addWidget(debounce_note)
+
+        self.status_label = QLabel("Values are loaded from the current PLC/profile state.")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        buttons = QHBoxLayout()
+        self.defaults_button = QPushButton("Reset Fields to 15 ms")
+        self.apply_button = QPushButton("Apply to PLC")
+        self.close_button = QPushButton("Close")
+        buttons.addWidget(self.defaults_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.apply_button)
+        buttons.addWidget(self.close_button)
+        layout.addLayout(buttons)
+
+        self.defaults_button.clicked.connect(self._restore_defaults)
+        self.apply_button.clicked.connect(self._apply)
+        self.close_button.clicked.connect(self.accept)
+
+    def _restore_defaults(self) -> None:
+        for control in (*self.single_nozzle_inputs, *self.four_nozzle_inputs):
+            control.setValue(15.0)
+        self.status_label.setText(
+            "All fields reset to 15.0 ms. Press Apply to PLC to write them."
+        )
+
+    def _apply(self) -> None:
+        single_values = [control.value() for control in self.single_nozzle_inputs]
+        four_values = [control.value() for control in self.four_nozzle_inputs]
+        self.ads.set_all_force_response_delays(single_values, four_values)
+        if self.ads.is_connected:
+            self.status_label.setText(
+                "Force response settings for Arrays 1-4 queued for the PLC."
+            )
+        else:
+            self.status_label.setText("ADS offline; values were not written to the PLC.")
+
+
 class ForceDelayDialog(QDialog):
     STATUS_TEXT = {
         0: "Disabled",
@@ -2939,9 +3106,9 @@ class PressureControlWindow(QMainWindow):
         self.calibrate_conveyor_button.setToolTip("Open the conveyor step calibration")
         self.jog_conveyor_button = QPushButton("Jog Conveyor")
         self.jog_conveyor_button.setToolTip("Move the conveyor by a calibrated distance")
-        self.measure_force_delay_button = QPushButton("Measure Force Delay")
-        self.measure_force_delay_button.setToolTip(
-            "Measure the time from a light barrier edge to a force-sensor peak"
+        self.force_delay_settings_button = QPushButton("Force Delay Settings")
+        self.force_delay_settings_button.setToolTip(
+            "Configure valve-to-force response compensation for all four nozzle arrays"
         )
         self.light_barrier_settings_button = QPushButton("Light Barrier Settings")
         self.light_barrier_settings_button.setToolTip(
@@ -2961,7 +3128,7 @@ class PressureControlWindow(QMainWindow):
         button_layout.addWidget(self.reconnect_button)
         button_layout.addWidget(self.calibrate_conveyor_button)
         button_layout.addWidget(self.jog_conveyor_button)
-        button_layout.addWidget(self.measure_force_delay_button)
+        button_layout.addWidget(self.force_delay_settings_button)
         button_layout.addWidget(self.light_barrier_settings_button)
         button_layout.addWidget(self.logging_status)
         button_layout.addStretch(1)
@@ -2983,7 +3150,7 @@ class PressureControlWindow(QMainWindow):
         self.reconnect_button.clicked.connect(self.reconnect)
         self.calibrate_conveyor_button.clicked.connect(self.open_conveyor_calibration)
         self.jog_conveyor_button.clicked.connect(self.open_conveyor_jogging)
-        self.measure_force_delay_button.clicked.connect(self.open_force_delay_measurement)
+        self.force_delay_settings_button.clicked.connect(self.open_force_delay_settings)
         self.load_roadmap_button.clicked.connect(self.load_pose_roadmap)
         self.load_button.clicked.connect(self.load_profile)
         self.save_button.clicked.connect(self.save_profile)
@@ -3461,13 +3628,18 @@ class PressureControlWindow(QMainWindow):
         dialog.exec()
         self.statusBar().showMessage("Conveyor jogging closed")
 
-    def open_force_delay_measurement(self) -> None:
+    def open_force_delay_settings(self) -> None:
         if not self.ads.is_connected:
-            self.statusBar().showMessage("Force delay measurement: ADS offline")
+            self.statusBar().showMessage("Force delay settings: ADS offline")
             return
-        dialog = ForceDelayDialog(self.ads, self)
+        dialog = ForceDelaySettingsDialog(
+            self.ads,
+            self.light_barrier_debounce.value(),
+            self.light_barrier_debounce_enabled,
+            self,
+        )
         dialog.exec()
-        self.statusBar().showMessage("Force delay measurement closed")
+        self.statusBar().showMessage("Force delay settings closed")
 
     @pyqtSlot(object)
     def apply_live_snapshot(self, snapshot: dict) -> None:

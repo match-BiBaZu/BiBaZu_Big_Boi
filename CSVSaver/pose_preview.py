@@ -80,11 +80,14 @@ def _quaternion_matrix(quaternion: tuple[float, float, float, float]) -> Matrix:
 
 
 def _view_matrix() -> Matrix:
-    """Front view: +X right, +Z up, and +Y out toward the viewer."""
+    """Roadmap view: +X down-left/downhill, +Y down-right, and +Z up."""
+    horizontal = 1.0 / math.sqrt(2.0)
+    vertical = 1.0 / math.sqrt(6.0)
+    depth = 1.0 / math.sqrt(3.0)
     return (
-        (1.0, 0.0, 0.0),
-        (0.0, 0.0, 1.0),
-        (0.0, 1.0, 0.0),
+        (-horizontal, horizontal, 0.0),
+        (-vertical, -vertical, 2.0 * vertical),
+        (-depth, -depth, -depth),
     )
 
 

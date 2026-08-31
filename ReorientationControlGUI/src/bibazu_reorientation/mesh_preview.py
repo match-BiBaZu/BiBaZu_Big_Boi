@@ -69,12 +69,15 @@ def _quaternion_matrix(
 
 
 def _display_rotation_matrix() -> np.ndarray:
-    """Front view: +X right, +Z up, and +Y out toward the viewer."""
+    """Roadmap view: +X down-left/downhill, +Y down-right, and +Z up."""
+    horizontal = 1.0 / np.sqrt(2.0)
+    vertical = 1.0 / np.sqrt(6.0)
+    depth = 1.0 / np.sqrt(3.0)
     return np.asarray(
         [
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 1.0, 0.0],
+            [-horizontal, horizontal, 0.0],
+            [-vertical, -vertical, 2.0 * vertical],
+            [-depth, -depth, -depth],
         ],
         dtype=np.float64,
     )
@@ -193,7 +196,7 @@ def render_triangles_preview(
         oriented = oriented @ _quaternion_matrix(quaternion_xyzw).T
 
     # Put every orientation back into the physical chute corner: floor z=0,
-    # wall y=0, and +Y points into the chute and toward the front-view camera.
+    # wall y=0, and +Y points into the chute.
     oriented_points = oriented.reshape(-1, 3)
     oriented = oriented + np.asarray(
         (0.0, -oriented_points[:, 1].min(), -oriented_points[:, 2].min())

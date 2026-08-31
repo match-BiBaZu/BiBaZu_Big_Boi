@@ -393,36 +393,33 @@ die eingestellte Pulsdauer eingeschaltet. Grenzen:
 Im Foerderband-Kalibriermodus oder Geschwindigkeits-Plausibilitaetsmodus sind
 alle 24 Ventilausgaenge zwangsweise aus und normale Arraytrigger deaktiviert.
 
-### 5.4 Kraftpeak-Delaymessung
+### 5.4 Kraftantwort-Einstellungen
 
-Der Dialog `Measure Force Delay` misst die Zeit zwischen einer ausgewaehlten,
-akzeptierten fallenden Flanke von LB2, LB4, LB6 oder LB8 und dem globalen Maximum des
-ausgewaehlten Kraftsignals innerhalb eines Messfensters.
+Der Hauptdialog bietet `Force Delay Settings` statt der frueheren
+Kraftpeak-Messung. Alle vier Arrays werden gleichzeitig dargestellt. Pro Array
+koennen die Kraftantwortzeiten fuer eine aktive Duese und fuer vier oder mehr
+aktive Duesen im Bereich `0..1000 ms` eingestellt werden. Zwei und drei aktive
+Duesen werden weiterhin linear interpoliert. `Reset Fields to 15 ms` setzt nur
+die Eingabefelder zurueck; `Apply to PLC` schreibt alle acht Werte gemeinsam in
+einem ADS-Batch. Die Werte werden ausserdem in Druckprofilen gespeichert und
+beim Profil-Laden wiederhergestellt.
 
-Aktuelle Anforderungen und Defaults:
+Der Dialog zeigt fuer jedes Array auch die zugehoerige Triggerlichtschranke und
+den aktuellen Debounce-Zustand. Debouncing verschiebt die akzeptierte Flanke um
+ungefaehr die konfigurierte Debounce-Zeit. Wenn beide Lichtschranken eines
+Geschwindigkeitspaars gleich entprellt werden, hebt sich der gemeinsame Anteil
+in der Laufzeitmessung weitgehend auf. Am zweiten Sensor bleibt die Verschiebung
+jedoch im Triggerzeitpunkt enthalten. Sie darf deshalb nicht in die reine
+Ventil-zu-Kraft-Antwortzeit eingerechnet werden. Eine Aenderung der Entprellung
+kann den raeumlichen Kraftwirkpunkt um ungefaehr
+`velocity_mm_s * debounce_ms / 1000` verschieben und erfordert eine erneute
+Pruefung des Offsets.
 
-- frei waehlbares Array als Metadatum
-- Lichtschranke 2, 4 oder 6
-- Kraftsensor 1 oder 2
-- Baseline: fortlaufender Mittelwert der letzten 50 SPS-Zyklen / 50 ms
-- Messfenster: `100..30000 ms`, Default `2000 ms`
-- Mindestanstieg ueber Baseline: Default `0.05` auf der 0-10-Skala
-- ein neuer Trigger waehrend `Busy` wird ignoriert
-- kein ausreichender Anstieg ergibt eine ungueltige Messung
-- Stop, Dialogschliessen oder ADS-Verlust deaktiviert nur die Messung und
-  veraendert weder Ventile noch Foerderband
-
-Die GUI zeigt letzte Messung, gueltige/ungueltige Anzahl, Mittelwert,
-Standardabweichung, Minimum, Maximum, Variationskoeffizient und eine
-Sitzungstabelle. `Reset Session` loescht nur die GUI-Statistik, nicht das CSV.
-
-Wichtige bekannte Grenze: Der Messstart ist die Lichtschrankenflanke, nicht die
-tatsaechliche steigende Flanke des Ventilausgangs. Wenn waehrend der Messung ein
-manueller oder geschwindigkeitsabhaengiger Ausloesedelay aktiv ist, enthaelt der
-gemessene LB-bis-Peak-Wert diesen Delay ebenfalls. Er darf dann nicht ungeprueft
-als reine pneumatische Ventil-/Kraftantwort kompensiert werden. Fuer eine reine
-Antwortzeit waere langfristig eine Messung `Ventilausgang EIN -> Kraftpeak`
-eindeutiger.
+Die PLC-Unterstuetzung fuer die fruehere LB-bis-Kraftpeak-Diagnose bleibt aus
+Kompatibilitaetsgruenden im Projekt, ist aber nicht mehr ueber den Hauptdialog
+erreichbar. Ihre bekannte Grenze bleibt bestehen: LB-bis-Peak enthaelt jeden
+manuellen, Offset- und Debounce-Delay. Eine reine Kraftantwort sollte als
+`Ventilausgang EIN -> Kraftpeak` bestimmt werden.
 
 ### 5.5 Foerderbandzustandsautomat
 
@@ -488,7 +485,7 @@ Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
   Delay, Pulsdauer, Offset, geschaetzter Geschwindigkeit und Offsetdelay
 - `Calibrate Conveyor`
 - `Jog Conveyor`
-- `Measure Force Delay`
+- `Force Delay Settings` fuer alle vier Arrays
 - Profil laden/speichern
 - `Load Pose Roadmap` zur Auswahl eines gerichteten Kalibrieruebergangs
 - `Write All Values`
@@ -558,6 +555,8 @@ den normalen Duesenbetrieb. Sie bietet:
   UR-TCP-Pose
 - Foerderband-Geschwindigkeitsplausibilitaet bei konstanter Bandfahrt
 - UR-Geschwindigkeitsplausibilitaet ueber mehrere Vorwaerts-/Rueckwaertspassagen
+- High-Speed-Aufnahme und manuelle LB-bis-Bewegung-Auswertung mit der zweiten
+  Baumer-USB-Kamera
 
 Fuer die UR-TCP-Pose wird `10.10.10.10:30002` gelesen. Die Verbindung hat einen
 kurzen Timeout und wird automatisch neu aufgebaut. Der UR-Plausibilitaetsmonitor
@@ -576,7 +575,42 @@ Empfohlenes Verfahren fuer Lichtschrankenabstaende:
 6. Ergebnis per `Apply Sensor Spacing` an die SPS schreiben und danach mit einem
    neuen Sollwert plausibilisieren.
 
-## 8.1 BiBaZu Reorientation Control
+### 8.1 Pressure-Delay-Aufnahme
+
+Der vierte Reiter `Pressure Delay` bindet die Baumer VCXU-02C mit Seriennummer
+`700005072151` ueber
+`C:\Program Files\Baumer Camera Explorer\bgapi2_usb.cti` an. Die Kamera liefert
+bei 640x480, BayerRG8 und 4000 us Belichtung am aktuellen Rechner ungefaehr
+247 FPS. Die Vorschau wird auf 30 FPS begrenzt; waehrend einer Aufnahme werden
+alle abgeholten Kameraframes an einen separaten JPEG-Writer uebergeben.
+
+`Record` speichert ab dem Tastendruck. Der aktuelle Ereigniszaehler der
+ausgewaehlten Lichtschranke bildet den Ausgangswert. Bei der ersten neuen
+akzeptierten fallenden SPS-Flanke wird der Trigger markiert und nach dem einstellbaren
+Nachlauf, standardmaessig 200 ms, automatisch gestoppt. `Stop` beendet jederzeit
+manuell. Der bestehende Pressure-/Conveyor-Ablauf loest den Druckimpuls aus; der
+Reiter schreibt keine SPS-Werte.
+
+Kamera und SPS werden ohne zusaetzliche Verdrahtung synchronisiert. Dazu werden
+der vorhandene 1-ms-Zaehler `MAIN.LightBarrierEventClockMs`, die im SPS-Zyklus
+gelatchte Ereigniszeit, die ADS-Roundtrip-Zeit und die Kamera-Nanosekundenzeit
+auf die Host-Monotonic-Uhr abgebildet. Das Ergebnis ist framegenau, aber keine
+elektrische Sub-Millisekunden-Synchronisation. Die geschaetzte Unsicherheit wird
+in der GUI und in den Metadaten ausgewiesen.
+
+Standardausgabe ist
+`Pictures\BiBaZu\PressureDelayCalibration\YYYYMMDD_HHMMSS_LB<n>`. Jede Session
+enthaelt JPEG-Einzelbilder, `frames.csv` und `session.json`. Der erste sichtbare
+Bewegungsframe wird im integrierten Viewer markiert; der berechnete
+LB-bis-Bewegung-Wert wird in der Session und in `calibration_results.csv`
+gespeichert. Er enthaelt Debounce, manuellen Delay und Offsetdelay und wird daher
+nicht automatisch als Kraftantwortzeit in die SPS geschrieben.
+
+Die Legacy-Umgebung benoetigt jetzt neben PyQt6 und pyads auch Harvester,
+GenICam, NumPy und OpenCV. Die reproduzierbaren Abhaengigkeiten stehen in der
+neuen `requirements.txt` im Repository-Stamm.
+
+## 8.2 BiBaZu Reorientation Control
 
 Startordner: `ReorientationControlGUI`
 
@@ -1192,7 +1226,7 @@ abgedeckt. Sie ersetzen keine Hardwareabnahme.
 7. Sensorabstaende mit mehreren UR-Passagen in beide Richtungen validieren.
 8. Geschwindigkeitsplausibilitaet zuerst bei konstanter, langsamer Bewegung und
    danach bei mehreren Sollgeschwindigkeiten pruefen.
-9. Force-Delay-Messung mit einzelnem Array und kontrolliertem Profil pruefen.
+9. Force-Delay-Einstellungen fuer alle vier Arrays und Profil-Roundtrip pruefen.
 10. Erst danach Druck, Pulsdauer, aktive Duesenzahl und Geschwindigkeit schrittweise
     erhoehen.
 11. Aktualisiertes `MAIN.TcPOU` bauen, aktivieren und online alle
@@ -1223,8 +1257,8 @@ abgedeckt. Sie ersetzen keine Hardwareabnahme.
   nutzt getrennt LB7-8 und den Trigger LB8.
 - Die Kraftantwortinterpolation endet derzeit bei vier aktiven Duesen; vier,
   fuenf und sechs verwenden denselben Endwert.
-- Die Force-Delay-Messung startet an der Lichtschranke und kann geplante
-  Ausloeseverzoegerungen enthalten.
+- Lichtschranken-Debouncing verschiebt den Arraytrigger; bei einer Aenderung der
+  Entprellung muss deshalb der raeumliche Offset erneut geprueft werden.
 - Sensorabstaende sind effektive Schaltpunktabstaende, nicht zwingend der mit
   einem Lineal gemessene Gehaeuseabstand.
 - Teachzustand, Objektfarbe, Einfallsrichtung, Stabgeometrie und Sensorhysterese
