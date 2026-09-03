@@ -1,5 +1,6 @@
 import csv
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,11 +9,15 @@ from high_speed_calibration import (
     LINE0_RISING_EVENT_ID,
     FramePacket,
     RecordingSession,
+    analyze_recording_movement,
+    build_pressure_delay_comparison,
     decode_baumer_usb_line_event,
     estimate_camera_event_timestamp_ns,
     estimate_plc_event_host_ns,
     estimate_timing_uncertainty_ms,
+    fastest_response_write_values,
     load_recording,
+    pressure_array_for_barrier,
     uint32_elapsed,
     update_movement_evaluation,
 )
@@ -23,6 +28,87 @@ HAS_IMAGE_DEPENDENCIES = bool(
 
 
 class TimingTests(unittest.TestCase):
+    def test_pressure_delay_comparison_groups_trials_and_fits_linear_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directories = []
+            for index, (pressure, delay) in enumerate(
+                [
+                    (3000, 9.0),
+                    (3000, 10.0),
+                    (3000, 10.0),
+                    (3000, 11.0),
+                    (4500, 8.5),
+                    (4500, 8.5),
+                    (4500, 8.5),
+                    (6000, 6.0),
+                    (6000, 7.0),
+                    (6000, 7.0),
+                    (6000, 8.0),
+                ]
+            ):
+                directory = root / f"session_{index}"
+                directory.mkdir()
+                (directory / "session.json").write_text(
+                    json.dumps(
+                        {
+                            "session_id": f"session_{index}",
+                            "light_barrier": 4,
+                            "plc_measurement_setup": {
+                                "pressure_mbar": pressure
+                            },
+                            "evaluation": {"delay_ms": delay},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                directories.append(directory)
+            unmarked = root / "unmarked"
+            unmarked.mkdir()
+            (unmarked / "session.json").write_text(
+                json.dumps(
+                    {
+                        "light_barrier": 4,
+                        "plc_measurement_setup": {"pressure_mbar": 3000},
+                        "evaluation": {"delay_ms": None},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            directories.append(unmarked)
+
+            comparison = build_pressure_delay_comparison(directories)
+
+            self.assertEqual(comparison["light_barrier"], 4)
+            self.assertEqual(len(comparison["trials"]), 11)
+            self.assertEqual(len(comparison["groups"]), 3)
+            self.assertEqual(len(comparison["skipped"]), 1)
+            self.assertAlmostEqual(comparison["groups"][0]["mean_delay_ms"], 10.0)
+            self.assertIsNotNone(
+                comparison["groups"][0]["standard_deviation_ms"]
+            )
+            self.assertIsNone(
+                comparison["groups"][1]["standard_deviation_ms"]
+            )
+            self.assertAlmostEqual(
+                comparison["regression"]["slope_ms_per_bar"], -1.0
+            )
+            self.assertAlmostEqual(comparison["regression"]["intercept_ms"], 13.0)
+
+    def test_fastest_response_values_target_paired_array_and_selected_barrier(self):
+        self.assertEqual(pressure_array_for_barrier(4), 2)
+        self.assertEqual(
+            fastest_response_write_values(4, 2750),
+            {
+                "MAIN.GuiPressureMbar2": 2750,
+                "MAIN.GuiDelayMs2": 0,
+                "MAIN.GuiOffsetMm2": 0.0,
+                "MAIN.GuiForceResponseDelayMs2": 0.0,
+                "MAIN.GuiForceSingleNozzleResponseDelayMs2": 0.0,
+                "MAIN.GuiLightBarrierDebounceEnabled4": False,
+            },
+        )
+
     def test_baumer_usb_line_event_decodes_event_id_and_timestamp(self):
         timestamp = 1_287_298_020_290
         payload = (
@@ -90,6 +176,37 @@ class RecordingWriterTests(unittest.TestCase):
             wall_time_ns=1_800_000_000_000_000_000 + index * 4_000_000,
         )
 
+    def test_automatic_analysis_finds_first_persistent_movement_frame(self):
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            rng = np.random.default_rng(17)
+            texture = rng.integers(30, 225, (45, 80), dtype=np.uint8)
+            frames = []
+            for index in range(24):
+                image = np.full((90, 140), 215, dtype=np.uint8)
+                shift_y = 0 if index < 14 else -(index - 13)
+                top = 22 + shift_y
+                image[top : top + 45, 30:110] = texture
+                filename = f"frame_{index:06d}.jpg"
+                self.assertTrue(cv2.imwrite(str(directory / filename), image))
+                frames.append(
+                    {
+                        "filename": filename,
+                        "frame_id": str(index),
+                        "relative_to_light_barrier_ms": f"{index - 10:.3f}",
+                    }
+                )
+
+            result = analyze_recording_movement(directory, frames)
+
+            self.assertEqual(result["frame_index"], 14)
+            self.assertAlmostEqual(result["relative_to_light_barrier_ms"], 4.0)
+            self.assertEqual(result["previous_frame_index"], 13)
+            self.assertLess(result["threshold_px"], 1.0)
+
     def test_writer_creates_images_metadata_and_upserts_movement_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -98,6 +215,12 @@ class RecordingWriterTests(unittest.TestCase):
                 light_barrier=2,
                 post_trigger_ms=200,
                 camera_info={"model": "VCXU-02C", "serial": "700005072151"},
+                measurement_settings={
+                    "fastest_response_mode": True,
+                    "array_index": 1,
+                    "pressure_mbar": 2750,
+                    "pulse_duration_ms": 75,
+                },
             )
             session.set_trigger(
                 event_count=8,
@@ -111,9 +234,14 @@ class RecordingWriterTests(unittest.TestCase):
             self.assertTrue(session.wait())
 
             document, frames = load_recording(session.directory)
+            self.assertRegex(
+                session.directory.name,
+                r"^\d{8}_\d{6}_LB2_2750mbar(?:_\d{2})?$",
+            )
             self.assertEqual(document["frame_count"], 6)
             self.assertTrue(document["recording_complete"])
             self.assertTrue(document["trigger"]["detected"])
+            self.assertEqual(document["plc_measurement_setup"]["pressure_mbar"], 2750)
             self.assertEqual(len(frames), 6)
             self.assertTrue((session.directory / "frame_000005.jpg").is_file())
             self.assertAlmostEqual(
@@ -121,15 +249,33 @@ class RecordingWriterTests(unittest.TestCase):
             )
 
             first = update_movement_evaluation(session.directory, 4)
-            second = update_movement_evaluation(session.directory, 5)
+            second = update_movement_evaluation(
+                session.directory,
+                5,
+                method="automatic_optical_flow",
+                analysis_details={"threshold_px": 0.2},
+            )
             self.assertAlmostEqual(first["evaluation"]["delay_ms"], 8.0)
             self.assertAlmostEqual(second["evaluation"]["delay_ms"], 12.0)
+            self.assertEqual(
+                second["evaluation"]["method"], "automatic_optical_flow"
+            )
+            self.assertEqual(
+                second["evaluation"]["automatic_analysis"]["threshold_px"],
+                0.2,
+            )
             with (root / "calibration_results.csv").open(
                 newline="", encoding="utf-8"
             ) as handle:
                 results = list(csv.DictReader(handle))
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["session_id"], session.session_id)
+            self.assertEqual(results[0]["pressure_mbar"], "2750")
+            self.assertEqual(results[0]["pulse_duration_ms"], "75")
+            self.assertEqual(
+                results[0]["evaluation_method"], "automatic_optical_flow"
+            )
+            self.assertEqual(results[0]["fastest_response_mode"], "True")
 
     def test_frame_id_gap_marks_session_incomplete(self):
         with tempfile.TemporaryDirectory() as temporary:

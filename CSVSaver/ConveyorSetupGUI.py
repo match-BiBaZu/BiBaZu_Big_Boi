@@ -992,7 +992,7 @@ class ConveyorSetupWindow(QMainWindow):
         consistency_layout.addWidget(self.consistency_summary_label)
         self.calibration_tabs.addTab(consistency_tab, "Consistency")
 
-        self.pressure_delay_tab = PressureDelayTab(self)
+        self.pressure_delay_tab = PressureDelayTab(self, ads_controller=self.ads)
         self.calibration_tabs.addTab(self.pressure_delay_tab, "Pressure Delay")
         layout.addWidget(self.calibration_tabs)
 
