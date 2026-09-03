@@ -39,6 +39,8 @@ PREVIEW_INTERVAL_SECONDS = 1.0 / 30.0
 RECORDING_QUEUE_CAPACITY = 512
 JPEG_QUALITY = 95
 UINT32_MASK = 0xFFFFFFFF
+LINE0_RISING_EVENT_ID = 0x8007
+HARDWARE_TRIGGER_UNCERTAINTY_MS = 0.5
 
 FRAME_COLUMNS = (
     "index",
@@ -181,6 +183,25 @@ def _node_writable(node: Any) -> bool:
         return str(getattr(node, "access_mode", "")).upper() in {"RW", "WO", "4"}
 
 
+def decode_baumer_usb_line_event(
+    payload: bytes, expected_event_id: int = LINE0_RISING_EVENT_ID
+) -> int | None:
+    """Return the camera timestamp from a Baumer USB3 line-event payload.
+
+    The producer exposes a compact 12-byte remote-device event: two reserved
+    bytes, a little-endian 16-bit event ID, and a little-endian 64-bit
+    timestamp. Harvester 1.4.3 cannot pass this compact packet through its
+    EventAdapterU3V, so the worker decodes the producer payload directly.
+    """
+    data = bytes(payload)
+    if len(data) < 12:
+        return None
+    event_id = int.from_bytes(data[2:4], "little", signed=False)
+    if event_id != int(expected_event_id):
+        return None
+    return int.from_bytes(data[4:12], "little", signed=False)
+
+
 def frame_to_rgb(image: Any, pixel_format: str) -> Any:
     import cv2
     import numpy as np
@@ -215,6 +236,7 @@ class CameraWorker(QObject):
     camera_info = pyqtSignal(object)
     preview_ready = pyqtSignal(object)
     recording_frame = pyqtSignal(object)
+    hardware_trigger = pyqtSignal(object)
     exposure_applied = pyqtSignal(float)
     error = pyqtSignal(str)
     finished = pyqtSignal()
@@ -267,6 +289,12 @@ class CameraWorker(QObject):
         original_exposure_auto = None
         original_frame_rate = None
         original_frame_rate_enable = None
+        event_selector_node = None
+        event_notification_node = None
+        original_event_selector = None
+        original_line0_notification = None
+        line_event_monitor = None
+        line_event_id = LINE0_RISING_EVENT_ID
         try:
             import numpy as np
             from harvesters.core import Harvester
@@ -288,6 +316,8 @@ class CameraWorker(QObject):
             exposure_auto_node = _find_node(node_map, "ExposureAuto")
             frame_rate_node = _find_node(node_map, "AcquisitionFrameRate")
             frame_rate_enable_node = _find_node(node_map, "AcquisitionFrameRateEnable")
+            event_selector_node = _find_node(node_map, "EventSelector")
+            event_notification_node = _find_node(node_map, "EventNotification")
             if exposure_node is not None:
                 original_exposure = float(exposure_node.value)
             if exposure_auto_node is not None:
@@ -304,6 +334,26 @@ class CameraWorker(QObject):
             except Exception:
                 pass
 
+            hardware_trigger_available = False
+            try:
+                if not _node_writable(event_selector_node) or not _node_writable(
+                    event_notification_node
+                ):
+                    raise RuntimeError("camera line-event nodes are not writable")
+                original_event_selector = str(event_selector_node.value)
+                event_selector_node.value = "Line0RisingEdge"
+                original_line0_notification = str(event_notification_node.value)
+                event_notification_node.value = "On"
+                line_event_id = int(
+                    _node_value(node_map, "EventLine0RisingEdge", LINE0_RISING_EVENT_ID)
+                )
+                line_event_monitor = acquirer._module_event_monitor_dict[
+                    acquirer.remote_device
+                ]
+                hardware_trigger_available = True
+            except Exception:
+                line_event_monitor = None
+
             info = {
                 "model": _device_field(selected, "model", "Baumer"),
                 "serial": _device_field(selected, "serial_number", self.serial),
@@ -314,6 +364,9 @@ class CameraWorker(QObject):
                 "exposure_min_us": float(getattr(exposure_node, "min", 20.0)),
                 "exposure_max_us": float(getattr(exposure_node, "max", 1_000_000.0)),
                 "stream_fps": 0.0,
+                "trigger_input": "Line0",
+                "trigger_activation": "RisingEdge",
+                "hardware_trigger_available": hardware_trigger_available,
             }
             self.camera_info.emit(dict(info))
             acquirer.start()
@@ -378,6 +431,29 @@ class CameraWorker(QObject):
                         if preview_due:
                             next_preview = now + PREVIEW_INTERVAL_SECONDS
                             self.preview_ready.emit(packet)
+                if line_event_monitor is not None:
+                    from genicam.gentl import TimeoutException
+
+                    while True:
+                        try:
+                            line_event_monitor.update_event_data(0)
+                        except TimeoutException:
+                            break
+                        raw_event = bytes(line_event_monitor.optional_data)
+                        event_camera_ns = decode_baumer_usb_line_event(
+                            raw_event, line_event_id
+                        )
+                        if event_camera_ns is not None:
+                            self.hardware_trigger.emit(
+                                {
+                                    "source": "camera_line0_rising_edge",
+                                    "event_id": line_event_id,
+                                    "camera_timestamp_ns": event_camera_ns,
+                                    "received_host_monotonic_ns": (
+                                        time.perf_counter_ns()
+                                    ),
+                                }
+                            )
                 fps_frames += 1
                 elapsed = time.monotonic() - fps_started
                 if elapsed >= 1.0:
@@ -429,6 +505,18 @@ class CameraWorker(QObject):
                 except Exception:
                     pass
                 try:
+                    if event_selector_node is not None:
+                        event_selector_node.value = "Line0RisingEdge"
+                        if (
+                            event_notification_node is not None
+                            and original_line0_notification is not None
+                        ):
+                            event_notification_node.value = original_line0_notification
+                        if original_event_selector is not None:
+                            event_selector_node.value = original_event_selector
+                except Exception:
+                    pass
+                try:
                     acquirer.destroy()
                 except Exception:
                     pass
@@ -446,6 +534,7 @@ class UsbHighSpeedCamera(QObject):
     camera_info = pyqtSignal(object)
     preview_ready = pyqtSignal(object)
     recording_frame = pyqtSignal(object)
+    hardware_trigger = pyqtSignal(object)
     exposure_applied = pyqtSignal(float)
     error = pyqtSignal(str)
 
@@ -469,6 +558,7 @@ class UsbHighSpeedCamera(QObject):
         self.worker.camera_info.connect(self.camera_info)
         self.worker.preview_ready.connect(self.preview_ready)
         self.worker.recording_frame.connect(self.recording_frame)
+        self.worker.hardware_trigger.connect(self.hardware_trigger)
         self.worker.exposure_applied.connect(self.exposure_applied)
         self.worker.error.connect(self.error)
         self.worker.finished.connect(self.thread.quit)
@@ -527,15 +617,20 @@ class RecordingSession(QObject):
         self.post_trigger_ms = int(post_trigger_ms)
         self.camera_info = dict(camera_info)
         self.started_at_utc = started.isoformat()
+        self.started_monotonic_ns = time.perf_counter_ns()
         self.frames: list[SavedFrame] = []
         self.anchors: list[tuple[int, int]] = []
         self.event_count: int | None = None
         self.event_plc_time_ms: int | None = None
         self.event_host_ns: int | None = None
         self.event_camera_ns: int | None = None
+        self.event_received_host_ns: int | None = None
+        self.trigger_source: str | None = None
+        self.trigger_event_id: int | None = None
         self.ads_roundtrip_ns = 0
         self.timing_uncertainty_ms: float | None = None
         self.trigger_host_deadline_ns: int | None = None
+        self.trigger_camera_deadline_ns: int | None = None
         self.stop_reason = "recording"
         self.recording_complete = True
         self.error_message = ""
@@ -598,13 +693,39 @@ class RecordingSession(QObject):
             self.error_message = "Recording writer queue overflow; recording stopped"
             self.failed.emit(self.error_message)
             return
-        if (
-            self.trigger_host_deadline_ns is not None
+        camera_deadline_reached = (
+            self.trigger_camera_deadline_ns is not None
+            and packet.camera_timestamp_ns >= self.trigger_camera_deadline_ns
+        )
+        host_deadline_reached = (
+            self.trigger_camera_deadline_ns is None
+            and self.trigger_host_deadline_ns is not None
             and packet.host_monotonic_ns >= self.trigger_host_deadline_ns
-            and not self._stop_sent
-        ):
+        )
+        if (camera_deadline_reached or host_deadline_reached) and not self._stop_sent:
             self._stop_sent = True
             self.auto_stop_requested.emit()
+
+    def set_hardware_trigger(
+        self,
+        event_camera_ns: int,
+        received_host_ns: int,
+        event_id: int = LINE0_RISING_EVENT_ID,
+    ) -> bool:
+        if self.event_camera_ns is not None or self.event_host_ns is not None:
+            return False
+        if int(received_host_ns) < self.started_monotonic_ns:
+            return False
+        self.trigger_source = "camera_line0_rising_edge"
+        self.trigger_event_id = int(event_id)
+        self.event_camera_ns = int(event_camera_ns)
+        self.event_received_host_ns = int(received_host_ns)
+        self.event_host_ns = int(received_host_ns)
+        self.trigger_camera_deadline_ns = (
+            self.event_camera_ns + self.post_trigger_ms * 1_000_000
+        )
+        self.timing_uncertainty_ms = HARDWARE_TRIGGER_UNCERTAINTY_MS
+        return True
 
     def set_trigger(
         self,
@@ -616,6 +737,7 @@ class RecordingSession(QObject):
         if self.event_host_ns is not None:
             return
         self.event_count = int(event_count)
+        self.trigger_source = "plc_ads"
         self.event_plc_time_ms = int(event_plc_time_ms)
         self.event_host_ns = int(event_host_ns)
         self.ads_roundtrip_ns = int(ads_roundtrip_ns)
@@ -680,7 +802,7 @@ class RecordingSession(QObject):
             self.finished.emit(self.directory)
 
     def _finalize_files(self) -> None:
-        if self.event_host_ns is not None:
+        if self.event_camera_ns is None and self.event_host_ns is not None:
             self.event_camera_ns = estimate_camera_event_timestamp_ns(
                 self.anchors, self.event_host_ns
             )
@@ -730,10 +852,14 @@ class RecordingSession(QObject):
                 "frame_id_gaps": self.frame_id_gaps,
                 "camera": self.camera_info,
                 "trigger": {
-                    "detected": self.event_host_ns is not None,
+                    "detected": self.event_camera_ns is not None,
+                    "source": self.trigger_source,
+                    "event_id": self.trigger_event_id,
                     "event_count": self.event_count,
                     "plc_time_ms": self.event_plc_time_ms,
                     "estimated_host_monotonic_ns": self.event_host_ns,
+                    "received_host_monotonic_ns": self.event_received_host_ns,
+                    "camera_timestamp_ns": self.event_camera_ns,
                     "estimated_camera_timestamp_ns": self.event_camera_ns,
                     "ads_roundtrip_ns": self.ads_roundtrip_ns,
                     "timing_uncertainty_ms": self.timing_uncertainty_ms,
@@ -980,6 +1106,7 @@ class PressureDelayTab(QWidget):
         self.camera.camera_info.connect(self._camera_info_changed)
         self.camera.preview_ready.connect(self._show_live_frame)
         self.camera.recording_frame.connect(self._record_frame)
+        self.camera.hardware_trigger.connect(self._hardware_trigger)
         self.camera.exposure_applied.connect(self._exposure_applied)
         self.camera.error.connect(self._camera_error)
 
@@ -1009,10 +1136,14 @@ class PressureDelayTab(QWidget):
         if not isinstance(info, dict):
             return
         self.camera_status = dict(info)
+        trigger_status = (
+            "ready" if info.get("hardware_trigger_available") else "ADS fallback"
+        )
         self.camera_info_label.setText(
             f"{info.get('model', '?')} · SN {info.get('serial', '?')} · "
             f"{info.get('width', 0)}×{info.get('height', 0)} · "
             f"{info.get('pixel_format', '?')} · {info.get('stream_fps', 0.0):.1f} FPS"
+            f" · Line0 {trigger_status}"
         )
         if info.get("exposure_us") is not None:
             self.exposure_input.setValue(float(info["exposure_us"]))
@@ -1067,7 +1198,13 @@ class PressureDelayTab(QWidget):
 
     def process_setup_status(self, status: dict[str, Any]) -> None:
         self.latest_status = status
-        if self.session is None or self.session.event_host_ns is not None:
+        if (
+            self.session is None
+            or getattr(self.session, "event_camera_ns", None) is not None
+        ):
+            self._update_controls()
+            return
+        if self.camera_status.get("hardware_trigger_available"):
             self._update_controls()
             return
         sensor = self.session.light_barrier
@@ -1113,6 +1250,21 @@ class PressureDelayTab(QWidget):
             f"LB {sensor} triggered; recording "
             f"{self.session.post_trigger_ms} ms post-roll"
         )
+
+    @pyqtSlot(object)
+    def _hardware_trigger(self, event: object) -> None:
+        if self.session is None or not isinstance(event, dict):
+            return
+        accepted = self.session.set_hardware_trigger(
+            int(event["camera_timestamp_ns"]),
+            int(event["received_host_monotonic_ns"]),
+            int(event.get("event_id", LINE0_RISING_EVENT_ID)),
+        )
+        if accepted:
+            self.recording_state_label.setText(
+                f"LB {self.session.light_barrier} hardware edge captured; recording "
+                f"{self.session.post_trigger_ms} ms post-roll"
+            )
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(

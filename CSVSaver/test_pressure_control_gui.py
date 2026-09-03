@@ -1433,6 +1433,35 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.ads.connected = False
         window.close()
 
+    def test_pressure_delay_prefers_camera_line0_hardware_timestamp(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        captured = []
+        tab = window.pressure_delay_tab
+        tab.camera_status = {"hardware_trigger_available": True}
+        tab.session = SimpleNamespace(
+            light_barrier=2,
+            event_camera_ns=None,
+            post_trigger_ms=200,
+            set_hardware_trigger=lambda *values: captured.append(values) or True,
+        )
+        event = {
+            "event_id": 0x8007,
+            "camera_timestamp_ns": 1_287_298_020_290,
+            "received_host_monotonic_ns": 5_000_000_000,
+        }
+
+        tab._hardware_trigger(event)
+
+        self.assertEqual(
+            captured,
+            [(1_287_298_020_290, 5_000_000_000, 0x8007)],
+        )
+        self.assertIn("hardware edge captured", tab.recording_state_label.text())
+        tab.session = None
+        window.ads.connected = False
+        window.close()
+
     def test_consistency_tab_starts_and_stops_conveyor_at_selected_speed(self):
         with patch.object(gui.AdsController, "start"):
             window = setup_gui.ConveyorSetupWindow()

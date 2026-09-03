@@ -584,19 +584,35 @@ bei 640x480, BayerRG8 und 4000 us Belichtung am aktuellen Rechner ungefaehr
 247 FPS. Die Vorschau wird auf 30 FPS begrenzt; waehrend einer Aufnahme werden
 alle abgeholten Kameraframes an einen separaten JPEG-Writer uebergeben.
 
-`Record` speichert ab dem Tastendruck. Der aktuelle Ereigniszaehler der
-ausgewaehlten Lichtschranke bildet den Ausgangswert. Bei der ersten neuen
-akzeptierten fallenden SPS-Flanke wird der Trigger markiert und nach dem einstellbaren
-Nachlauf, standardmaessig 200 ms, automatisch gestoppt. `Stop` beendet jederzeit
-manuell. Der bestehende Pressure-/Conveyor-Ablauf loest den Druckimpuls aus; der
-Reiter schreibt keine SPS-Werte.
+`Record` speichert ab dem Tastendruck. Die Kamera bleibt dabei im Free-Run, damit
+auch Bilder vor dem Bauteil erhalten bleiben. Der bevorzugte Trigger ist die
+erste kamerainterne `Line0RisingEdge`-Flanke. Deren exakter Kamerazeitstempel
+bildet Zeit null; der erste Frame bei oder nach Triggerzeit plus einstellbarem
+Nachlauf, standardmaessig 200 ms, beendet die Aufnahme. Weitere Flanken werden
+ignoriert. `Stop` beendet jederzeit manuell. Der bestehende Pressure-/Conveyor-
+Ablauf loest den Druckimpuls aus; der Reiter schreibt keine SPS-Werte.
 
-Kamera und SPS werden ohne zusaetzliche Verdrahtung synchronisiert. Dazu werden
-der vorhandene 1-ms-Zaehler `MAIN.LightBarrierEventClockMs`, die im SPS-Zyklus
-gelatchte Ereigniszeit, die ADS-Roundtrip-Zeit und die Kamera-Nanosekundenzeit
-auf die Host-Monotonic-Uhr abgebildet. Das Ergebnis ist framegenau, aber keine
-elektrische Sub-Millisekunden-Synchronisation. Die geschaetzte Unsicherheit wird
-in der GUI und in den Metadaten ausgewiesen.
+Am 2026-09-03 wurde der PNP-Ausgang des Panasonic-Empfaengers `EX-13BD-PN`
+erfolgreich an der realen Kamera getestet. Die Kamera sah alle LOW/HIGH-Wechsel
+und lieferte fuer jede steigende Flanke ein GenTL-Remote-Device-Event mit
+Kamerazeitstempel. Verdrahtung am Baumer-M8-Kabel: Panasonic schwarz an Pin 3 /
+gruen (`IN1 / Line0`), Panasonic blau / 0 V an Pin 4 / gelb (`GND IN1`). Der in
+der GUI ausgewaehlte LB muss dem physisch mit Line0 verbundenen Sensor entsprechen.
+
+Der Baumer-Producer liefert ein kompaktes 12-Byte-USB-Event, das Harvester 1.4.3
+nicht ueber `EventAdapterU3V` dekodieren kann. `high_speed_calibration.py` liest
+dieses Ereignis deshalb direkt aus dem bereits registrierten GenTL-
+Remote-Device-Monitor: zwei reservierte Bytes, 16-Bit-Event-ID `0x8007` und
+64-Bit-Kamerazeitstempel, jeweils little-endian. Die GUI zeigt `Line0 ready`,
+wenn dieser Pfad verfuegbar ist. Die konservative Timingunsicherheit ist fuer
+den Hardwarepfad mit 0,5 ms hinterlegt.
+
+Wenn der Kameratreiber keine Line-Events anbietet, bleibt die bisherige
+SPS-/ADS-Synchronisation als Fallback aktiv. Dazu werden der vorhandene
+1-ms-Zaehler `MAIN.LightBarrierEventClockMs`, die im SPS-Zyklus gelatchte
+Ereigniszeit, die ADS-Roundtrip-Zeit und die Kamera-Nanosekundenzeit auf die
+Host-Monotonic-Uhr abgebildet. Die verwendete Quelle steht in
+`session.json -> trigger.source`.
 
 Standardausgabe ist
 `Pictures\BiBaZu\PressureDelayCalibration\YYYYMMDD_HHMMSS_LB<n>`. Jede Session

@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 
 from high_speed_calibration import (
+    LINE0_RISING_EVENT_ID,
     FramePacket,
     RecordingSession,
+    decode_baumer_usb_line_event,
     estimate_camera_event_timestamp_ns,
     estimate_plc_event_host_ns,
     estimate_timing_uncertainty_ms,
@@ -21,6 +23,18 @@ HAS_IMAGE_DEPENDENCIES = bool(
 
 
 class TimingTests(unittest.TestCase):
+    def test_baumer_usb_line_event_decodes_event_id_and_timestamp(self):
+        timestamp = 1_287_298_020_290
+        payload = (
+            b"\x00\x00"
+            + LINE0_RISING_EVENT_ID.to_bytes(2, "little")
+            + timestamp.to_bytes(8, "little")
+        )
+
+        self.assertEqual(decode_baumer_usb_line_event(payload), timestamp)
+        self.assertIsNone(decode_baumer_usb_line_event(payload[:8]))
+        self.assertIsNone(decode_baumer_usb_line_event(payload, 0x8008))
+
     def test_uint32_elapsed_handles_plc_clock_wraparound(self):
         self.assertEqual(uint32_elapsed(25, 0xFFFFFFF0), 41)
 
@@ -154,6 +168,38 @@ class RecordingWriterTests(unittest.TestCase):
             self.assertEqual(stops, [True])
             session.stop("post_trigger_complete")
             self.assertTrue(session.wait())
+
+    def test_hardware_trigger_uses_camera_clock_for_post_trigger_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = RecordingSession(
+                Path(temporary),
+                light_barrier=2,
+                post_trigger_ms=8,
+                camera_info={"hardware_trigger_available": True},
+            )
+            stops = []
+            session.auto_stop_requested.connect(lambda: stops.append(True))
+            accepted = session.set_hardware_trigger(
+                event_camera_ns=1_000_000_000,
+                received_host_ns=session.started_monotonic_ns + 1,
+            )
+
+            self.assertTrue(accepted)
+            session.add_frame(self._packet(0))
+            session.add_frame(self._packet(1))
+            self.assertEqual(stops, [])
+            session.add_frame(self._packet(2))
+            self.assertEqual(stops, [True])
+            session.stop("post_trigger_complete")
+            self.assertTrue(session.wait())
+
+            document, frames = load_recording(session.directory)
+            self.assertEqual(document["trigger"]["source"], "camera_line0_rising_edge")
+            self.assertEqual(document["trigger"]["event_id"], LINE0_RISING_EVENT_ID)
+            self.assertEqual(document["trigger"]["camera_timestamp_ns"], 1_000_000_000)
+            self.assertAlmostEqual(
+                float(frames[2]["relative_to_light_barrier_ms"]), 8.0
+            )
 
 
 if __name__ == "__main__":

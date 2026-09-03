@@ -29,3 +29,12 @@ from camera VCXU-02C (serial `700005072151`) as JPEG plus timestamp metadata,
 automatically stops after the selected light barrier and configurable post-roll,
 and provides frame-by-frame LB-to-movement evaluation. The tab observes the
 existing PLC cycle and never writes pressure or delay values.
+
+For the preferred hardware timing, connect the PNP receiver output to the
+camera process connector (`Line0`: M8 pin 3/green, `GND IN1`: pin 4/yellow).
+`Record` starts free-running capture before the part arrives. The first
+`Line0RisingEdge` event marks time zero on the camera clock, and capture stops on
+the first frame at or after that timestamp plus the configured post-roll. The
+selected light barrier in the tab must match the sensor physically connected to
+Line0. The camera status shows `Line0 ready`; `ADS fallback` means that the older
+PLC/host clock estimate will be used instead.
