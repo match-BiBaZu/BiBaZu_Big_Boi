@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import queue
 import statistics
 import threading
@@ -12,10 +13,23 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QObject, QSettings, Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import (
+    QDir,
+    QObject,
+    QPointF,
+    QRectF,
+    QSettings,
+    Qt,
+    QThread,
+    pyqtSignal,
+    pyqtSlot,
+)
+from PyQt6.QtGui import QColor, QFileSystemModel, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -28,6 +42,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +56,13 @@ JPEG_QUALITY = 95
 UINT32_MASK = 0xFFFFFFFF
 LINE0_RISING_EVENT_ID = 0x8007
 HARDWARE_TRIGGER_UNCERTAINTY_MS = 0.5
+PRESSURE_MIN_MBAR = 0
+PRESSURE_MAX_MBAR = 6000
+LIGHT_BARRIER_COUNT = 8
+FAST_RESPONSE_ENABLE_CONTEXT = "pressure_delay_fast_response_enable"
+FAST_RESPONSE_RESTORE_CONTEXT = "pressure_delay_fast_response_restore"
+PRESSURE_APPLY_CONTEXT_PREFIX = "pressure_delay_pressure_array_"
+PULSE_DURATION_APPLY_CONTEXT_PREFIX = "pressure_delay_pulse_duration_array_"
 
 FRAME_COLUMNS = (
     "index",
@@ -58,13 +80,41 @@ RESULT_COLUMNS = (
     "movement_frame_index",
     "movement_filename",
     "delay_ms",
+    "evaluation_method",
     "timing_uncertainty_ms",
     "frame_count",
     "camera_model",
     "camera_serial",
     "exposure_us",
+    "array_index",
+    "pressure_mbar",
+    "pulse_duration_ms",
+    "fastest_response_mode",
     "session_directory",
 )
+
+
+def pressure_array_for_barrier(light_barrier: int) -> int:
+    sensor = int(light_barrier)
+    if not 1 <= sensor <= LIGHT_BARRIER_COUNT:
+        raise ValueError(f"Light barrier must be 1..{LIGHT_BARRIER_COUNT}")
+    return (sensor + 1) // 2
+
+
+def fastest_response_write_values(
+    light_barrier: int, pressure_mbar: int
+) -> dict[str, bool | int | float]:
+    sensor = int(light_barrier)
+    array_index = pressure_array_for_barrier(sensor)
+    pressure = max(PRESSURE_MIN_MBAR, min(PRESSURE_MAX_MBAR, int(pressure_mbar)))
+    return {
+        f"MAIN.GuiPressureMbar{array_index}": pressure,
+        f"MAIN.GuiDelayMs{array_index}": 0,
+        f"MAIN.GuiOffsetMm{array_index}": 0.0,
+        f"MAIN.GuiForceResponseDelayMs{array_index}": 0.0,
+        f"MAIN.GuiForceSingleNozzleResponseDelayMs{array_index}": 0.0,
+        f"MAIN.GuiLightBarrierDebounceEnabled{sensor}": False,
+    }
 
 
 def uint32_elapsed(newer: int, older: int) -> int:
@@ -117,6 +167,536 @@ def estimate_timing_uncertainty_ms(
         + frame_interval_ns / 2_000_000.0
         + offset_mad_ns / 1_000_000.0
     )
+
+
+def analyze_recording_movement(
+    directory: Path,
+    frames: list[dict[str, Any]],
+    *,
+    minimum_displacement_px: float = 0.2,
+    persistence_frames: int = 3,
+    maximum_delay_ms: float = 100.0,
+) -> dict[str, Any]:
+    """Find the first persistent component motion after the hardware trigger."""
+    import cv2
+    import numpy as np
+
+    directory = Path(directory)
+    if persistence_frames < 2:
+        raise ValueError("Movement persistence must contain at least two frames")
+    relative_times: list[float | None] = []
+    for frame in frames:
+        relative = frame.get("relative_to_light_barrier_ms", "")
+        relative_times.append(
+            None if relative in {"", None} else float(relative)
+        )
+    trigger_index = next(
+        (
+            index
+            for index, relative in enumerate(relative_times)
+            if relative is not None and relative >= 0.0
+        ),
+        None,
+    )
+    if trigger_index is None:
+        raise ValueError("The recording has no frames after the light-barrier trigger")
+    pretrigger = [
+        index
+        for index in range(trigger_index)
+        if relative_times[index] is not None and relative_times[index] < 0.0
+    ]
+    if len(pretrigger) < 4:
+        raise ValueError(
+            "At least four pre-trigger frames are required for automatic analysis"
+        )
+    reference_index = pretrigger[max(0, len(pretrigger) - 12)]
+
+    def load_gray(index: int):
+        filename = frames[index].get("filename")
+        image = cv2.imread(str(directory / str(filename)), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            raise OSError(f"Could not read {filename}")
+        return image
+
+    reference = load_gray(reference_index)
+    height, width = reference.shape[:2]
+    feature_mask = np.zeros_like(reference)
+    feature_mask[
+        int(height * 0.30) : int(height * 0.72),
+        int(width * 0.25) : int(width * 0.80),
+    ] = 255
+    reference_points = cv2.goodFeaturesToTrack(
+        reference,
+        mask=feature_mask,
+        maxCorners=500,
+        qualityLevel=0.002,
+        minDistance=3,
+        blockSize=5,
+    )
+    if reference_points is None or len(reference_points) < 20:
+        raise ValueError(
+            "Too few component features were found; improve lighting or focus"
+        )
+
+    def coherent_displacement(index: int) -> tuple[float, float, float, int]:
+        if index == reference_index:
+            return 0.0, 0.0, 0.0, len(reference_points)
+        target = load_gray(index)
+        tracked, status, errors = cv2.calcOpticalFlowPyrLK(
+            reference,
+            target,
+            reference_points,
+            None,
+            winSize=(41, 41),
+            maxLevel=4,
+            criteria=(
+                cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+                50,
+                0.001,
+            ),
+        )
+        if tracked is None or status is None or errors is None:
+            raise ValueError("Optical-flow tracking failed")
+        valid = status.ravel() == 1
+        source = reference_points[valid].reshape(-1, 2)
+        destination = tracked[valid].reshape(-1, 2)
+        error_values = errors[valid].ravel()
+        displacement = destination - source
+        plausible = (
+            (np.abs(displacement[:, 0]) < 40.0)
+            & (np.abs(displacement[:, 1]) < 40.0)
+            & (error_values < 50.0)
+        )
+        displacement = displacement[plausible]
+        if len(displacement) < max(20, len(reference_points) // 10):
+            raise ValueError(
+                "Too few component features remained trackable during movement"
+            )
+        median_dx = float(np.median(displacement[:, 0]))
+        median_dy = float(np.median(displacement[:, 1]))
+        return (
+            math.hypot(median_dx, median_dy),
+            median_dx,
+            median_dy,
+            len(displacement),
+        )
+
+    baseline_samples = [
+        coherent_displacement(index)[0]
+        for index in pretrigger
+        if index >= reference_index
+    ]
+    baseline_median = float(statistics.median(baseline_samples))
+    baseline_mad = float(
+        statistics.median(
+            abs(value - baseline_median) for value in baseline_samples
+        )
+    )
+    threshold = max(
+        float(minimum_displacement_px),
+        baseline_median + 8.0 * max(baseline_mad, 0.01),
+        max(baseline_samples) * 2.5,
+    )
+    if threshold > 1.0:
+        raise ValueError(
+            "The pre-trigger image is not stable enough for automatic analysis"
+        )
+
+    persistent: list[dict[str, Any]] = []
+    for index in range(trigger_index, len(frames)):
+        relative = relative_times[index]
+        if relative is None:
+            continue
+        if relative > float(maximum_delay_ms):
+            break
+        magnitude, dx, dy, track_count = coherent_displacement(index)
+        sample = {
+            "frame_index": index,
+            "filename": str(frames[index]["filename"]),
+            "relative_to_light_barrier_ms": relative,
+            "coherent_displacement_px": magnitude,
+            "median_dx_px": dx,
+            "median_dy_px": dy,
+            "track_count": track_count,
+        }
+        if magnitude >= threshold:
+            persistent.append(sample)
+            if len(persistent) >= persistence_frames:
+                movement = persistent[0]
+                previous_index = max(0, movement["frame_index"] - 1)
+                movement.update(
+                    {
+                        "previous_frame_index": previous_index,
+                        "previous_relative_ms": relative_times[previous_index],
+                        "threshold_px": threshold,
+                        "baseline_median_px": baseline_median,
+                        "baseline_mad_px": baseline_mad,
+                        "persistence_frames": persistence_frames,
+                        "reference_frame_index": reference_index,
+                    }
+                )
+                return movement
+        else:
+            persistent.clear()
+    raise ValueError(
+        f"No persistent movement above {threshold:.3f} px was found within "
+        f"{maximum_delay_ms:.1f} ms"
+    )
+
+
+def build_pressure_delay_comparison(
+    directories: list[Path],
+) -> dict[str, Any]:
+    """Load marked sessions and calculate grouped statistics and a linear fit."""
+    trials: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    for raw_directory in directories:
+        directory = Path(raw_directory).resolve()
+        if directory in seen:
+            continue
+        seen.add(directory)
+        try:
+            document = json.loads(
+                (directory / "session.json").read_text(encoding="utf-8")
+            )
+            pressure = document.get("plc_measurement_setup", {}).get(
+                "pressure_mbar"
+            )
+            delay = document.get("evaluation", {}).get("delay_ms")
+            light_barrier = document.get("light_barrier")
+            if pressure is None:
+                raise ValueError("pressure is missing")
+            if delay is None:
+                raise ValueError("movement frame is not marked")
+            if light_barrier is None:
+                raise ValueError("light barrier is missing")
+            pressure_mbar = float(pressure)
+            delay_ms = float(delay)
+            if not math.isfinite(pressure_mbar) or not math.isfinite(delay_ms):
+                raise ValueError("pressure or delay is not finite")
+            trials.append(
+                {
+                    "directory": str(directory),
+                    "session_id": str(document.get("session_id", directory.name)),
+                    "light_barrier": int(light_barrier),
+                    "pressure_mbar": pressure_mbar,
+                    "pressure_bar": pressure_mbar / 1000.0,
+                    "delay_ms": delay_ms,
+                }
+            )
+        except Exception as exc:
+            skipped.append(
+                {"directory": str(directory), "reason": str(exc) or type(exc).__name__}
+            )
+    if not trials:
+        raise ValueError(
+            "None of the selected folders contains a marked pressure-delay result"
+        )
+
+    barriers = sorted({trial["light_barrier"] for trial in trials})
+    if len(barriers) != 1:
+        joined = ", ".join(f"LB {barrier}" for barrier in barriers)
+        raise ValueError(
+            f"Select recordings from one light barrier only; found {joined}"
+        )
+
+    grouped: dict[float, list[float]] = {}
+    for trial in trials:
+        grouped.setdefault(trial["pressure_mbar"], []).append(trial["delay_ms"])
+    groups = []
+    for pressure_mbar, delays in sorted(grouped.items()):
+        groups.append(
+            {
+                "pressure_mbar": pressure_mbar,
+                "pressure_bar": pressure_mbar / 1000.0,
+                "count": len(delays),
+                "mean_delay_ms": statistics.fmean(delays),
+                "standard_deviation_ms": (
+                    statistics.stdev(delays) if len(delays) > 3 else None
+                ),
+            }
+        )
+
+    regression = None
+    x_values = [trial["pressure_bar"] for trial in trials]
+    y_values = [trial["delay_ms"] for trial in trials]
+    x_mean = statistics.fmean(x_values)
+    denominator = sum((value - x_mean) ** 2 for value in x_values)
+    if len(trials) >= 2 and denominator > 0.0:
+        y_mean = statistics.fmean(y_values)
+        slope = sum(
+            (x_value - x_mean) * (y_value - y_mean)
+            for x_value, y_value in zip(x_values, y_values)
+        ) / denominator
+        intercept = y_mean - slope * x_mean
+        predictions = [slope * value + intercept for value in x_values]
+        residual_sum = sum(
+            (actual - predicted) ** 2
+            for actual, predicted in zip(y_values, predictions)
+        )
+        total_sum = sum((value - y_mean) ** 2 for value in y_values)
+        regression = {
+            "slope_ms_per_bar": slope,
+            "intercept_ms": intercept,
+            "r_squared": 1.0 - residual_sum / total_sum if total_sum > 0.0 else 1.0,
+        }
+    return {
+        "light_barrier": barriers[0],
+        "trials": trials,
+        "groups": groups,
+        "regression": regression,
+        "skipped": skipped,
+    }
+
+
+class MovementAnalysisWorker(QThread):
+    result_ready = pyqtSignal(object)
+    analysis_failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        directory: Path,
+        frames: list[dict[str, Any]],
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.directory = Path(directory)
+        self.frames = [dict(frame) for frame in frames]
+
+    def run(self) -> None:
+        try:
+            result = analyze_recording_movement(self.directory, self.frames)
+        except Exception as exc:
+            self.analysis_failed.emit(str(exc) or type(exc).__name__)
+            return
+        self.result_ready.emit(result)
+
+
+class RecordingFolderSelectionDialog(QDialog):
+    """Directory tree with extended selection for pressure-delay sessions."""
+
+    def __init__(self, start_directory: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Select pressure-delay recordings")
+        self.resize(760, 520)
+        layout = QVBoxLayout(self)
+        instruction = QLabel(
+            "Select several recording folders with Ctrl/Shift. You may also "
+            "select a parent folder containing recordings."
+        )
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
+
+        root = Path(start_directory).expanduser().resolve()
+        while not root.exists() and root != root.parent:
+            root = root.parent
+        if not root.exists():
+            root = Path.cwd()
+        self.model = QFileSystemModel(self)
+        self.model.setFilter(QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot)
+        root_index = self.model.setRootPath(str(root))
+        self.tree = QTreeView()
+        self.tree.setModel(self.model)
+        self.tree.setRootIndex(root_index)
+        self.tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tree.setHeaderHidden(True)
+        for column in range(1, self.model.columnCount()):
+            self.tree.hideColumn(column)
+        layout.addWidget(self.tree, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_recording_directories(self) -> list[Path]:
+        selected: set[Path] = set()
+        for index in self.tree.selectionModel().selectedRows(0):
+            directory = Path(self.model.filePath(index))
+            if (directory / "session.json").is_file():
+                selected.add(directory)
+                continue
+            for manifest in directory.rglob("session.json"):
+                selected.add(manifest.parent)
+        return sorted(selected, key=lambda path: str(path).casefold())
+
+
+class PressureDelayPlotWidget(QWidget):
+    def __init__(self, comparison: dict[str, Any], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.comparison = comparison
+        self.setMinimumSize(760, 480)
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#ffffff"))
+        trials = self.comparison["trials"]
+        groups = self.comparison["groups"]
+        regression = self.comparison.get("regression")
+        if not trials:
+            return
+
+        left, top, right, bottom = 74.0, 42.0, 28.0, 68.0
+        plot = QRectF(
+            left,
+            top,
+            max(1.0, self.width() - left - right),
+            max(1.0, self.height() - top - bottom),
+        )
+        x_values = [float(item["pressure_bar"]) for item in trials]
+        y_values = [float(item["delay_ms"]) for item in trials]
+        for group in groups:
+            deviation = group.get("standard_deviation_ms")
+            if deviation is not None:
+                y_values.extend(
+                    [
+                        float(group["mean_delay_ms"]) - float(deviation),
+                        float(group["mean_delay_ms"]) + float(deviation),
+                    ]
+                )
+        x_min, x_max = min(x_values), max(x_values)
+        y_min, y_max = min(y_values), max(y_values)
+        x_padding = max(0.1, (x_max - x_min) * 0.08)
+        y_padding = max(0.2, (y_max - y_min) * 0.12)
+        if x_min == x_max:
+            x_padding = max(0.5, abs(x_min) * 0.1)
+        if y_min == y_max:
+            y_padding = max(1.0, abs(y_min) * 0.1)
+        x_min -= x_padding
+        x_max += x_padding
+        y_min -= y_padding
+        y_max += y_padding
+
+        def map_x(value: float) -> float:
+            return plot.left() + (value - x_min) / (x_max - x_min) * plot.width()
+
+        def map_y(value: float) -> float:
+            return plot.bottom() - (value - y_min) / (y_max - y_min) * plot.height()
+
+        painter.setPen(QPen(QColor("#d1d5db"), 1.0))
+        for tick in range(6):
+            fraction = tick / 5.0
+            x_value = x_min + fraction * (x_max - x_min)
+            y_value = y_min + fraction * (y_max - y_min)
+            x = map_x(x_value)
+            y = map_y(y_value)
+            painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            painter.setPen(QColor("#374151"))
+            painter.drawText(
+                QRectF(x - 35, plot.bottom() + 8, 70, 22),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                f"{x_value:.2f}",
+            )
+            painter.drawText(
+                QRectF(2, y - 11, left - 10, 22),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"{y_value:.2f}",
+            )
+            painter.setPen(QPen(QColor("#d1d5db"), 1.0))
+
+        painter.setPen(QPen(QColor("#111827"), 1.5))
+        painter.drawLine(plot.bottomLeft(), plot.bottomRight())
+        painter.drawLine(plot.bottomLeft(), plot.topLeft())
+        painter.drawText(
+            QRectF(plot.left(), self.height() - 42, plot.width(), 24),
+            Qt.AlignmentFlag.AlignCenter,
+            "Pressure [bar]",
+        )
+        painter.save()
+        painter.translate(20, plot.center().y())
+        painter.rotate(-90)
+        painter.drawText(
+            QRectF(-plot.height() / 2, -12, plot.height(), 24),
+            Qt.AlignmentFlag.AlignCenter,
+            "LB-to-movement delay [ms]",
+        )
+        painter.restore()
+
+        painter.setPen(QPen(QColor("#6b7280"), 1.0))
+        painter.setBrush(QColor(107, 114, 128, 130))
+        for trial in trials:
+            point = QPointF(
+                map_x(float(trial["pressure_bar"])),
+                map_y(float(trial["delay_ms"])),
+            )
+            painter.drawEllipse(point, 4.0, 4.0)
+
+        painter.setPen(QPen(QColor("#dc2626"), 2.0))
+        painter.setBrush(QColor("#f97316"))
+        for group in groups:
+            x = map_x(float(group["pressure_bar"]))
+            mean = float(group["mean_delay_ms"])
+            deviation = group.get("standard_deviation_ms")
+            if deviation is not None:
+                upper = map_y(mean + float(deviation))
+                lower = map_y(mean - float(deviation))
+                painter.drawLine(QPointF(x, upper), QPointF(x, lower))
+                painter.drawLine(QPointF(x - 7, upper), QPointF(x + 7, upper))
+                painter.drawLine(QPointF(x - 7, lower), QPointF(x + 7, lower))
+            painter.drawEllipse(QPointF(x, map_y(mean)), 5.5, 5.5)
+
+        model_text = "Linear model unavailable (two pressure levels required)"
+        if regression is not None:
+            slope = float(regression["slope_ms_per_bar"])
+            intercept = float(regression["intercept_ms"])
+            painter.setPen(QPen(QColor("#2563eb"), 2.0))
+            painter.drawLine(
+                QPointF(map_x(x_min), map_y(slope * x_min + intercept)),
+                QPointF(map_x(x_max), map_y(slope * x_max + intercept)),
+            )
+            model_text = (
+                f"Linear model: delay = {slope:+.3f} ms/bar × pressure "
+                f"{intercept:+.3f} ms · R² = {float(regression['r_squared']):.3f}"
+            )
+        painter.setPen(QColor("#111827"))
+        painter.drawText(
+            QRectF(plot.left(), 8, plot.width(), 25),
+            Qt.AlignmentFlag.AlignCenter,
+            f"Pressure-delay comparison · LB {self.comparison['light_barrier']}",
+        )
+        painter.setPen(QColor("#2563eb"))
+        painter.drawText(
+            QRectF(plot.left() + 5, plot.top() + 5, plot.width() - 10, 22),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+            model_text,
+        )
+
+
+class PressureDelayPlotDialog(QDialog):
+    def __init__(self, comparison: dict[str, Any], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Pressure-delay comparison")
+        self.resize(920, 650)
+        layout = QVBoxLayout(self)
+        groups = comparison["groups"]
+        skipped = comparison["skipped"]
+        summary = QLabel(
+            f"{len(comparison['trials'])} valid trials at {len(groups)} pressure "
+            f"levels · error bars show ±1 standard deviation for more than "
+            f"3 trials per pressure"
+            + (f" · {len(skipped)} folders skipped" if skipped else "")
+        )
+        summary.setWordWrap(True)
+        if skipped:
+            summary.setToolTip(
+                "\n".join(
+                    f"{item['directory']}: {item['reason']}" for item in skipped
+                )
+            )
+        layout.addWidget(summary)
+        layout.addWidget(PressureDelayPlotWidget(comparison), 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 @dataclass(slots=True)
@@ -606,10 +1186,15 @@ class RecordingSession(QObject):
         post_trigger_ms: int,
         camera_info: dict[str, Any],
         parent: QObject | None = None,
+        measurement_settings: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(parent)
         started = datetime.now(timezone.utc)
+        self.measurement_settings = dict(measurement_settings or {})
         base_id = started.astimezone().strftime(f"%Y%m%d_%H%M%S_LB{int(light_barrier)}")
+        pressure_mbar = self.measurement_settings.get("pressure_mbar")
+        if pressure_mbar is not None:
+            base_id += f"_{int(round(float(pressure_mbar)))}mbar"
         self.output_root = Path(output_root)
         self.session_id, self.directory = self._unique_directory(base_id)
         self.directory.mkdir(parents=True, exist_ok=False)
@@ -671,6 +1256,7 @@ class RecordingSession(QObject):
                 "light_barrier": self.light_barrier,
                 "post_trigger_ms": self.post_trigger_ms,
                 "camera": self.camera_info,
+                "plc_measurement_setup": self.measurement_settings,
             }
         )
 
@@ -851,6 +1437,7 @@ class RecordingSession(QObject):
                 "frame_count": len(self.frames),
                 "frame_id_gaps": self.frame_id_gaps,
                 "camera": self.camera_info,
+                "plc_measurement_setup": self.measurement_settings,
                 "trigger": {
                     "detected": self.event_camera_ns is not None,
                     "source": self.trigger_source,
@@ -889,7 +1476,13 @@ def load_recording(directory: Path) -> tuple[dict[str, Any], list[dict[str, Any]
     return document, frames
 
 
-def update_movement_evaluation(directory: Path, frame_index: int) -> dict[str, Any]:
+def update_movement_evaluation(
+    directory: Path,
+    frame_index: int,
+    *,
+    method: str = "manual",
+    analysis_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     directory = Path(directory)
     document, frames = load_recording(directory)
     if not 0 <= int(frame_index) < len(frames):
@@ -903,8 +1496,11 @@ def update_movement_evaluation(directory: Path, frame_index: int) -> dict[str, A
         "movement_frame_index": int(frame_index),
         "movement_filename": frame["filename"],
         "delay_ms": delay_ms,
+        "method": str(method),
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
+    if analysis_details:
+        document["evaluation"]["automatic_analysis"] = dict(analysis_details)
     path = directory / "session.json"
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(
@@ -924,6 +1520,7 @@ def _upsert_result(root: Path, directory: Path, document: dict[str, Any]) -> Non
     evaluation = document["evaluation"]
     trigger = document.get("trigger", {})
     camera = document.get("camera", {})
+    measurement_setup = document.get("plc_measurement_setup", {})
     row = {
         "session_id": str(document["session_id"]),
         "recorded_at_utc": str(document.get("recorded_at_utc", "")),
@@ -931,6 +1528,7 @@ def _upsert_result(root: Path, directory: Path, document: dict[str, Any]) -> Non
         "movement_frame_index": str(evaluation["movement_frame_index"]),
         "movement_filename": str(evaluation["movement_filename"]),
         "delay_ms": f"{float(evaluation['delay_ms']):.6f}",
+        "evaluation_method": str(evaluation.get("method", "manual")),
         "timing_uncertainty_ms": (
             ""
             if trigger.get("timing_uncertainty_ms") is None
@@ -940,6 +1538,14 @@ def _upsert_result(root: Path, directory: Path, document: dict[str, Any]) -> Non
         "camera_model": str(camera.get("model", "")),
         "camera_serial": str(camera.get("serial", "")),
         "exposure_us": str(camera.get("exposure_us", "")),
+        "array_index": str(measurement_setup.get("array_index", "")),
+        "pressure_mbar": str(measurement_setup.get("pressure_mbar", "")),
+        "pulse_duration_ms": str(
+            measurement_setup.get("pulse_duration_ms", "")
+        ),
+        "fastest_response_mode": str(
+            measurement_setup.get("fastest_response_mode", "")
+        ),
         "session_directory": str(directory),
     }
     rows = [
@@ -957,9 +1563,12 @@ def _upsert_result(root: Path, directory: Path, document: dict[str, Any]) -> Non
 class PressureDelayTab(QWidget):
     status_message = pyqtSignal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, ads_controller: Any | None = None
+    ) -> None:
         super().__init__(parent)
         self.settings = QSettings("LeibnizUniversitaetHannover", "BiBaZuConveyorSetup")
+        self.ads = ads_controller
         self.camera = UsbHighSpeedCamera(self)
         self.camera_connected = False
         self.ads_connected = False
@@ -970,6 +1579,16 @@ class PressureDelayTab(QWidget):
         self.loaded_directory: Path | None = None
         self.loaded_document: dict[str, Any] | None = None
         self.loaded_frames: list[dict[str, Any]] = []
+        self.analysis_worker: MovementAnalysisWorker | None = None
+        self.analysis_in_progress = False
+        self.analysis_result: dict[str, Any] | None = None
+        self._exposure_edit_dirty = False
+        self._updating_exposure_input = False
+        self.fast_response_active = False
+        self.fast_response_pending = ""
+        self.fast_response_saved_values: dict[str, bool | int | float] = {}
+        self._pressure_array_loaded: int | None = None
+        self._pulse_array_loaded: int | None = None
         self._build_ui()
         self._connect_signals()
         self._update_controls()
@@ -1027,6 +1646,49 @@ class PressureDelayTab(QWidget):
                 )
             )
         )
+        self.pressure_array_label = QLabel("Array 1 (LB 1/2)")
+        self.pressure_input = QSpinBox()
+        self.pressure_input.setRange(PRESSURE_MIN_MBAR, PRESSURE_MAX_MBAR)
+        self.pressure_input.setSingleStep(10)
+        self.pressure_input.setSuffix(" mbar")
+        self.pressure_input.setValue(
+            int(self.settings.value("pressure_delay/pressure_mbar", 3000))
+        )
+        self.apply_pressure_button = QPushButton("Apply Pressure")
+        pressure_row = QWidget()
+        pressure_layout = QHBoxLayout(pressure_row)
+        pressure_layout.setContentsMargins(0, 0, 0, 0)
+        pressure_layout.addWidget(self.pressure_input, 1)
+        pressure_layout.addWidget(self.apply_pressure_button)
+        self.pulse_duration_input = QSpinBox()
+        self.pulse_duration_input.setRange(1, 500)
+        self.pulse_duration_input.setSingleStep(1)
+        self.pulse_duration_input.setSuffix(" ms")
+        self.pulse_duration_input.setValue(
+            int(self.settings.value("pressure_delay/pulse_duration_ms", 100))
+        )
+        self.apply_pulse_duration_button = QPushButton("Apply Pulse Duration")
+        pulse_duration_row = QWidget()
+        pulse_duration_layout = QHBoxLayout(pulse_duration_row)
+        pulse_duration_layout.setContentsMargins(0, 0, 0, 0)
+        pulse_duration_layout.addWidget(self.pulse_duration_input, 1)
+        pulse_duration_layout.addWidget(self.apply_pulse_duration_button)
+        self.enable_fast_response_button = QPushButton("Enable Fastest Response")
+        self.enable_fast_response_button.setToolTip(
+            "For the selected light barrier and paired nozzle array: disable "
+            "debounce and set manual delay, offset and both response-delay "
+            "compensations to zero. The current PLC values are saved first."
+        )
+        self.restore_plc_setup_button = QPushButton("Restore Previous Setup")
+        fast_response_row = QWidget()
+        fast_response_layout = QHBoxLayout(fast_response_row)
+        fast_response_layout.setContentsMargins(0, 0, 0, 0)
+        fast_response_layout.addWidget(self.enable_fast_response_button)
+        fast_response_layout.addWidget(self.restore_plc_setup_button)
+        self.plc_setup_state_label = QLabel(
+            "Normal PLC timing; fastest-response mode is not enabled"
+        )
+        self.plc_setup_state_label.setWordWrap(True)
         default_output = (
             Path.home() / "Pictures" / "BiBaZu" / "PressureDelayCalibration"
         )
@@ -1041,6 +1703,11 @@ class PressureDelayTab(QWidget):
         output_layout.addWidget(self.browse_output_button)
         recording_layout.addRow("Stop trigger", self.barrier_input)
         recording_layout.addRow("Post-trigger", self.post_trigger_input)
+        recording_layout.addRow("Pressure array", self.pressure_array_label)
+        recording_layout.addRow("Test pressure", pressure_row)
+        recording_layout.addRow("Pulse duration", pulse_duration_row)
+        recording_layout.addRow("Fast reaction", fast_response_row)
+        recording_layout.addRow("PLC setup", self.plc_setup_state_label)
         recording_layout.addRow("Output", output_row)
         buttons = QWidget()
         button_layout = QHBoxLayout(buttons)
@@ -1067,11 +1734,17 @@ class PressureDelayTab(QWidget):
         navigation = QHBoxLayout()
         self.previous_button = QPushButton("Previous")
         self.next_button = QPushButton("Next")
+        self.analyze_movement_button = QPushButton("Analyze Movement")
+        self.compare_recordings_button = QPushButton("Compare Recordings…")
         self.mark_movement_button = QPushButton("Mark First Movement")
         navigation.addWidget(self.previous_button)
         navigation.addWidget(self.next_button)
-        navigation.addWidget(self.mark_movement_button)
         review_layout.addLayout(navigation)
+        analysis_actions = QHBoxLayout()
+        analysis_actions.addWidget(self.analyze_movement_button)
+        analysis_actions.addWidget(self.mark_movement_button)
+        review_layout.addLayout(analysis_actions)
+        review_layout.addWidget(self.compare_recordings_button)
         self.review_frame_label = QLabel("No recording loaded")
         self.review_time_label = QLabel("-")
         self.result_label = QLabel("Delay: -")
@@ -1087,8 +1760,20 @@ class PressureDelayTab(QWidget):
     def _connect_signals(self) -> None:
         self.connect_button.clicked.connect(self.connect_camera)
         self.disconnect_button.clicked.connect(self.camera.disconnect_camera)
-        self.apply_exposure_button.clicked.connect(
-            lambda: self.camera.set_exposure(self.exposure_input.value())
+        self.exposure_input.valueChanged.connect(self._exposure_input_changed)
+        self.apply_exposure_button.clicked.connect(self._apply_exposure)
+        self.barrier_input.currentIndexChanged.connect(
+            self._selected_barrier_changed
+        )
+        self.apply_pressure_button.clicked.connect(self._apply_pressure)
+        self.apply_pulse_duration_button.clicked.connect(
+            self._apply_pulse_duration
+        )
+        self.enable_fast_response_button.clicked.connect(
+            self._enable_fast_response
+        )
+        self.restore_plc_setup_button.clicked.connect(
+            self._restore_previous_plc_setup
         )
         self.browse_output_button.clicked.connect(self._browse_output)
         self.record_button.clicked.connect(self.start_recording)
@@ -1101,6 +1786,8 @@ class PressureDelayTab(QWidget):
         self.next_button.clicked.connect(
             lambda: self.frame_slider.setValue(self.frame_slider.value() + 1)
         )
+        self.analyze_movement_button.clicked.connect(self._analyze_movement)
+        self.compare_recordings_button.clicked.connect(self._compare_recordings)
         self.mark_movement_button.clicked.connect(self._mark_movement)
         self.camera.connection_changed.connect(self._camera_connection_changed)
         self.camera.camera_info.connect(self._camera_info_changed)
@@ -1109,6 +1796,9 @@ class PressureDelayTab(QWidget):
         self.camera.hardware_trigger.connect(self._hardware_trigger)
         self.camera.exposure_applied.connect(self._exposure_applied)
         self.camera.error.connect(self._camera_error)
+        if self.ads is not None:
+            self.ads.write_finished.connect(self._ads_write_finished)
+            self.ads.operation_failed.connect(self._ads_operation_failed)
 
     def connect_camera(self) -> None:
         if self.camera.running:
@@ -1145,16 +1835,35 @@ class PressureDelayTab(QWidget):
             f"{info.get('pixel_format', '?')} · {info.get('stream_fps', 0.0):.1f} FPS"
             f" · Line0 {trigger_status}"
         )
-        if info.get("exposure_us") is not None:
-            self.exposure_input.setValue(float(info["exposure_us"]))
-        self.exposure_input.setRange(
-            float(info.get("exposure_min_us", 20.0)),
-            float(info.get("exposure_max_us", 1_000_000.0)),
-        )
+        if not self._exposure_edit_dirty and not self.exposure_input.hasFocus():
+            self._updating_exposure_input = True
+            try:
+                self.exposure_input.setRange(
+                    float(info.get("exposure_min_us", 20.0)),
+                    float(info.get("exposure_max_us", 1_000_000.0)),
+                )
+                if info.get("exposure_us") is not None:
+                    self.exposure_input.setValue(float(info["exposure_us"]))
+            finally:
+                self._updating_exposure_input = False
+
+    @pyqtSlot(float)
+    def _exposure_input_changed(self, _value: float) -> None:
+        if not self._updating_exposure_input:
+            self._exposure_edit_dirty = True
+
+    def _apply_exposure(self, _checked: bool = False) -> None:
+        self._exposure_edit_dirty = True
+        self.camera.set_exposure(self.exposure_input.value())
 
     @pyqtSlot(float)
     def _exposure_applied(self, value: float) -> None:
-        self.exposure_input.setValue(value)
+        self._updating_exposure_input = True
+        try:
+            self.exposure_input.setValue(value)
+        finally:
+            self._updating_exposure_input = False
+        self._exposure_edit_dirty = False
         self.settings.setValue("pressure_delay/exposure_us", value)
         self.status_message.emit(f"High-speed camera exposure set to {value:.1f} µs")
 
@@ -1190,14 +1899,311 @@ class PressureDelayTab(QWidget):
         )
         self.image_label.setPixmap(scaled)
 
+    def _selected_array_index(self) -> int:
+        return pressure_array_for_barrier(int(self.barrier_input.currentData()))
+
+    def _selected_array_status(self) -> dict[str, Any] | None:
+        if not self.latest_status:
+            return None
+        selected = self._selected_array_index()
+        for values in self.latest_status.get("arrays", []):
+            if int(values.get("index", 0)) == selected:
+                return dict(values)
+        return None
+
+    @pyqtSlot(int)
+    def _selected_barrier_changed(self, _index: int) -> None:
+        sensor = int(self.barrier_input.currentData())
+        array_index = pressure_array_for_barrier(sensor)
+        first_barrier = array_index * 2 - 1
+        self.pressure_array_label.setText(
+            f"Array {array_index} (LB {first_barrier}/{first_barrier + 1})"
+        )
+        self._pressure_array_loaded = None
+        self._pulse_array_loaded = None
+        self._sync_pressure_from_status()
+        self._render_plc_setup_state()
+        self._update_controls()
+
+    def _sync_pressure_from_status(self) -> None:
+        if self.fast_response_active or self.fast_response_pending:
+            return
+        array_index = self._selected_array_index()
+        if (
+            self._pressure_array_loaded == array_index
+            and self._pulse_array_loaded == array_index
+        ):
+            return
+        values = self._selected_array_status()
+        if values is None:
+            return
+        if self._pressure_array_loaded != array_index:
+            self.pressure_input.setValue(int(values["pressure_mbar"]))
+            self._pressure_array_loaded = array_index
+        if self._pulse_array_loaded != array_index:
+            self.pulse_duration_input.setValue(int(values["pulse_duration_ms"]))
+            self._pulse_array_loaded = array_index
+
+    def _render_plc_setup_state(self) -> None:
+        sensor = int(self.barrier_input.currentData())
+        array_index = self._selected_array_index()
+        if self.fast_response_pending == "enable":
+            self.plc_setup_state_label.setText("Applying fastest-response settings …")
+            return
+        if self.fast_response_pending == "restore":
+            self.plc_setup_state_label.setText("Restoring previous PLC settings …")
+            return
+        if self.fast_response_pending == "pressure":
+            self.plc_setup_state_label.setText(
+                f"Applying {self.pressure_input.value()} mbar to array "
+                f"{array_index} …"
+            )
+            return
+        if self.fast_response_pending == "pulse_duration":
+            self.plc_setup_state_label.setText(
+                f"Applying {self.pulse_duration_input.value()} ms pulse duration "
+                f"to array {array_index} …"
+            )
+            return
+        if self.fast_response_active:
+            self.plc_setup_state_label.setText(
+                f"FASTEST RESPONSE ACTIVE · array {array_index}: pressure "
+                f"{self.pressure_input.value()} mbar, pulse "
+                f"{self.pulse_duration_input.value()} ms, delay 0 ms, offset 0 mm, "
+                f"response compensation 0 ms; LB {sensor} debounce disabled"
+            )
+            return
+        values = self._selected_array_status()
+        debounce_values = (
+            self.latest_status.get("light_barrier_debounce_enabled", [])
+            if self.latest_status
+            else []
+        )
+        if values is None or len(debounce_values) < sensor:
+            self.plc_setup_state_label.setText(
+                "Normal PLC timing; waiting for current setup values"
+            )
+            return
+        self.plc_setup_state_label.setText(
+            f"Normal timing · array {array_index}: pulse "
+            f"{values['pulse_duration_ms']} ms, delay {values['delay_ms']} ms, "
+            f"offset {float(values['offset_mm']):.2f} mm; LB {sensor} debounce "
+            f"{'on' if debounce_values[sensor - 1] else 'off'}"
+        )
+
+    def _current_restore_values(self) -> dict[str, bool | int | float]:
+        sensor = int(self.barrier_input.currentData())
+        array_index = self._selected_array_index()
+        values = self._selected_array_status()
+        debounce_values = (
+            self.latest_status.get("light_barrier_debounce_enabled", [])
+            if self.latest_status
+            else []
+        )
+        if values is None or len(debounce_values) < sensor:
+            raise RuntimeError("Current PLC timing values are not available yet")
+        return {
+            f"MAIN.GuiPressureMbar{array_index}": int(values["pressure_mbar"]),
+            f"MAIN.GuiDelayMs{array_index}": int(values["delay_ms"]),
+            f"MAIN.GuiOffsetMm{array_index}": float(values["offset_mm"]),
+            f"MAIN.GuiForceResponseDelayMs{array_index}": float(
+                values["force_response_delay_ms"]
+            ),
+            f"MAIN.GuiForceSingleNozzleResponseDelayMs{array_index}": float(
+                values["force_single_nozzle_response_delay_ms"]
+            ),
+            f"MAIN.GuiLightBarrierDebounceEnabled{sensor}": bool(
+                debounce_values[sensor - 1]
+            ),
+        }
+
+    def _measurement_settings_snapshot(self) -> dict[str, Any]:
+        sensor = int(self.barrier_input.currentData())
+        array_index = self._selected_array_index()
+        values = self._selected_array_status() or {}
+        debounce_values = (
+            self.latest_status.get("light_barrier_debounce_enabled", [])
+            if self.latest_status
+            else []
+        )
+        fast = self.fast_response_active
+        return {
+            "fastest_response_mode": fast,
+            "array_index": array_index,
+            "pressure_mbar": (
+                self.pressure_input.value()
+                if fast
+                else values.get("pressure_mbar")
+            ),
+            "pulse_duration_ms": values.get(
+                "pulse_duration_ms", self.pulse_duration_input.value()
+            ),
+            "manual_delay_ms": 0 if fast else values.get("delay_ms"),
+            "offset_mm": 0.0 if fast else values.get("offset_mm"),
+            "force_response_delay_ms": (
+                0.0 if fast else values.get("force_response_delay_ms")
+            ),
+            "force_single_nozzle_response_delay_ms": (
+                0.0
+                if fast
+                else values.get("force_single_nozzle_response_delay_ms")
+            ),
+            "light_barrier": sensor,
+            "light_barrier_debounce_enabled": (
+                False
+                if fast
+                else (
+                    bool(debounce_values[sensor - 1])
+                    if len(debounce_values) >= sensor
+                    else None
+                )
+            ),
+        }
+
+    def _apply_pressure(self, _checked: bool = False) -> None:
+        if self.ads is None or not self.ads_connected:
+            return
+        array_index = self._selected_array_index()
+        pressure = self.pressure_input.value()
+        self.settings.setValue("pressure_delay/pressure_mbar", pressure)
+        self.fast_response_pending = "pressure"
+        self.ads.write_now(
+            {f"MAIN.GuiPressureMbar{array_index}": pressure},
+            f"{PRESSURE_APPLY_CONTEXT_PREFIX}{array_index}",
+        )
+        self.plc_setup_state_label.setText(
+            f"Applying {pressure} mbar to array {array_index} …"
+        )
+        self._update_controls()
+
+    def _enable_fast_response(self, _checked: bool = False) -> None:
+        if (
+            self.ads is None
+            or not self.ads_connected
+            or self.session is not None
+            or self.fast_response_pending
+            or self.fast_response_active
+        ):
+            return
+        try:
+            self.fast_response_saved_values = self._current_restore_values()
+        except Exception as exc:
+            QMessageBox.warning(self, "Fastest response", str(exc))
+            return
+        sensor = int(self.barrier_input.currentData())
+        self.settings.setValue(
+            "pressure_delay/pressure_mbar", self.pressure_input.value()
+        )
+        self.fast_response_pending = "enable"
+        self.ads.write_now(
+            fastest_response_write_values(sensor, self.pressure_input.value()),
+            FAST_RESPONSE_ENABLE_CONTEXT,
+        )
+        self._render_plc_setup_state()
+        self._update_controls()
+
+    def _apply_pulse_duration(self, _checked: bool = False) -> None:
+        if self.ads is None or not self.ads_connected:
+            return
+        array_index = self._selected_array_index()
+        duration_ms = self.pulse_duration_input.value()
+        self.settings.setValue("pressure_delay/pulse_duration_ms", duration_ms)
+        self.fast_response_pending = "pulse_duration"
+        self.ads.write_now(
+            {f"MAIN.GuiPulseDurationMs{array_index}": duration_ms},
+            f"{PULSE_DURATION_APPLY_CONTEXT_PREFIX}{array_index}",
+        )
+        self._render_plc_setup_state()
+        self._update_controls()
+
+    def _restore_previous_plc_setup(self, _checked: bool = False) -> None:
+        if (
+            self.ads is None
+            or not self.ads_connected
+            or self.session is not None
+            or self.fast_response_pending
+            or not self.fast_response_saved_values
+        ):
+            return
+        self.fast_response_pending = "restore"
+        self.ads.write_now(
+            dict(self.fast_response_saved_values), FAST_RESPONSE_RESTORE_CONTEXT
+        )
+        self._render_plc_setup_state()
+        self._update_controls()
+
+    @pyqtSlot(str)
+    def _ads_write_finished(self, context: str) -> None:
+        if context == FAST_RESPONSE_ENABLE_CONTEXT:
+            self.fast_response_pending = ""
+            self.fast_response_active = True
+            self.status_message.emit("Fastest-response PLC settings are active")
+        elif context == FAST_RESPONSE_RESTORE_CONTEXT:
+            self.fast_response_pending = ""
+            self.fast_response_active = False
+            self.fast_response_saved_values = {}
+            self._pressure_array_loaded = None
+            self._pulse_array_loaded = None
+            self.status_message.emit("Previous PLC timing and pressure restored")
+        elif context.startswith(PRESSURE_APPLY_CONTEXT_PREFIX):
+            self.fast_response_pending = ""
+            values = self._selected_array_status()
+            if values is not None and self.latest_status is not None:
+                for cached in self.latest_status.get("arrays", []):
+                    if int(cached.get("index", 0)) == self._selected_array_index():
+                        cached["pressure_mbar"] = self.pressure_input.value()
+                        break
+            self.status_message.emit(
+                f"Test pressure applied: {self.pressure_input.value()} mbar"
+            )
+        elif context.startswith(PULSE_DURATION_APPLY_CONTEXT_PREFIX):
+            self.fast_response_pending = ""
+            if self.latest_status is not None:
+                for cached in self.latest_status.get("arrays", []):
+                    if int(cached.get("index", 0)) == self._selected_array_index():
+                        cached["pulse_duration_ms"] = (
+                            self.pulse_duration_input.value()
+                        )
+                        break
+            self.status_message.emit(
+                f"Pulse duration applied: {self.pulse_duration_input.value()} ms"
+            )
+        else:
+            return
+        self._render_plc_setup_state()
+        self._update_controls()
+
+    @pyqtSlot(str, str)
+    def _ads_operation_failed(self, context: str, message: str) -> None:
+        if context not in {
+            FAST_RESPONSE_ENABLE_CONTEXT,
+            FAST_RESPONSE_RESTORE_CONTEXT,
+        } and not context.startswith(
+            PRESSURE_APPLY_CONTEXT_PREFIX
+        ) and not context.startswith(PULSE_DURATION_APPLY_CONTEXT_PREFIX):
+            return
+        self.fast_response_pending = ""
+        if context == FAST_RESPONSE_ENABLE_CONTEXT:
+            self.fast_response_active = False
+        self.plc_setup_state_label.setText(f"PLC setup failed: {message}")
+        self._update_controls()
+
     def set_ads_connected(self, connected: bool) -> None:
         self.ads_connected = bool(connected)
+        if not connected:
+            self.fast_response_pending = ""
+            if self.fast_response_saved_values:
+                self.plc_setup_state_label.setText(
+                    "ADS connection lost; reconnect and restore the saved PLC setup"
+                )
         if not connected and self.session is not None:
             self.stop_recording("ads_disconnected", "ADS connection lost")
         self._update_controls()
 
     def process_setup_status(self, status: dict[str, Any]) -> None:
         self.latest_status = status
+        self._sync_pressure_from_status()
+        self._render_plc_setup_state()
         if (
             self.session is None
             or getattr(self.session, "event_camera_ns", None) is not None
@@ -1281,6 +2287,7 @@ class PressureDelayTab(QWidget):
             not self.camera_connected
             or not self.ads_connected
             or self.latest_status is None
+            or self.fast_response_pending
         ):
             QMessageBox.warning(
                 self,
@@ -1307,6 +2314,7 @@ class PressureDelayTab(QWidget):
                 self.post_trigger_input.value(),
                 self.camera_status,
                 self,
+                measurement_settings=self._measurement_settings_snapshot(),
             )
         except Exception as exc:
             QMessageBox.critical(self, "Recording error", str(exc))
@@ -1358,6 +2366,12 @@ class PressureDelayTab(QWidget):
         self.load_recording(path)
         self._update_controls()
         self.status_message.emit(f"Pressure-delay recording saved: {path}")
+        if (
+            (session is None or session.recording_complete)
+            and self.loaded_document is not None
+            and self.loaded_document.get("trigger", {}).get("detected")
+        ):
+            self._analyze_movement()
 
     def _open_recording_dialog(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -1369,14 +2383,43 @@ class PressureDelayTab(QWidget):
             except Exception as exc:
                 QMessageBox.critical(self, "Open recording", str(exc))
 
+    def _compare_recordings(self) -> None:
+        selector = RecordingFolderSelectionDialog(
+            Path(self.output_input.text()), self
+        )
+        if selector.exec() != QDialog.DialogCode.Accepted:
+            return
+        directories = selector.selected_recording_directories()
+        if not directories:
+            QMessageBox.information(
+                self,
+                "Compare recordings",
+                "No recording folders containing session.json were selected.",
+            )
+            return
+        try:
+            comparison = build_pressure_delay_comparison(directories)
+        except Exception as exc:
+            QMessageBox.warning(self, "Compare recordings", str(exc))
+            return
+        PressureDelayPlotDialog(comparison, self).exec()
+
     def load_recording(self, directory: Path) -> None:
         document, frames = load_recording(directory)
         self.loaded_directory = Path(directory)
         self.loaded_document = document
         self.loaded_frames = frames
+        self.analysis_result = None
         self.frame_slider.setRange(0, max(0, len(frames) - 1))
+        evaluation = document.get("evaluation", {})
+        movement_index = evaluation.get("movement_frame_index")
         trigger = document.get("trigger", {})
-        if trigger.get("detected"):
+        if (
+            movement_index is not None
+            and 0 <= int(movement_index) < len(frames)
+        ):
+            self.frame_slider.setValue(int(movement_index))
+        elif trigger.get("detected"):
             closest = min(
                 range(len(frames)),
                 key=lambda index: abs(
@@ -1387,12 +2430,90 @@ class PressureDelayTab(QWidget):
             self.frame_slider.setValue(closest)
         else:
             self.frame_slider.setValue(0)
-        evaluation = document.get("evaluation", {})
         if evaluation.get("delay_ms") is not None:
-            self.result_label.setText(f"Delay: {float(evaluation['delay_ms']):.3f} ms")
+            prefix = (
+                "Automatic delay"
+                if evaluation.get("method") == "automatic_optical_flow"
+                else "Delay"
+            )
+            self.result_label.setText(
+                f"{prefix}: {float(evaluation['delay_ms']):.3f} ms"
+            )
         else:
             self.result_label.setText("Delay: not marked")
         self._show_review_frame(self.frame_slider.value())
+        self._update_controls()
+
+    def _analyze_movement(self) -> None:
+        if (
+            self.analysis_in_progress
+            or self.loaded_directory is None
+            or not self.loaded_frames
+        ):
+            return
+        self.analysis_in_progress = True
+        self.analysis_result = None
+        self.result_label.setText("Analyzing movement …")
+        worker = MovementAnalysisWorker(
+            self.loaded_directory, self.loaded_frames, self
+        )
+        worker.result_ready.connect(self._analysis_ready)
+        worker.analysis_failed.connect(self._analysis_failed)
+        worker.finished.connect(self._analysis_finished)
+        self.analysis_worker = worker
+        worker.start()
+        self._update_controls()
+
+    @pyqtSlot(object)
+    def _analysis_ready(self, result: object) -> None:
+        if not isinstance(result, dict):
+            return
+        self.analysis_result = dict(result)
+        index = int(result["frame_index"])
+        delay_ms = float(result["relative_to_light_barrier_ms"])
+        previous_ms = result.get("previous_relative_ms")
+        self.frame_slider.setValue(index)
+        if self.loaded_directory is None:
+            self._analysis_failed("The recording directory is no longer loaded")
+            return
+        try:
+            self.loaded_document = update_movement_evaluation(
+                self.loaded_directory,
+                index,
+                method="automatic_optical_flow",
+                analysis_details=self.analysis_result,
+            )
+        except Exception as exc:
+            self._analysis_failed(
+                f"Movement was detected but could not be saved: {exc}"
+            )
+            return
+        if previous_ms is None:
+            onset = f"at {delay_ms:+.3f} ms"
+        else:
+            onset = f"between {float(previous_ms):+.3f} and {delay_ms:+.3f} ms"
+        self.result_label.setText(
+            f"Automatic delay: {delay_ms:.3f} ms · Frame {index + 1} · "
+            f"onset {onset}"
+        )
+        self.status_message.emit(
+            f"First movement automatically marked: frame {index + 1}, "
+            f"{delay_ms:.3f} ms; review and change it manually if needed"
+        )
+
+    @pyqtSlot(str)
+    def _analysis_failed(self, message: str) -> None:
+        self.analysis_result = None
+        self.result_label.setText(f"Automatic analysis failed: {message}")
+        self.status_message.emit(f"Automatic movement analysis failed: {message}")
+
+    @pyqtSlot()
+    def _analysis_finished(self) -> None:
+        worker = self.analysis_worker
+        self.analysis_worker = None
+        self.analysis_in_progress = False
+        if worker is not None:
+            worker.deleteLater()
         self._update_controls()
 
     @pyqtSlot(int)
@@ -1445,12 +2566,24 @@ class PressureDelayTab(QWidget):
 
     def _update_controls(self, finalizing: bool = False) -> None:
         recording = self.session is not None
+        analyzing = self.analysis_in_progress
         ready = (
             self.camera_connected
             and self.ads_connected
             and self.latest_status is not None
             and not recording
             and not finalizing
+            and not self.fast_response_pending
+            and not analyzing
+        )
+        plc_ready = (
+            self.ads_connected
+            and self.latest_status is not None
+            and self._selected_array_status() is not None
+            and not recording
+            and not finalizing
+            and not self.fast_response_pending
+            and not analyzing
         )
         self.connect_button.setEnabled(not self.camera.running)
         self.disconnect_button.setEnabled(self.camera.running and not recording)
@@ -1458,11 +2591,29 @@ class PressureDelayTab(QWidget):
         self.exposure_input.setEnabled(self.camera_connected and not recording)
         self.record_button.setEnabled(ready)
         self.stop_button.setEnabled(recording and not finalizing)
-        self.barrier_input.setEnabled(not recording)
+        self.barrier_input.setEnabled(
+            not recording
+            and not self.fast_response_pending
+            and not self.fast_response_saved_values
+        )
+        self.pressure_input.setEnabled(plc_ready)
+        self.apply_pressure_button.setEnabled(plc_ready)
+        self.pulse_duration_input.setEnabled(plc_ready)
+        self.apply_pulse_duration_button.setEnabled(plc_ready)
+        self.enable_fast_response_button.setEnabled(
+            plc_ready
+            and not self.fast_response_active
+            and not self.fast_response_saved_values
+        )
+        self.restore_plc_setup_button.setEnabled(
+            plc_ready and bool(self.fast_response_saved_values)
+        )
         self.post_trigger_input.setEnabled(not recording)
         self.output_input.setEnabled(not recording)
         self.browse_output_button.setEnabled(not recording)
-        loaded = bool(self.loaded_frames) and not recording
+        self.open_button.setEnabled(not recording and not analyzing)
+        self.compare_recordings_button.setEnabled(not recording and not analyzing)
+        loaded = bool(self.loaded_frames) and not recording and not analyzing
         self.frame_slider.setEnabled(loaded)
         self.previous_button.setEnabled(loaded and self.frame_slider.value() > 0)
         self.next_button.setEnabled(
@@ -1471,12 +2622,24 @@ class PressureDelayTab(QWidget):
         current_has_time = loaded and self.loaded_frames[self.frame_slider.value()].get(
             "relative_to_light_barrier_ms"
         ) not in {"", None}
+        self.analyze_movement_button.setEnabled(current_has_time)
         self.mark_movement_button.setEnabled(current_has_time)
 
     def shutdown(self) -> None:
+        if self.analysis_worker is not None and self.analysis_worker.isRunning():
+            self.analysis_worker.wait(5000)
         if self.session is not None:
             self.camera.set_recording(False)
             self.session.stop("application_close")
             self.session.wait(5.0)
             self.session = None
+        if (
+            self.ads is not None
+            and self.ads_connected
+            and self.fast_response_saved_values
+            and self.fast_response_pending != "restore"
+        ):
+            self.ads.write_now(
+                dict(self.fast_response_saved_values), FAST_RESPONSE_RESTORE_CONTEXT
+            )
         self.camera.shutdown()

@@ -1003,6 +1003,18 @@ class AdsWorker(QObject):
             "MAIN.EstimatedVelocityMmPerSec3",
             "MAIN.EstimatedVelocityMmPerSec4",
         ]
+        for index in range(1, ARRAY_COUNT + 1):
+            symbols = SYMBOLS[index]
+            names.extend(
+                [
+                    symbols.pressure,
+                    symbols.delay,
+                    symbols.pulse_duration,
+                    symbols.offset,
+                    f"MAIN.GuiForceResponseDelayMs{index}",
+                    f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}",
+                ]
+            )
         read_started_ns = time.perf_counter_ns()
         values = self.read_values(names)
         read_finished_ns = time.perf_counter_ns()
@@ -1082,6 +1094,26 @@ class AdsWorker(QObject):
                 float(values["MAIN.EstimatedVelocityMmPerSec3"]),
                 float(values["MAIN.EstimatedVelocityMmPerSec4"]),
             ),
+            "arrays": [
+                {
+                    "index": index,
+                    "pressure_mbar": int(values[SYMBOLS[index].pressure]),
+                    "delay_ms": int(values[SYMBOLS[index].delay]),
+                    "pulse_duration_ms": int(
+                        values[SYMBOLS[index].pulse_duration]
+                    ),
+                    "offset_mm": float(values[SYMBOLS[index].offset]),
+                    "force_response_delay_ms": float(
+                        values[f"MAIN.GuiForceResponseDelayMs{index}"]
+                    ),
+                    "force_single_nozzle_response_delay_ms": float(
+                        values[
+                            f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}"
+                        ]
+                    ),
+                }
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
         }
 
     @pyqtSlot()

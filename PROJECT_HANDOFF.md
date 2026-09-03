@@ -590,7 +590,28 @@ erste kamerainterne `Line0RisingEdge`-Flanke. Deren exakter Kamerazeitstempel
 bildet Zeit null; der erste Frame bei oder nach Triggerzeit plus einstellbarem
 Nachlauf, standardmaessig 200 ms, beendet die Aufnahme. Weitere Flanken werden
 ignoriert. `Stop` beendet jederzeit manuell. Der bestehende Pressure-/Conveyor-
-Ablauf loest den Druckimpuls aus; der Reiter schreibt keine SPS-Werte.
+Ablauf loest den Druckimpuls aus. Normale Aufnahmen beobachten diesen Ablauf
+weiterhin ohne SPS-Writes.
+
+Fuer eine Messung der schnellstmoeglichen Reaktion besitzt der Reiter
+`Enable Fastest Response`. Die Lichtschranke bestimmt automatisch das gekoppelte
+Duesenarray: LB 1/2 -> Array 1, LB 3/4 -> Array 2, LB 5/6 -> Array 3 und LB 7/8
+-> Array 4. Vor dem Schreiben sichert die GUI die aktuellen Werte. Fuer das
+ausgewaehlte Array werden manueller Delay, Offset sowie beide
+Kraftantwort-Kompensationen auf 0 gesetzt; fuer die ausgewaehlte Lichtschranke
+wird Debounce deaktiviert. Der globale Debounce-Zeitwert bleibt unveraendert,
+damit andere Lichtschranken nicht beeinflusst werden. `Restore Previous Setup`
+schreibt Druck und alle gesicherten Timingwerte zurueck. Beim Schliessen fordert
+die GUI ebenfalls die Wiederherstellung an. Bei ADS-Verlust muss nach dem
+Wiederverbinden der Restore-Knopf verwendet werden.
+
+`Test pressure` und `Apply Pressure` schreiben `GuiPressureMbarN` fuer das
+gekoppelte Array im Bereich 0..6000 mbar. Die Pulsdauer und Duesenauswahl werden
+nicht durch diese Druckaenderung veraendert. `Pulse duration` und
+`Apply Pulse Duration` schreiben separat `GuiPulseDurationMsN` fuer dasselbe
+automatisch gekoppelte Array im Bereich 1..500 ms. Der Fastest-Response-Modus
+veraendert die Pulsdauer weiterhin nicht. Dadurch lassen sich mehrere Aufnahmen
+mit unterschiedlichem Druck und unterschiedlichen Impulsdauern durchfuehren.
 
 Am 2026-09-03 wurde der PNP-Ausgang des Panasonic-Empfaengers `EX-13BD-PN`
 erfolgreich an der realen Kamera getestet. Die Kamera sah alle LOW/HIGH-Wechsel
@@ -615,12 +636,42 @@ Host-Monotonic-Uhr abgebildet. Die verwendete Quelle steht in
 `session.json -> trigger.source`.
 
 Standardausgabe ist
-`Pictures\BiBaZu\PressureDelayCalibration\YYYYMMDD_HHMMSS_LB<n>`. Jede Session
+`Pictures\BiBaZu\PressureDelayCalibration\YYYYMMDD_HHMMSS_LB<n>_<druck>mbar`,
+zum Beispiel `20260903_104310_LB4_3000mbar`. Der Ordnername verwendet die
+ausgewaehlte Lichtschranke und den fuer die Aufnahme protokollierten SPS-Druck.
+Jede Session
 enthaelt JPEG-Einzelbilder, `frames.csv` und `session.json`. Der erste sichtbare
-Bewegungsframe wird im integrierten Viewer markiert; der berechnete
-LB-bis-Bewegung-Wert wird in der Session und in `calibration_results.csv`
-gespeichert. Er enthaelt Debounce, manuellen Delay und Offsetdelay und wird daher
-nicht automatisch als Kraftantwortzeit in die SPS geschrieben.
+Bewegungsframe wird nach jeder vollstaendig gespeicherten Aufnahme automatisch
+analysiert und markiert. Die Analyse lernt das Bildrauschen aus mindestens vier
+Vortriggerframes, verfolgt Bauteilmerkmale per Optical Flow und akzeptiert erst
+drei aufeinanderfolgende Frames oberhalb der adaptiven Bewegungsschwelle. Die
+GUI springt auf diesen Frame, zeigt den LB-relativen Delay sowie das Intervall
+seit dem vorherigen Frame und aktualisiert automatisch `session.json` und
+`calibration_results.csv`. Beim spaeteren Laden einer Aufnahme stehen Slider
+und Bild ebenfalls direkt auf dem gespeicherten First-Movement-Frame.
+`Analyze Movement` startet die automatische Analyse erneut. Falls der Vorschlag
+korrigiert werden muss, wird der richtige Frame mit dem Slider ausgewaehlt und
+mit `Mark First Movement` manuell ueberschrieben. Bei instabilem Bild, schlechter
+Beleuchtung oder fehlenden Merkmalen meldet die Analyse einen Fehler und die
+manuelle Markierung bleibt moeglich. Die Auswertungsmethode wird in
+`session.json -> evaluation.method` und `calibration_results.csv` protokolliert.
+`session.json -> plc_measurement_setup`
+protokolliert Array, Druck, Pulsdauer, manuellen Delay, Offset, beide
+Kraftantwort-Kompensationen, Debounce-Zustand und
+den Fastest-Response-Modus. Druck, Array und Fastest-Response-Modus werden auch
+in `calibration_results.csv` uebernommen. Der Messwert wird nicht automatisch als
+Kraftantwortzeit in die SPS geschrieben.
+
+Mit `Compare Recordings…` lassen sich im Frame-Review mehrere Session-Ordner
+per Ctrl/Shift auswaehlen. Alternativ kann ein gemeinsamer Elternordner
+ausgewaehlt werden; darin enthaltene Sessions werden rekursiv gefunden. Fuer
+einen belastbaren Vergleich akzeptiert ein Plot nur Aufnahmen derselben
+Lichtschranke. Er zeigt alle Einzelmessungen (Druck in bar gegen Delay in ms),
+die Mittelwerte je Druckstufe und bei mehr als drei Wiederholungen derselben
+Druckstufe Fehlerbalken von ±1 Standardabweichung. Eine lineare
+Kleinste-Quadrate-Regression ueber alle gueltigen Messungen wird mit Gleichung
+und R² eingeblendet. Nicht markierte Sessions sowie Sessions ohne Druckwert
+werden uebersprungen und im Plotdialog gezaehlt.
 
 Die Legacy-Umgebung benoetigt jetzt neben PyQt6 und pyads auch Harvester,
 GenICam, NumPy und OpenCV. Die reproduzierbaren Abhaengigkeiten stehen in der

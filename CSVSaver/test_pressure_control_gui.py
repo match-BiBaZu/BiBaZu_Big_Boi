@@ -675,7 +675,7 @@ class AdsThreadTests(unittest.TestCase):
         snapshot = worker.read_setup_snapshot()
 
         self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 85)
+        self.assertEqual(len(plc.read_calls[0]), 109)
         self.assertIn("MAIN.LightBarrierEventClockMs", plc.read_calls[0])
         self.assertEqual(snapshot["light_barriers"], [False] * 8)
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 8)
@@ -687,6 +687,8 @@ class AdsThreadTests(unittest.TestCase):
         self.assertGreater(snapshot["sampled_monotonic_ns"], 0)
         self.assertGreaterEqual(snapshot["ads_roundtrip_ns"], 0)
         self.assertEqual(snapshot["debounce_ms"], 0)
+        self.assertEqual(len(snapshot["arrays"]), 4)
+        self.assertEqual(snapshot["arrays"][0]["pressure_mbar"], 0)
 
     def test_barrier_calibration_start_is_one_safe_batch(self):
         controller = gui.AdsController()
@@ -1393,6 +1395,260 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertEqual(window.calibration_tabs.count(), 4)
         self.assertEqual(window.calibration_tabs.tabText(3), "Pressure Delay")
         self.assertFalse(window.pressure_delay_tab.record_button.isEnabled())
+        self.assertFalse(
+            window.pressure_delay_tab.analyze_movement_button.isEnabled()
+        )
+        self.assertTrue(
+            window.pressure_delay_tab.compare_recordings_button.isEnabled()
+        )
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_displays_automatic_movement_candidate(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        tab.loaded_directory = Path(tempfile.gettempdir())
+        tab.loaded_document = {"trigger": {"timing_uncertainty_ms": 0.1}}
+        tab.loaded_frames = [
+            {
+                "filename": "missing_0.jpg",
+                "frame_id": "100",
+                "relative_to_light_barrier_ms": "5.8",
+            },
+            {
+                "filename": "missing_1.jpg",
+                "frame_id": "101",
+                "relative_to_light_barrier_ms": "7.1",
+            },
+        ]
+        tab.frame_slider.setRange(0, 1)
+        tab._update_controls()
+
+        self.assertTrue(tab.analyze_movement_button.isEnabled())
+        with patch(
+            "high_speed_calibration.update_movement_evaluation",
+            return_value={
+                "evaluation": {
+                    "movement_frame_index": 1,
+                    "movement_filename": "missing_1.jpg",
+                    "delay_ms": 7.1,
+                    "method": "automatic_optical_flow",
+                }
+            },
+        ) as update_evaluation:
+            tab._analysis_ready(
+                {
+                    "frame_index": 1,
+                    "relative_to_light_barrier_ms": 7.1,
+                    "previous_relative_ms": 5.8,
+                }
+            )
+
+        self.assertEqual(tab.frame_slider.value(), 1)
+        self.assertIn("Automatic delay: 7.100 ms", tab.result_label.text())
+        self.assertIn("+5.800 and +7.100 ms", tab.result_label.text())
+        self.assertEqual(
+            update_evaluation.call_args.kwargs["method"],
+            "automatic_optical_flow",
+        )
+        window.ads.connected = False
+        window.close()
+
+    def test_loading_recording_opens_saved_first_movement_frame(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        document = {
+            "trigger": {"detected": True, "timing_uncertainty_ms": 0.1},
+            "evaluation": {
+                "movement_frame_index": 2,
+                "movement_filename": "frame_000002.jpg",
+                "delay_ms": 7.25,
+                "method": "automatic_optical_flow",
+            },
+        }
+        frames = [
+            {
+                "filename": f"frame_{index:06d}.jpg",
+                "frame_id": str(100 + index),
+                "relative_to_light_barrier_ms": str(5.0 + index),
+            }
+            for index in range(4)
+        ]
+
+        with patch(
+            "high_speed_calibration.load_recording",
+            return_value=(document, frames),
+        ):
+            tab.load_recording(Path(tempfile.gettempdir()))
+
+        self.assertEqual(tab.frame_slider.value(), 2)
+        self.assertIn("Frame 3/4", tab.review_frame_label.text())
+        self.assertEqual(tab.result_label.text(), "Automatic delay: 7.250 ms")
+        window.ads.connected = False
+        window.close()
+
+    def test_completed_recording_starts_automatic_movement_analysis(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        tab.session = SimpleNamespace(recording_complete=True)
+        recording = Path(tempfile.gettempdir()) / "automatic-analysis-session"
+
+        def fake_load(_directory):
+            tab.loaded_document = {"trigger": {"detected": True}}
+
+        with patch.object(tab, "load_recording", side_effect=fake_load), patch.object(
+            tab, "_analyze_movement"
+        ) as analyze:
+            tab._session_finished(recording)
+
+        analyze.assert_called_once_with()
+        self.assertIsNone(tab.session)
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_camera_updates_do_not_overwrite_exposure_draft(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        camera_info = {
+            "model": "VCXU-02C",
+            "serial": "700005072151",
+            "width": 640,
+            "height": 480,
+            "pixel_format": "BayerRG8",
+            "stream_fps": 893.0,
+            "hardware_trigger_available": True,
+            "exposure_min_us": 20.0,
+            "exposure_max_us": 1_000_000.0,
+            "exposure_us": 800.0,
+        }
+        tab._camera_info_changed(camera_info)
+        self.assertEqual(tab.exposure_input.value(), 800.0)
+
+        tab.exposure_input.setValue(600.0)
+        tab._camera_info_changed(camera_info)
+
+        self.assertEqual(tab.exposure_input.value(), 600.0)
+        self.assertTrue(tab._exposure_edit_dirty)
+        tab._exposure_applied(600.0)
+        self.assertFalse(tab._exposure_edit_dirty)
+        updated_info = dict(camera_info, exposure_us=700.0)
+        tab._camera_info_changed(updated_info)
+        self.assertEqual(tab.exposure_input.value(), 700.0)
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_fast_response_can_restore_previous_plc_values(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        window.ads.connected = True
+        tab.set_ads_connected(True)
+        status = {
+            "arrays": [
+                {
+                    "index": index,
+                    "pressure_mbar": 3100 if index == 2 else 3000,
+                    "delay_ms": 23 if index == 2 else 0,
+                    "pulse_duration_ms": 100,
+                    "offset_mm": 12.5 if index == 2 else 0.0,
+                    "force_response_delay_ms": 14.0,
+                    "force_single_nozzle_response_delay_ms": 16.0,
+                }
+                for index in range(1, 5)
+            ],
+            "light_barrier_debounce_enabled": [False, False, False, True] + [
+                False
+            ]
+            * 4,
+        }
+        tab.process_setup_status(status)
+        tab.barrier_input.setCurrentIndex(3)
+        tab.pressure_input.setValue(2750)
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        tab._enable_fast_response()
+
+        values, context = writes[-1]
+        self.assertEqual(context, "pressure_delay_fast_response_enable")
+        self.assertEqual(values["MAIN.GuiPressureMbar2"], 2750)
+        self.assertEqual(values["MAIN.GuiDelayMs2"], 0)
+        self.assertEqual(values["MAIN.GuiOffsetMm2"], 0.0)
+        self.assertEqual(values["MAIN.GuiForceResponseDelayMs2"], 0.0)
+        self.assertEqual(
+            values["MAIN.GuiForceSingleNozzleResponseDelayMs2"], 0.0
+        )
+        self.assertFalse(values["MAIN.GuiLightBarrierDebounceEnabled4"])
+        tab._ads_write_finished(context)
+        self.assertTrue(tab.fast_response_active)
+
+        tab._restore_previous_plc_setup()
+
+        restored, restore_context = writes[-1]
+        self.assertEqual(restore_context, "pressure_delay_fast_response_restore")
+        self.assertEqual(restored["MAIN.GuiPressureMbar2"], 3100)
+        self.assertEqual(restored["MAIN.GuiDelayMs2"], 23)
+        self.assertEqual(restored["MAIN.GuiOffsetMm2"], 12.5)
+        self.assertEqual(restored["MAIN.GuiForceResponseDelayMs2"], 14.0)
+        self.assertEqual(
+            restored["MAIN.GuiForceSingleNozzleResponseDelayMs2"], 16.0
+        )
+        self.assertTrue(restored["MAIN.GuiLightBarrierDebounceEnabled4"])
+        tab._ads_write_finished(restore_context)
+        self.assertFalse(tab.fast_response_active)
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_can_apply_pulse_duration_to_selected_array(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        window.ads.connected = True
+        tab.set_ads_connected(True)
+        tab.process_setup_status(
+            {
+                "arrays": [
+                    {
+                        "index": index,
+                        "pressure_mbar": 3000,
+                        "delay_ms": 0,
+                        "pulse_duration_ms": 100 + index,
+                        "offset_mm": 0.0,
+                        "force_response_delay_ms": 0.0,
+                        "force_single_nozzle_response_delay_ms": 0.0,
+                    }
+                    for index in range(1, 5)
+                ],
+                "light_barrier_debounce_enabled": [False] * 8,
+            }
+        )
+        tab.barrier_input.setCurrentIndex(3)
+        self.assertEqual(tab.pulse_duration_input.value(), 102)
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        tab.pulse_duration_input.setValue(75)
+        tab._apply_pulse_duration()
+
+        self.assertEqual(
+            writes[-1],
+            (
+                {"MAIN.GuiPulseDurationMs2": 75},
+                "pressure_delay_pulse_duration_array_2",
+            ),
+        )
+        tab._ads_write_finished(writes[-1][1])
+        self.assertEqual(
+            tab._measurement_settings_snapshot()["pulse_duration_ms"], 75
+        )
         window.ads.connected = False
         window.close()
 
