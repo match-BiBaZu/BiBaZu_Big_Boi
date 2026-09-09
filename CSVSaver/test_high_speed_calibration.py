@@ -10,6 +10,7 @@ from high_speed_calibration import (
     FramePacket,
     RecordingSession,
     analyze_recording_movement,
+    analyze_recordings_for_comparison,
     build_pressure_delay_comparison,
     decode_baumer_usb_line_event,
     estimate_camera_event_timestamp_ns,
@@ -20,6 +21,7 @@ from high_speed_calibration import (
     pressure_array_for_barrier,
     uint32_elapsed,
     update_movement_evaluation,
+    validate_recording_folder_name,
 )
 
 HAS_IMAGE_DEPENDENCIES = bool(
@@ -28,23 +30,32 @@ HAS_IMAGE_DEPENDENCIES = bool(
 
 
 class TimingTests(unittest.TestCase):
+    def test_recording_folder_name_validation_accepts_names_and_blocks_paths(self):
+        self.assertEqual(
+            validate_recording_folder_name("  Versuch LB4  "), "Versuch LB4"
+        )
+        self.assertEqual(validate_recording_folder_name(""), "")
+        for invalid in ("../outside", r"folder\child", "CON", "name."):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_recording_folder_name(invalid)
+
     def test_pressure_delay_comparison_groups_trials_and_fits_linear_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             directories = []
-            for index, (pressure, delay) in enumerate(
+            for index, (pressure, pulse_duration, delay) in enumerate(
                 [
-                    (3000, 9.0),
-                    (3000, 10.0),
-                    (3000, 10.0),
-                    (3000, 11.0),
-                    (4500, 8.5),
-                    (4500, 8.5),
-                    (4500, 8.5),
-                    (6000, 6.0),
-                    (6000, 7.0),
-                    (6000, 7.0),
-                    (6000, 8.0),
+                    (3000, 10, 9.0),
+                    (3000, 10, 10.0),
+                    (3000, 30, 10.0),
+                    (3000, 30, 11.0),
+                    (4500, 10, 8.5),
+                    (4500, 10, 8.5),
+                    (4500, 30, 8.5),
+                    (6000, 10, 6.0),
+                    (6000, 10, 7.0),
+                    (6000, 30, 7.0),
+                    (6000, 30, 8.0),
                 ]
             ):
                 directory = root / f"session_{index}"
@@ -55,7 +66,8 @@ class TimingTests(unittest.TestCase):
                             "session_id": f"session_{index}",
                             "light_barrier": 4,
                             "plc_measurement_setup": {
-                                "pressure_mbar": pressure
+                                "pressure_mbar": pressure,
+                                "pulse_duration_ms": pulse_duration,
                             },
                             "evaluation": {"delay_ms": delay},
                         }
@@ -94,6 +106,16 @@ class TimingTests(unittest.TestCase):
                 comparison["regression"]["slope_ms_per_bar"], -1.0
             )
             self.assertAlmostEqual(comparison["regression"]["intercept_ms"], 13.0)
+            self.assertEqual(len(comparison["pressure_plots"]), 2)
+            self.assertEqual(len(comparison["pulse_duration_plots"]), 3)
+            ten_ms_plot = comparison["pressure_plots"][0]
+            self.assertEqual(ten_ms_plot["fixed_value"], 10)
+            self.assertEqual(len(ten_ms_plot["groups"]), 3)
+            self.assertAlmostEqual(ten_ms_plot["suggested_delay_ms"], 49 / 6)
+            three_bar_plot = comparison["pulse_duration_plots"][0]
+            self.assertEqual(three_bar_plot["fixed_value"], 3000)
+            self.assertEqual(len(three_bar_plot["groups"]), 2)
+            self.assertAlmostEqual(three_bar_plot["suggested_delay_ms"], 10.0)
 
     def test_fastest_response_values_target_paired_array_and_selected_barrier(self):
         self.assertEqual(pressure_array_for_barrier(4), 2)
@@ -207,6 +229,71 @@ class RecordingWriterTests(unittest.TestCase):
             self.assertEqual(result["previous_frame_index"], 13)
             self.assertLess(result["threshold_px"], 1.0)
 
+    def test_comparison_analyzes_and_marks_an_unreviewed_recording(self):
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "unreviewed"
+            directory.mkdir()
+            rng = np.random.default_rng(23)
+            texture = rng.integers(30, 225, (45, 80), dtype=np.uint8)
+            frames = []
+            for index in range(24):
+                image = np.full((90, 140), 215, dtype=np.uint8)
+                top = 22 if index < 14 else 22 - (index - 13)
+                image[top : top + 45, 30:110] = texture
+                filename = f"frame_{index:06d}.jpg"
+                self.assertTrue(cv2.imwrite(str(directory / filename), image))
+                frames.append(
+                    {
+                        "filename": filename,
+                        "frame_id": str(index),
+                        "relative_to_light_barrier_ms": f"{index - 10:.3f}",
+                    }
+                )
+            with (directory / "frames.csv").open(
+                "w", newline="", encoding="utf-8"
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=frames[0].keys())
+                writer.writeheader()
+                writer.writerows(frames)
+            (directory / "session.json").write_text(
+                json.dumps(
+                    {
+                        "session_id": "unreviewed",
+                        "recorded_at_utc": "2026-09-03T10:00:00+00:00",
+                        "light_barrier": 4,
+                        "frame_count": len(frames),
+                        "camera": {},
+                        "trigger": {"timing_uncertainty_ms": 0.5},
+                        "plc_measurement_setup": {
+                            "pressure_mbar": 3000,
+                            "pulse_duration_ms": 10,
+                        },
+                        "evaluation": {
+                            "movement_frame_index": None,
+                            "movement_filename": None,
+                            "delay_ms": None,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            comparison = analyze_recordings_for_comparison([directory])
+            document, _frames = load_recording(directory)
+
+            self.assertEqual(comparison["newly_analyzed_count"], 1)
+            self.assertEqual(comparison["reused_result_count"], 0)
+            self.assertEqual(len(comparison["trials"]), 1)
+            self.assertEqual(
+                document["evaluation"]["method"], "automatic_optical_flow"
+            )
+            self.assertEqual(document["evaluation"]["movement_frame_index"], 14)
+            self.assertAlmostEqual(document["evaluation"]["delay_ms"], 4.0)
+
     def test_writer_creates_images_metadata_and_upserts_movement_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -236,7 +323,7 @@ class RecordingWriterTests(unittest.TestCase):
             document, frames = load_recording(session.directory)
             self.assertRegex(
                 session.directory.name,
-                r"^\d{8}_\d{6}_LB2_2750mbar(?:_\d{2})?$",
+                r"^LB2_2750mbar_75ms_\d{6}_\d{8}(?:_\d{2})?$",
             )
             self.assertEqual(document["frame_count"], 6)
             self.assertTrue(document["recording_complete"])
@@ -291,8 +378,38 @@ class RecordingWriterTests(unittest.TestCase):
             self.assertTrue(session.wait())
 
             document, _frames = load_recording(session.directory)
+            self.assertRegex(
+                session.directory.name,
+                r"^LB4_\d{6}_\d{8}(?:_\d{2})?$",
+            )
             self.assertFalse(document["recording_complete"])
             self.assertEqual(document["frame_id_gaps"], [[10, 12]])
+
+    def test_custom_recording_folder_name_is_used_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = RecordingSession(
+                root,
+                light_barrier=4,
+                post_trigger_ms=500,
+                camera_info={},
+                session_name="Mein Versuch",
+            )
+            first.stop("manual")
+            self.assertTrue(first.wait())
+
+            second = RecordingSession(
+                root,
+                light_barrier=4,
+                post_trigger_ms=500,
+                camera_info={},
+                session_name="Mein Versuch",
+            )
+            second.stop("manual")
+            self.assertTrue(second.wait())
+
+            self.assertEqual(first.directory.name, "Mein Versuch")
+            self.assertEqual(second.directory.name, "Mein Versuch_01")
 
     def test_auto_stop_is_requested_on_first_frame_at_post_trigger_deadline(self):
         with tempfile.TemporaryDirectory() as temporary:

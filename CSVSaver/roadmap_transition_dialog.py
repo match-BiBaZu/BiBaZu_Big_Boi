@@ -12,19 +12,16 @@ from typing import Any
 
 from pose_preview import render_mesh_preview
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPixmap
+from PyQt6.QtGui import QColor, QBrush, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
-    QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -60,7 +57,7 @@ class RoadmapTransition:
 
     @property
     def display_name(self) -> str:
-        return f"Übergang {self.source_pose_id}-{self.target_pose_id}"
+        return f"Transition {self.source_pose_id}-{self.target_pose_id}"
 
     @property
     def calibratable(self) -> bool:
@@ -73,10 +70,10 @@ class RoadmapTransition:
     @property
     def category_label(self) -> str:
         if self.is_multi_reorientation:
-            return f"Mehrfach-Reorientierung ({self.flip_count}×) · experimentell"
+            return f"Multiple reorientation ({self.flip_count}×) · experimental"
         if self.transition_kind == "actuated":
-            return "Direkt · bevorzugt"
-        return "Passiv · nur Information"
+            return "Direct · preferred"
+        return "Passive · information only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,15 +99,188 @@ class SelectedRoadmapTransition:
     transition: RoadmapTransition
     source_pose: RoadmapPose
     target_pose: RoadmapPose
+    component_flips: tuple[RoadmapTransition, ...] = ()
 
     @property
     def profile_name_stem(self) -> str:
         raw = (
-            f"{self.part_name}_Uebergang_"
+            f"{self.part_name}_Transition_"
             f"{self.transition.source_pose_id}-{self.transition.target_pose_id}_"
             f"{self.transition.actuation}"
         )
         return re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+
+
+def roadmap_transition_metadata(selection: SelectedRoadmapTransition) -> dict[str, Any]:
+    """Return the portable transition identity stored in a pressure profile."""
+    transition = selection.transition
+    return {
+        "title": transition.display_name,
+        "roadmap_path": str(selection.roadmap_path),
+        "part_name": selection.part_name,
+        "edge_id": transition.edge_id,
+        "source_pose_id": transition.source_pose_id,
+        "target_pose_id": transition.target_pose_id,
+        "transition_kind": transition.transition_kind,
+        "actuation": transition.actuation,
+        "signed_angle_deg": transition.signed_angle_deg,
+        "flip_count": transition.flip_count,
+        "via_pose_ids": list(transition.via_pose_ids),
+        "component_edge_ids": list(transition.component_edge_ids),
+        "component_flips": [
+            {
+                "edge_id": flip.edge_id,
+                "source_pose_id": flip.source_pose_id,
+                "target_pose_id": flip.target_pose_id,
+                "actuation": flip.actuation,
+                "signed_angle_deg": flip.signed_angle_deg,
+            }
+            for flip in selection.component_flips
+        ],
+    }
+
+
+def selection_from_roadmap_transition_metadata(
+    value: Any,
+) -> SelectedRoadmapTransition | None:
+    """Restore a selected transition without making old profiles invalid.
+
+    Keep the saved transition identity even if regeneration removed its edge.
+    Use the referenced roadmap for pose images whenever it remains available.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        roadmap_path = Path(str(value["roadmap_path"])).expanduser().resolve()
+        edge_id = str(value["edge_id"])
+        source_id = int(value["source_pose_id"])
+        target_id = int(value["target_pose_id"])
+        transition = RoadmapTransition(
+            edge_id=edge_id,
+            source_pose_id=source_id,
+            target_pose_id=target_id,
+            transition_kind=str(value.get("transition_kind", "actuated")),
+            actuation=str(value["actuation"]),
+            signed_angle_deg=(
+                None
+                if value.get("signed_angle_deg") is None
+                else float(value["signed_angle_deg"])
+            ),
+            capture_width_deg=0.0,
+            geometric_score=None,
+            flip_count=int(value.get("flip_count", 1)),
+            via_pose_ids=tuple(int(item) for item in value.get("via_pose_ids", [])),
+            component_edge_ids=tuple(
+                str(item) for item in value.get("component_edge_ids", [])
+            ),
+        )
+        source_pose = RoadmapPose(
+            source_id, (source_id,), "robust", "unknown", "unknown", None
+        )
+        target_pose = RoadmapPose(
+            target_id, (target_id,), "robust", "unknown", "unknown", None
+        )
+        document = None
+        try:
+            document = load_roadmap_document(roadmap_path)
+            source_pose = document.pose(source_id)
+            target_pose = document.pose(target_id)
+        except (KeyError, OSError, TypeError, ValueError):
+            pass
+        return SelectedRoadmapTransition(
+            roadmap_path=roadmap_path,
+            part_name=str(value.get("part_name", roadmap_path.stem)),
+            transition=transition,
+            source_pose=source_pose,
+            target_pose=target_pose,
+            component_flips=_restore_component_flips(value, transition, document),
+        )
+    except (KeyError, OSError, TypeError, ValueError, StopIteration):
+        return None
+
+
+def _restore_component_flips(
+    metadata: dict[str, Any],
+    transition: RoadmapTransition,
+    document: RoadmapDocument | None,
+) -> tuple[RoadmapTransition, ...]:
+    """Prefer saved flip angles; recover older profiles from their exact edges."""
+    by_id = {edge.edge_id: edge for edge in document.transitions} if document else {}
+    saved_flips = metadata.get("component_flips", [])
+    if isinstance(saved_flips, list):
+        for value in saved_flips:
+            try:
+                flip = RoadmapTransition(
+                    edge_id=str(value["edge_id"]),
+                    source_pose_id=int(value["source_pose_id"]),
+                    target_pose_id=int(value["target_pose_id"]),
+                    transition_kind="actuated",
+                    actuation=str(value["actuation"]),
+                    signed_angle_deg=(
+                        None if value.get("signed_angle_deg") is None
+                        else float(value["signed_angle_deg"])
+                    ),
+                    capture_width_deg=0.0,
+                    geometric_score=None,
+                )
+                by_id[flip.edge_id] = flip
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+    pose_ids = (transition.source_pose_id, *transition.via_pose_ids, transition.target_pose_id)
+    flips = []
+    for index, edge_id in enumerate(transition.component_edge_ids):
+        flip = by_id.get(edge_id)
+        if (
+            flip is not None
+            and index + 1 < len(pose_ids)
+            and flip.source_pose_id == pose_ids[index]
+            and flip.target_pose_id == pose_ids[index + 1]
+        ):
+            flips.append(flip)
+    return tuple(flips)
+
+
+def selection_from_pressure_profile(
+    profile: dict[str, Any], profile_path: Path
+) -> SelectedRoadmapTransition | None:
+    """Restore metadata, or recover the pose pair from a legacy profile name."""
+    metadata = profile.get("roadmap_transition")
+    if isinstance(metadata, dict):
+        return selection_from_roadmap_transition_metadata(metadata)
+    match = re.fullmatch(
+        r"(.+)_(?:Uebergang|Transition)_(\d+)-(\d+)_"
+        r"(floor_main_(?:pos|neg)_x|wall_main_(?:pos|neg)_x|free_[yz]|"
+        r"multiple_reorientation_[23])(?:_.*)?",
+        profile_path.stem,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    part_name, source_id, target_id, actuation = match.groups()
+    actuation = actuation.lower()
+    workspace = Path(__file__).resolve().parents[2]
+    roots = (
+        profile_path.parent,
+        workspace / "bibazu_geometry_to_pose" / "Poses_Found_Robust",
+        workspace / "BiBaZu_Big_Boi" / "ReorientationControlGUI" / "all_1_roadmaps",
+    )
+    roadmap_path = profile_path.parent / f"{part_name}_roadmap.json"
+    for root in roots:
+        candidates = sorted(root.rglob(f"{part_name}_roadmap.json")) if root.is_dir() else []
+        if candidates:
+            roadmap_path = candidates[0]
+            break
+    multi = actuation.startswith("multiple_reorientation_")
+    return selection_from_roadmap_transition_metadata({
+        "roadmap_path": str(roadmap_path),
+        "part_name": part_name,
+        "edge_id": f"legacy:{profile_path.stem}",
+        "source_pose_id": int(source_id),
+        "target_pose_id": int(target_id),
+        "transition_kind": "multi_reorientation" if multi else "actuated",
+        "actuation": actuation,
+        "flip_count": int(actuation.rsplit("_", 1)[1]) if multi else 1,
+    })
 
 
 def _decode_thumbnail(value: Any) -> bytes | None:
@@ -299,15 +469,15 @@ def pose_pixmap(pose: RoadmapPose, width: int, height: int) -> QPixmap:
 
 
 _ACTION_LABELS = {
-    "floor_main_neg_x": "−X · Hauptfläche Boden",
-    "floor_main_pos_x": "+X · Hauptfläche Boden",
-    "wall_main_neg_x": "−X · Hauptfläche Wand",
-    "wall_main_pos_x": "+X · Hauptfläche Wand",
-    "free_y": "freie Y-Rotation",
-    "free_z": "freie Z-Rotation",
-    "passive": "passives Kippen",
-    "multiple_reorientation_2": "Mehrfach-Reorientierung · 2 Flips",
-    "multiple_reorientation_3": "Mehrfach-Reorientierung · 3 Flips",
+    "floor_main_neg_x": "−X · main face on floor",
+    "floor_main_pos_x": "+X · main face on floor",
+    "wall_main_neg_x": "−X · main face on wall",
+    "wall_main_pos_x": "+X · main face on wall",
+    "free_y": "free Y rotation",
+    "free_z": "free Z rotation",
+    "passive": "passive tipping",
+    "multiple_reorientation_2": "Multiple reorientation · 2 flips",
+    "multiple_reorientation_3": "Multiple reorientation · 3 flips",
 }
 
 
@@ -315,229 +485,398 @@ def action_display_label(actuation: str) -> str:
     return _ACTION_LABELS.get(actuation, actuation)
 
 
+class RoadmapMap(QWidget):
+    """Clickable robust-pose layer using the exported geometry roadmap layout."""
+
+    def __init__(self, document: RoadmapDocument, on_pose_clicked: Any) -> None:
+        super().__init__()
+        self.document = document
+        self.on_pose_clicked = on_pose_clicked
+        self.poses = tuple(
+            pose for pose in document.poses if pose.stability == "robust"
+        )
+        self.start_pose_id: int | None = None
+        self.end_pose_id: int | None = None
+        self._pixmaps = {pose.pose_id: self._thumbnail(pose) for pose in self.poses}
+        self._grid_slots, self._columns, self._rows = self._optimised_grid_slots()
+        self.setMinimumHeight(560)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click a pose image to choose start, then end pose")
+
+    def _thumbnail(self, pose: RoadmapPose) -> QPixmap:
+        """Use the exact thumbnail embedded by geometry_to_pose when available."""
+        pixmap = QPixmap()
+        if pose.thumbnail_png and pixmap.loadFromData(pose.thumbnail_png, "PNG"):
+            return pixmap
+        return pose_pixmap(pose, 160, 120)
+
+    @property
+    def layout_summary(self) -> str:
+        return (
+            f"Layout: {self._rows} row(s) × {self._columns} column(s) "
+            "· path distance optimized"
+        )
+
+    def _optimised_grid_slots(self) -> tuple[dict[int, tuple[int, int]], int, int]:
+        """Place robust poses on a compact grid and shorten all visible paths.
+
+        This follows the geometry-to-pose plot strategy: choose a grid near its
+        3:2 canvas ratio, then make deterministic best-improvement swaps.  Unlike
+        the exported plot, metastable nodes are excluded before laying out cards,
+        so robust thumbnails never inherit crowded or empty metastable slots.
+        """
+        count = len(self.poses)
+        if not count:
+            return {}, 1, 1
+        candidates: list[tuple[float, int, int]] = []
+        for columns in range(1, count + 1):
+            rows = math.ceil(count / columns)
+            aspect_error = abs(math.log((columns / rows) / 1.5))
+            unused_fraction = (columns * rows - count) / count
+            candidates.append((aspect_error + 0.12 * unused_fraction, columns, rows))
+        _, columns, rows = min(candidates)
+        pose_ids = [pose.pose_id for pose in self.poses]
+        slots = {
+            pose_id: (index % columns, index // columns)
+            for index, pose_id in enumerate(pose_ids)
+        }
+        robust_ids = set(pose_ids)
+        weights: dict[tuple[int, int], int] = {}
+        for edge in self.document.transitions:
+            if (
+                edge.is_multi_reorientation
+                or not edge.calibratable
+                or edge.source_pose_id not in robust_ids
+                or edge.target_pose_id not in robust_ids
+            ):
+                continue
+            key = tuple(sorted((edge.source_pose_id, edge.target_pose_id)))
+            weights[key] = weights.get(key, 0) + 1
+
+        def distance(left: int, right: int) -> float:
+            left_slot, right_slot = slots[left], slots[right]
+            return math.hypot(
+                left_slot[0] - right_slot[0], left_slot[1] - right_slot[1]
+            )
+
+        # The grid is deliberately fixed; only which pose occupies a cell moves.
+        # Greedy best-improvement is stable and practical for roadmap sizes here.
+        for _ in range(max(1, 2 * count)):
+            best_gain = 1e-9
+            best_swap: tuple[int, int] | None = None
+            for left_index, left in enumerate(pose_ids):
+                for right in pose_ids[left_index + 1 :]:
+                    affected = [
+                        (source, target, weight)
+                        for (source, target), weight in weights.items()
+                        if left in {source, target} or right in {source, target}
+                    ]
+                    before = sum(weight * distance(source, target) for source, target, weight in affected)
+                    slots[left], slots[right] = slots[right], slots[left]
+                    after = sum(weight * distance(source, target) for source, target, weight in affected)
+                    slots[left], slots[right] = slots[right], slots[left]
+                    if before - after > best_gain:
+                        best_gain = before - after
+                        best_swap = (left, right)
+            if best_swap is None:
+                break
+            left, right = best_swap
+            slots[left], slots[right] = slots[right], slots[left]
+        return slots, columns, rows
+
+    def _card_size(self) -> tuple[int, int]:
+        rect = self.contentsRect().adjusted(26, 22, -26, -36)
+        cell_width = max(1, rect.width() / self._columns)
+        cell_height = max(1, rect.height() / self._rows)
+        width = max(64, min(160, round(cell_width - 24)))
+        height = max(48, min(round(width * 0.75), round(cell_height - 30)))
+        return width, height
+
+    def _positions(self) -> dict[int, tuple[float, float]]:
+        rect = self.contentsRect().adjusted(26, 22, -26, -22)
+        return {
+            pose.pose_id: (
+                rect.left() + (self._grid_slots[pose.pose_id][0] + 0.5) * rect.width() / self._columns,
+                rect.top() + (self._grid_slots[pose.pose_id][1] + 0.5) * rect.height() / self._rows,
+            )
+            for pose in self.poses
+        }
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#fbfdff"))
+        positions = self._positions()
+        card_width, card_height = self._card_size()
+        for edge in self.document.transitions:
+            if (
+                edge.is_multi_reorientation
+                or not edge.calibratable
+                or edge.source_pose_id not in positions
+                or edge.target_pose_id not in positions
+            ):
+                continue
+            start, end = positions[edge.source_pose_id], positions[edge.target_pose_id]
+            color = QColor(
+                "#d62728"
+                if edge.actuation.endswith("_x")
+                else "#2ca02c" if edge.actuation == "free_y" else "#1f77b4"
+            )
+            painter.setPen(QPen(color, 2.4, Qt.PenStyle.SolidLine))
+            painter.drawLine(round(start[0]), round(start[1]), round(end[0]), round(end[1]))
+        for pose_id, (x, y) in positions.items():
+            if pose_id == self.start_pose_id:
+                border = QColor("#e3a008")
+            elif pose_id == self.end_pose_id:
+                border = QColor("#18a558")
+            else:
+                border = QColor("#084081")
+            pixmap = self._pixmaps[pose_id]
+            width, height = (card_width, card_height) if not pixmap.isNull() else (82, 58)
+            left, top = round(x - width / 2), round(y - height / 2)
+            painter.setPen(QPen(border, 4))
+            painter.setBrush(QBrush(QColor("white")))
+            painter.drawRect(left - 3, top - 3, width + 6, height + 6)
+            if pixmap.isNull():
+                painter.setPen(QPen(QColor("#374151")))
+                painter.drawText(left, top, width, height, Qt.AlignmentFlag.AlignCenter, f"Pose {pose_id}")
+            else:
+                painter.drawPixmap(left, top, width, height, pixmap)
+            painter.setPen(QPen(QColor("#111827")))
+            painter.drawText(left, top + height + 4, width, 18, Qt.AlignmentFlag.AlignCenter, f"Pose {pose_id}")
+
+    def mousePressEvent(self, event) -> None:
+        positions = self._positions()
+        card_width, card_height = self._card_size()
+        for pose in self.poses:
+            x, y = positions[pose.pose_id]
+            if (
+                abs(event.position().x() - x) <= card_width / 2 + 4
+                and abs(event.position().y() - y) <= card_height / 2 + 4
+            ):
+                self.on_pose_clicked(pose.pose_id)
+                return
+
+
 class RoadmapTransitionDialog(QDialog):
     def __init__(
-        self, document: RoadmapDocument, parent: QWidget | None = None
+        self,
+        document: RoadmapDocument,
+        parent: QWidget | None = None,
+        profile_directory: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self.document = document
+        self.profile_directory = profile_directory
         self.selected_transition: SelectedRoadmapTransition | None = None
-        self._transitions_by_id = {
-            transition.edge_id: transition for transition in document.transitions
-        }
-        self._poses_by_id = {pose.pose_id: pose for pose in document.poses}
-        self.setWindowTitle(f"Posenroadmap auswählen · {document.part_name}")
+        self.start_pose_id: int | None = None
+        self.end_pose_id: int | None = None
+        self._transitions_by_id = {item.edge_id: item for item in document.transitions}
+        self._saved_profiles_by_edge = self._find_saved_profiles()
+        self.setWindowTitle(f"Select roadmap path · {document.part_name}")
         self.setModal(True)
-        self.resize(1120, 760)
+        self.resize(1320, 980)
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        title = QLabel(
-            f"<b>{self.document.part_name}</b> · CAD-Status: {self.document.cad_status}"
-        )
+        title = QLabel(f"<b>{self.document.part_name}</b> · CAD status: {self.document.cad_status}")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 18px; padding: 8px;")
+        title.setStyleSheet("font-size:18px; padding:6px;")
         layout.addWidget(title)
-
-        instruction = QLabel(
-            "Stabile Posen sind kräftig umrandet. Wähle eine Tabellenzeile und "
-            "klicke anschließend auf „Übergang übernehmen“; ein Doppelklick "
-            "übernimmt direkt. Passive Kanten werden nur zur Übersicht angezeigt."
+        hint = QLabel(
+            "Click the blue roadmap map: first choose the <b>start</b> pose, then the "
+            "<b>end</b> pose. Only paths joining those two poses are shown below. "
+            "They are ordered from one flip to multi-flip alternatives."
         )
-        instruction.setWordWrap(True)
-        instruction.setStyleSheet(
-            "background: #eef6ff; border: 1px solid #7aa7d9; "
-            "border-radius: 5px; padding: 8px;"
-        )
-        layout.addWidget(instruction)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("background:#eef6ff;border:1px solid #7aa7d9;border-radius:5px;padding:8px;")
+        layout.addWidget(hint)
+        map_box = QGroupBox("Pose roadmap")
+        map_layout = QVBoxLayout(map_box)
+        self.map_widget = RoadmapMap(self.document, self._pose_clicked)
+        map_layout.addWidget(self.map_widget)
+        map_footer = QHBoxLayout()
+        self.pose_selection_label = QLabel("Start: —    End: —")
+        self.pose_selection_label.setStyleSheet("font-weight:600; color:#1f3b53;")
+        map_footer.addWidget(self.pose_selection_label)
+        layout_label = QLabel(self.map_widget.layout_summary)
+        layout_label.setStyleSheet("color:#4b5563;")
+        map_footer.addWidget(layout_label)
+        map_footer.addStretch(1)
+        clear_button = QPushButton("Choose start again")
+        clear_button.clicked.connect(self._clear_pose_selection)
+        map_footer.addWidget(clear_button)
+        map_layout.addLayout(map_footer)
+        layout.addWidget(map_box)
 
-        pose_box = QGroupBox("Ermittelte Posen")
-        pose_box_layout = QVBoxLayout(pose_box)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumHeight(245)
-        cards = QWidget()
-        card_grid = QGridLayout(cards)
-        card_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        ordered_poses = sorted(
-            self.document.poses,
-            key=lambda pose: (pose.stability != "robust", pose.pose_id),
-        )
-        columns = 6
-        for index, pose in enumerate(ordered_poses):
-            card_grid.addWidget(
-                self._pose_card(pose), index // columns, index % columns
-            )
-        scroll.setWidget(cards)
-        pose_box_layout.addWidget(scroll)
-        layout.addWidget(pose_box)
-
-        transition_box = QGroupBox("Mögliche Übergänge")
+        transition_box = QGroupBox("Paths for selected poses")
         transition_layout = QVBoxLayout(transition_box)
-        self.transition_table = QTableWidget(0, 8)
-        self.transition_table.setHorizontalHeaderLabels(
-            ["ID", "Von", "Nach", "Kategorie", "Aktion", "Sollwinkel", "w", "s"]
-        )
-        self.transition_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self.transition_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
-        self.transition_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
+        self.path_hint = QLabel("Select a start and end pose on the map.")
+        self.path_hint.setWordWrap(True)
+        transition_layout.addWidget(self.path_hint)
+        self.transition_table = QTableWidget(0, 4)
+        self.transition_table.setHorizontalHeaderLabels(["Path", "Flips", "Flip axis / angle", "Saved profile"])
+        self.transition_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.transition_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.transition_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.transition_table.setAlternatingRowColors(True)
         self.transition_table.verticalHeader().setVisible(False)
-        self.transition_table.horizontalHeader().setStretchLastSection(False)
-        self.transition_table.horizontalHeader().setSectionResizeMode(
-            4, QHeaderView.ResizeMode.Stretch
-        )
-        transition_hint = QLabel(
-            "<b>Blau:</b> direkte Übergänge zwischen stabilen Posen. "
-            "<b>Gelb:</b> experimentelle, nicht bevorzugte Mehrfach-Reorientierungen "
-            "mit 2 oder 3 Flips; ihr einzelnes Profil überschreibt die Kombination "
-            "der jeweiligen Einzelprofile."
-        )
-        transition_hint.setWordWrap(True)
-        transition_hint.setStyleSheet(
-            "background: #edf7ff; border-left: 4px solid #1677c8; "
-            "padding: 6px 9px; color: #1f3b53;"
-        )
-        transition_layout.addWidget(transition_hint)
-        ordered_transitions = sorted(
-            self.document.transitions,
-            key=lambda transition: (
-                not self._connects_stable_poses(transition),
-                not transition.calibratable,
-                transition.is_multi_reorientation,
-                transition.source_pose_id,
-                transition.target_pose_id,
-                transition.edge_id,
-            ),
-        )
-        for transition in ordered_transitions:
-            self._add_transition_row(transition)
-        self.transition_table.itemSelectionChanged.connect(
-            self._on_transition_selection_changed
-        )
-        self.transition_table.cellDoubleClicked.connect(
-            lambda _row, _column: self._accept_selected_transition()
-        )
+        header = self.transition_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.transition_table.itemSelectionChanged.connect(self._on_transition_selection_changed)
+        self.transition_table.cellDoubleClicked.connect(lambda _row, _column: self._accept_selected_transition())
         transition_layout.addWidget(self.transition_table)
         layout.addWidget(transition_box, 1)
 
-        self.selection_label = QLabel("Noch kein kalibrierbarer Übergang ausgewählt")
-        self.selection_label.setStyleSheet("font-weight: 600; color: #374151;")
+        self.selection_label = QLabel("No path selected")
         footer = QHBoxLayout()
         footer.addWidget(self.selection_label)
         footer.addStretch(1)
-        self.use_button = QPushButton("Übergang übernehmen")
+        self.use_button = QPushButton("Use selected path")
         self.use_button.setEnabled(False)
-        self.use_button.setStyleSheet(
-            "QPushButton:enabled { background: #1677c8; color: white; "
-            "font-weight: 600; padding: 7px 14px; }"
-        )
+        self.use_button.setStyleSheet("QPushButton:enabled {background:#1677c8;color:white;font-weight:600;padding:7px 14px;}")
         self.use_button.clicked.connect(self._accept_selected_transition)
-        close_button = QPushButton("Schließen")
+        close_button = QPushButton("Close")
         close_button.clicked.connect(self.reject)
         footer.addWidget(self.use_button)
         footer.addWidget(close_button)
         layout.addLayout(footer)
 
-    def _pose_card(self, pose: RoadmapPose) -> QFrame:
-        card = QFrame()
-        robust = pose.stability == "robust"
-        card.setFixedSize(165, 190)
-        card.setStyleSheet(
-            "QFrame { background: white; border-radius: 6px; "
-            f"border: {'3px solid #1677c8' if robust else '2px dashed #8a94a3'}; }}"
-        )
-        layout = QVBoxLayout(card)
-        image = QLabel()
-        image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image.setFixedHeight(125)
-        pixmap = pose_pixmap(pose, 150, 120)
-        if pixmap.isNull():
-            image.setText("Kein Vorschaubild\nin dieser JSON")
-            image.setStyleSheet("color: #6b7280; border: none;")
-        else:
-            image.setPixmap(pixmap)
-            image.setStyleSheet("border: none;")
-        layout.addWidget(image)
-        pose_ids = "/".join(str(value) for value in pose.equivalent_pose_ids)
-        label = QLabel(
-            f"<b>Pose {pose.pose_id}</b><br><small>{pose_ids}</small><br>"
-            f"{'stabil' if robust else 'metastabil'}"
-        )
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("border: none;")
-        layout.addWidget(label)
-        card.setToolTip(f"Boden: {pose.floor_contact}; Wand: {pose.wall_contact}")
-        return card
+    def _find_saved_profiles(self) -> dict[str, tuple[Path, ...]]:
+        found: dict[str, list[Path]] = {}
+        directory = self.profile_directory
+        if directory is None or not directory.is_dir():
+            return {}
+        for path in sorted(directory.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, UnicodeDecodeError):
+                continue
+            metadata = payload.get("roadmap_transition") if isinstance(payload, dict) else None
+            for transition in self.document.transitions:
+                matches_metadata = False
+                if isinstance(metadata, dict):
+                    try:
+                        matches_metadata = (
+                            str(metadata.get("edge_id", "")) == transition.edge_id
+                            or (
+                                int(metadata.get("source_pose_id", -1))
+                                == transition.source_pose_id
+                                and int(metadata.get("target_pose_id", -1))
+                                == transition.target_pose_id
+                                and str(metadata.get("actuation", ""))
+                                == transition.actuation
+                                and int(metadata.get("flip_count", 1))
+                                == transition.flip_count
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                name_stem = SelectedRoadmapTransition(
+                    self.document.path, self.document.part_name, transition,
+                    self.document.pose(transition.source_pose_id), self.document.pose(transition.target_pose_id),
+                ).profile_name_stem
+                if matches_metadata or path.stem in {
+                    name_stem, name_stem.replace("_Transition_", "_Uebergang_", 1)
+                }:
+                    found.setdefault(transition.edge_id, []).append(path)
+        return {edge_id: tuple(paths) for edge_id, paths in found.items()}
 
-    def _connects_stable_poses(self, transition: RoadmapTransition) -> bool:
-        source = self._poses_by_id[transition.source_pose_id]
-        target = self._poses_by_id[transition.target_pose_id]
-        return source.stability == "robust" and target.stability == "robust"
+    def _pose_clicked(self, pose_id: int) -> None:
+        if self.start_pose_id is None or self.end_pose_id is not None:
+            self.start_pose_id, self.end_pose_id = pose_id, None
+        elif pose_id == self.start_pose_id:
+            self.pose_selection_label.setText(f"Start: Pose {pose_id}    End: choose a different pose")
+            return
+        else:
+            self.end_pose_id = pose_id
+        self._refresh_paths()
+
+    def _clear_pose_selection(self) -> None:
+        self.start_pose_id = None
+        self.end_pose_id = None
+        self._refresh_paths()
+
+    def _set_pose_selection(self, start_pose_id: int, end_pose_id: int) -> None:
+        """Small test/programmatic hook using the same filter as map clicks."""
+        self.start_pose_id = start_pose_id
+        self.end_pose_id = end_pose_id
+        self._refresh_paths()
+
+    def _refresh_paths(self) -> None:
+        self.map_widget.start_pose_id = self.start_pose_id
+        self.map_widget.end_pose_id = self.end_pose_id
+        self.map_widget.update()
+        self.transition_table.setRowCount(0)
+        self.use_button.setEnabled(False)
+        self.selection_label.setText("No path selected")
+        if self.start_pose_id is None:
+            self.pose_selection_label.setText("Start: —    End: —")
+            self.path_hint.setText("Select a start and end pose on the map.")
+            return
+        if self.end_pose_id is None:
+            self.pose_selection_label.setText(f"Start: Pose {self.start_pose_id}    End: —")
+            self.path_hint.setText("Now click the desired end pose.")
+            return
+        self.pose_selection_label.setText(f"Start: Pose {self.start_pose_id}    End: Pose {self.end_pose_id}")
+        options = sorted(
+            (
+                item for item in self.document.transitions
+                if item.calibratable
+                and item.source_pose_id == self.start_pose_id
+                and item.target_pose_id == self.end_pose_id
+            ),
+            key=lambda item: (item.flip_count, item.edge_id),
+        )
+        if not options:
+            self.path_hint.setText("No calibratable path was found for these two poses.")
+            return
+        self.path_hint.setText(f"{len(options)} path option(s), ordered by required reorientations.")
+        for transition in options:
+            self._add_transition_row(transition)
+
+    def _step_summary(self, transition: RoadmapTransition) -> str:
+        if not transition.is_multi_reorientation:
+            angle = "angle not specified" if transition.signed_angle_deg is None else f"{transition.signed_angle_deg:+.1f}°"
+            return f"{action_display_label(transition.actuation)} ({angle})"
+        steps: list[str] = []
+        for edge_id in transition.component_edge_ids:
+            edge = self._transitions_by_id.get(edge_id)
+            if edge is None:
+                steps.append(edge_id)
+                continue
+            angle = "?" if edge.signed_angle_deg is None else f"{edge.signed_angle_deg:+.1f}°"
+            steps.append(f"{action_display_label(edge.actuation)} ({angle})")
+        return "  →  ".join(steps) or "component flips not available"
 
     def _add_transition_row(self, transition: RoadmapTransition) -> None:
         row = self.transition_table.rowCount()
         self.transition_table.insertRow(row)
-        stable_pair = self._connects_stable_poses(transition)
-        self.transition_table.setRowHeight(row, 34 if stable_pair else 27)
+        pose_ids = (transition.source_pose_id, *transition.via_pose_ids, transition.target_pose_id)
+        saved = self._saved_profiles_by_edge.get(transition.edge_id, ())
         values = (
-            transition.display_name,
-            str(transition.source_pose_id),
-            str(transition.target_pose_id),
-            transition.category_label,
-            action_display_label(transition.actuation),
-            (
-                f"{transition.signed_angle_deg:+.1f}°"
-                if transition.signed_angle_deg is not None
-                else "—"
-            ),
-            (
-                f"{transition.capture_width_deg:.1f}°"
-                if transition.calibratable
-                else "—"
-            ),
-            "—"
-            if transition.geometric_score is None
-            else f"{transition.geometric_score:.3f}",
+            " → ".join(f"Pose {item}" for item in pose_ids),
+            str(transition.flip_count),
+            self._step_summary(transition),
+            "Saved: " + ", ".join(path.name for path in saved) if saved else "No saved profile",
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
-            font = item.font()
             if column == 0:
                 item.setData(Qt.ItemDataRole.UserRole, transition.edge_id)
-                item.setToolTip(f"Interne Kanten-ID: {transition.edge_id}")
-            if transition.is_multi_reorientation:
-                font.setBold(True)
-                item.setFont(font)
-                item.setForeground(QColor("#664d03"))
-                item.setBackground(QColor("#fff3cd"))
-                via = " → ".join(map(str, transition.via_pose_ids))
-                item.setToolTip(
-                    f"{transition.flip_count} Flips über {via}; experimentell und nicht "
-                    "bevorzugt. Ein Profil gilt für den gesamten Übergang."
-                )
-            elif stable_pair:
-                font.setBold(True)
-                item.setFont(font)
-                item.setForeground(QColor("#123a58"))
+            if transition.flip_count == 1:
                 item.setBackground(QColor("#dcefff"))
-                item.setToolTip(
-                    f"Stabil → stabil · interne Kanten-ID: {transition.edge_id}"
-                )
+                item.setForeground(QColor("#123a58"))
             else:
-                item.setForeground(QColor("#737b84"))
-                item.setBackground(QColor("#f3f4f6"))
-            if not transition.calibratable:
-                item.setForeground(QColor("#92979d"))
-                item.setToolTip("Passiver Übergang: sichtbar, aber nicht kalibrierbar")
+                item.setBackground(QColor("#fff3cd"))
+                item.setForeground(QColor("#664d03"))
+                item.setToolTip("Experimental direct profile for this complete multi-flip path.")
             self.transition_table.setItem(row, column, item)
+        self.transition_table.setRowHeight(row, 34)
 
     def _selected_table_transition(self) -> RoadmapTransition | None:
         rows = self.transition_table.selectionModel().selectedRows()
@@ -548,40 +887,27 @@ class RoadmapTransitionDialog(QDialog):
 
     def _on_transition_selection_changed(self) -> None:
         transition = self._selected_table_transition()
-        calibratable = transition is not None and transition.calibratable
-        self.use_button.setEnabled(calibratable)
+        self.use_button.setEnabled(transition is not None)
         if transition is None:
-            self.selection_label.setText("Noch kein Übergang ausgewählt")
-        elif calibratable:
-            via = (
-                f" · über {' → '.join(map(str, transition.via_pose_ids))}"
-                if transition.is_multi_reorientation
-                else ""
-            )
-            self.selection_label.setText(
-                f"Ausgewählt: {transition.display_name} · "
-                f"{action_display_label(transition.actuation)}{via}"
-            )
+            self.selection_label.setText("No path selected")
         else:
             self.selection_label.setText(
-                f"{transition.display_name} ist passiv und nicht kalibrierbar"
+                f"Selected: {transition.flip_count} flip(s) · {self._step_summary(transition)}"
             )
 
     def _accept_selected_transition(self) -> None:
         transition = self._selected_table_transition()
-        if transition is None or not transition.calibratable:
-            return
-        try:
-            source_pose = self.document.pose(transition.source_pose_id)
-            target_pose = self.document.pose(transition.target_pose_id)
-        except KeyError as exc:
-            QMessageBox.critical(self, "Roadmap-Fehler", f"Pose fehlt: {exc}")
+        if transition is None:
             return
         self.selected_transition = SelectedRoadmapTransition(
             roadmap_path=self.document.path,
             part_name=self.document.part_name,
             transition=transition,
-            source_pose=source_pose,
-            target_pose=target_pose,
+            source_pose=self.document.pose(transition.source_pose_id),
+            target_pose=self.document.pose(transition.target_pose_id),
+            component_flips=tuple(
+                self._transitions_by_id[edge_id]
+                for edge_id in transition.component_edge_ids
+            ),
         )
         self.accept()

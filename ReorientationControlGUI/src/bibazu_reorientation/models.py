@@ -150,8 +150,8 @@ class PressureBaseline:
     conveyor_enabled: bool = False
     conveyor_reverse: bool = False
     conveyor_calibration: ConveyorCalibration = ConveyorCalibration(315.0, 0.32960026, True)
-    force_response_delays_ms: tuple[float, ...] = (15.0, 15.0, 15.0, 15.0)
-    force_single_nozzle_response_delays_ms: tuple[float, ...] = (15.0, 15.0, 15.0, 15.0)
+    force_response_delays_ms: tuple[float, ...] = (8.7, 8.7, 8.7, 8.7)
+    force_single_nozzle_response_delays_ms: tuple[float, ...] = (8.7, 8.7, 8.7, 8.7)
 
 
 @dataclass(slots=True, frozen=True)

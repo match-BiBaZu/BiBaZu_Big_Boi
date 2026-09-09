@@ -1,6 +1,7 @@
 import csv
 import json
 import statistics
+import tempfile
 import sys
 import time
 from dataclasses import dataclass
@@ -8,7 +9,9 @@ from datetime import datetime
 from pathlib import Path
 
 import pyads
+from high_speed_calibration import PressureDelayTab
 from plc_control_lease import PlcControlLease
+from light_barrier_plot import LightBarrierPlot
 from PyQt6.QtCore import (
     QObject,
     QSignalBlocker,
@@ -36,7 +39,9 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
+    QSplitter,
     QStatusBar,
     QStyle,
     QTableWidget,
@@ -51,6 +56,9 @@ from roadmap_transition_dialog import (
     action_display_label,
     load_roadmap_document,
     pose_pixmap,
+    roadmap_transition_metadata,
+    selection_from_roadmap_transition_metadata,
+    selection_from_pressure_profile,
 )
 from ur_angle_control import (
     UR_ANGLE_DEFAULT_DEG,
@@ -67,7 +75,8 @@ PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
-PROFILE_VERSION = 9
+LIGHT_BARRIER_SETTINGS_FILE = Path(__file__).resolve().parent / "light_barrier_settings.json"
+PROFILE_VERSION = 12
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -89,6 +98,18 @@ ARRAY_COUNT = 4
 NOZZLES_PER_ARRAY = 6
 LIGHT_BARRIER_COUNT = 8
 LIGHT_BARRIER_PAIRS = ((1, 2), (3, 4), (5, 6), (7, 8))
+INTER_ARRAY_LIGHT_BARRIER_PAIRS = ((2, 3), (4, 5), (6, 7))
+ADJACENT_LIGHT_BARRIER_PAIRS = tuple(
+    (sensor, sensor + 1) for sensor in range(1, LIGHT_BARRIER_COUNT)
+)
+SENSOR_SPACING_DISPLAY_PAIRS = (
+    *LIGHT_BARRIER_PAIRS,
+    *INTER_ARRAY_LIGHT_BARRIER_PAIRS,
+)
+SENSOR_SPACING_SYMBOLS = {
+    pair: f"MAIN.GuiSensorSpacing{pair[0]}{pair[1]}Mm"
+    for pair in ADJACENT_LIGHT_BARRIER_PAIRS
+}
 PRESSURE_MIN_MBAR = 0
 PRESSURE_MAX_MBAR = 6000
 DELAY_MIN_MS = 0
@@ -98,9 +119,27 @@ PULSE_MAX_MS = 500
 SENSOR_SPACING_MIN_MM = 1.0
 SENSOR_SPACING_MAX_MM = 5000.0
 SENSOR_SPACING_12_DEFAULT_MM = 40.0
+SENSOR_SPACING_23_DEFAULT_MM = 196.0
 SENSOR_SPACING_34_DEFAULT_MM = 40.0
+SENSOR_SPACING_45_DEFAULT_MM = 196.0
 SENSOR_SPACING_56_DEFAULT_MM = 40.0
+SENSOR_SPACING_67_DEFAULT_MM = 196.0
 SENSOR_SPACING_78_DEFAULT_MM = 40.0
+SENSOR_SPACING_DEFAULTS_MM = {
+    (1, 2): SENSOR_SPACING_12_DEFAULT_MM,
+    (2, 3): SENSOR_SPACING_23_DEFAULT_MM,
+    (3, 4): SENSOR_SPACING_34_DEFAULT_MM,
+    (4, 5): SENSOR_SPACING_45_DEFAULT_MM,
+    (5, 6): SENSOR_SPACING_56_DEFAULT_MM,
+    (6, 7): SENSOR_SPACING_67_DEFAULT_MM,
+    (7, 8): SENSOR_SPACING_78_DEFAULT_MM,
+}
+SENSOR_TO_ARRAY_MAPPINGS = ((2, 1), (4, 2), (6, 3), (8, 4))
+SENSOR_TO_ARRAY_SYMBOLS = {
+    array: f"MAIN.GuiSensor{sensor}ToArray{array}SpacingMm"
+    for sensor, array in SENSOR_TO_ARRAY_MAPPINGS
+}
+SENSOR_TO_ARRAY_DEFAULTS_MM = (50.0, 45.0, 45.0, 48.0)
 OFFSET_MIN_MM = 0.0
 OFFSET_MAX_MM = 5000.0
 LIGHT_BARRIER_DEBOUNCE_MIN_MS = 1
@@ -122,8 +161,8 @@ FORCE_DELAY_WINDOW_DEFAULT_MS = 2000
 FORCE_DELAY_WINDOW_MIN_MS = 100
 FORCE_DELAY_WINDOW_MAX_MS = 30000
 FORCE_DELAY_MIN_RISE_DEFAULT = 0.05
-FORCE_RESPONSE_DELAY_DEFAULTS_MS = (15.0,) * ARRAY_COUNT
-FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS = (15.0,) * ARRAY_COUNT
+FORCE_RESPONSE_DELAY_DEFAULTS_MS = (8.7,) * ARRAY_COUNT
+FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS = (8.7,) * ARRAY_COUNT
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
 CONVEYOR_MM_PER_FULL_STEP_DEFAULT = 0.32960026
 CALIBRATION_JOG_STEPS_DEFAULT = 100
@@ -170,13 +209,32 @@ def calculate_force_delay_statistics(delays_ms: list[float]) -> dict[str, float]
 def calculate_force_response_delay(
     single_nozzle_ms: float, four_nozzle_ms: float, active_nozzles: int
 ) -> float:
-    if active_nozzles <= 1:
-        return single_nozzle_ms
-    if active_nozzles >= 4:
-        return four_nozzle_ms
-    return single_nozzle_ms + (four_nozzle_ms - single_nozzle_ms) * (
-        active_nozzles - 1
-    ) / 3.0
+    del four_nozzle_ms, active_nozzles
+    return single_nozzle_ms
+
+
+def calculate_offset_timing(
+    sensor_to_array_mm: float,
+    requested_offset_mm: float,
+    velocity_mm_per_sec: float,
+    force_response_ms: float,
+    manual_delay_ms: float = 0.0,
+) -> dict[str, float] | None:
+    """Calculate when to command a nozzle so force starts at the requested edge offset."""
+    if velocity_mm_per_sec <= 0.0:
+        return None
+    travel_distance_mm = max(0.0, sensor_to_array_mm + requested_offset_mm)
+    travel_delay_ms = travel_distance_mm * 1000.0 / velocity_mm_per_sec
+    compensated_delay_ms = max(
+        0.0, min(30000.0, travel_delay_ms - force_response_ms)
+    )
+    return {
+        "travel_distance_mm": travel_distance_mm,
+        "travel_delay_ms": travel_delay_ms,
+        "force_response_ms": force_response_ms,
+        "compensated_delay_ms": compensated_delay_ms,
+        "total_trigger_delay_ms": manual_delay_ms + compensated_delay_ms,
+    }
 
 
 @dataclass(frozen=True)
@@ -277,14 +335,12 @@ class AdsClient:
         else:
             raise ValueError(f"Unknown field: {field}")
 
-    def read_sensor_spacings(self) -> tuple[float, float, float, float]:
+    def read_sensor_spacings(self) -> tuple[float, ...]:
         if self.plc is None:
             raise RuntimeError("ADS is offline")
-        return (
-            self.plc.read_by_name("MAIN.GuiSensorSpacing12Mm", pyads.PLCTYPE_REAL),
-            self.plc.read_by_name("MAIN.GuiSensorSpacing34Mm", pyads.PLCTYPE_REAL),
-            self.plc.read_by_name("MAIN.GuiSensorSpacing56Mm", pyads.PLCTYPE_REAL),
-            self.plc.read_by_name("MAIN.GuiSensorSpacing78Mm", pyads.PLCTYPE_REAL),
+        return tuple(
+            self.plc.read_by_name(SENSOR_SPACING_SYMBOLS[pair], pyads.PLCTYPE_REAL)
+            for pair in ADJACENT_LIGHT_BARRIER_PAIRS
         )
 
     def write_sensor_spacing(self, symbol_name: str, value: float) -> None:
@@ -507,6 +563,8 @@ class AdsWorker(QObject):
         self.calibration_polling = False
         self.setup_polling = False
         self.force_delay_polling = False
+        self.barrier_history_available = None
+        self.filtered_barrier_history_available = None
         self.shutting_down = False
 
     @pyqtSlot()
@@ -526,6 +584,32 @@ class AdsWorker(QObject):
 
     def read_values(self, names: list[str]) -> dict:
         return self.plc().read_list_by_name(names, cache_symbol_info=True)
+
+    def read_barrier_event_history(self):
+        return self._read_barrier_history("MAIN.LightBarrierEventHistory", "barrier_history_available")
+
+    def read_filtered_barrier_event_history(self):
+        return self._read_barrier_history(
+            "MAIN.LightBarrierFilteredEventHistory", "filtered_barrier_history_available"
+        )
+
+    def _read_barrier_history(self, name, availability_attribute):
+        """Read a diagnostic ring as one ADS value; cache missing optional symbols."""
+        if getattr(self, availability_attribute) is False:
+            return None
+        try:
+            history = self.read_values([name])[name]
+        except pyads.ADSError as exc:
+            if exc.err_code != 1808:
+                raise
+            setattr(self, availability_attribute, False)
+            return None
+        if not isinstance(history, (list, tuple)) or len(history) != 771:
+            raise ValueError("Invalid PLC light barrier event buffer layout")
+        if int(history[0]) != 1:
+            raise ValueError("Unsupported PLC light barrier event buffer version")
+        setattr(self, availability_attribute, True)
+        return history
 
     def write_values_impl(self, values: dict) -> None:
         try:
@@ -606,6 +690,8 @@ class AdsWorker(QObject):
             if self.reconnect_timer is not None:
                 self.reconnect_timer.start()
             return
+        self.barrier_history_available = None
+        self.filtered_barrier_history_available = None
         try:
             # Never let the legacy GUIs overwrite a staged/running reorientation
             # cycle. Older PLC projects do not expose the owner symbol yet and
@@ -665,10 +751,11 @@ class AdsWorker(QObject):
 
     def read_initial_snapshot(self) -> dict:
         names = [
-            "MAIN.GuiSensorSpacing12Mm",
-            "MAIN.GuiSensorSpacing34Mm",
-            "MAIN.GuiSensorSpacing56Mm",
-            "MAIN.GuiSensorSpacing78Mm",
+            *[
+                SENSOR_SPACING_SYMBOLS[pair]
+                for pair in LIGHT_BARRIER_PAIRS
+            ],
+            *[SENSOR_TO_ARRAY_SYMBOLS[index] for index in range(1, ARRAY_COUNT + 1)],
             "MAIN.GuiBarrierCalibrationDebounceMs",
             *[
                 f"MAIN.GuiLightBarrierInvert{index}"
@@ -724,11 +811,13 @@ class AdsWorker(QObject):
                 }
             )
         return {
-            "sensor_spacings": (
-                float(values["MAIN.GuiSensorSpacing12Mm"]),
-                float(values["MAIN.GuiSensorSpacing34Mm"]),
-                float(values["MAIN.GuiSensorSpacing56Mm"]),
-                float(values["MAIN.GuiSensorSpacing78Mm"]),
+            "sensor_spacings": tuple(
+                float(values[SENSOR_SPACING_SYMBOLS[pair]])
+                for pair in LIGHT_BARRIER_PAIRS
+            ),
+            "sensor_to_array_spacings": tuple(
+                float(values[SENSOR_TO_ARRAY_SYMBOLS[index]])
+                for index in range(1, ARRAY_COUNT + 1)
             ),
             "light_barrier_debounce_ms": int(
                 values["MAIN.GuiBarrierCalibrationDebounceMs"]
@@ -770,7 +859,10 @@ class AdsWorker(QObject):
         }
 
     def read_live_snapshot(self) -> dict:
-        names = ["MAIN.ShotCounter", "MAIN.AvgPressureN1", "MAIN.AvgPressureN2"]
+        history = self.read_barrier_event_history()
+        filtered_history = self.read_filtered_barrier_event_history()
+        names = ["MAIN.ShotCounter", "MAIN.AvgPressureN1", "MAIN.AvgPressureN2",
+                 "MAIN.LightBarrierEventClockMs"]
         for index in range(1, ARRAY_COUNT + 1):
             names.extend([SYMBOLS[index].estimated_velocity, SYMBOLS[index].estimated_delay])
         for index in range(1, LIGHT_BARRIER_COUNT + 1):
@@ -798,6 +890,13 @@ class AdsWorker(QObject):
         values = self.read_values(names)
         return {
             "shot_counter": int(values["MAIN.ShotCounter"]),
+            "light_barriers": [
+                bool(values[f"MAIN.LightBarrierStable{index}"])
+                for index in range(1, LIGHT_BARRIER_COUNT + 1)
+            ],
+            "light_barrier_event_history": history,
+            "light_barrier_filtered_event_history": filtered_history,
+            "plc_event_clock_ms": int(values["MAIN.LightBarrierEventClockMs"]),
             "avg_pressure_n1": float(values["MAIN.AvgPressureN1"]),
             "avg_pressure_n2": float(values["MAIN.AvgPressureN2"]),
             "velocities": [
@@ -952,6 +1051,8 @@ class AdsWorker(QObject):
         }
 
     def read_setup_snapshot(self) -> dict:
+        history = self.read_barrier_event_history()
+        filtered_history = self.read_filtered_barrier_event_history()
         names = [
             *[f"MAIN.LightBarrierOn{index}" for index in range(1, LIGHT_BARRIER_COUNT + 1)],
             *[f"MAIN.LightBarrierStable{index}" for index in range(1, LIGHT_BARRIER_COUNT + 1)],
@@ -986,10 +1087,10 @@ class AdsWorker(QObject):
             "MAIN.GuiConveyorCalibrationValid",
             "MAIN.ConveyorFullStepsPerSec",
             "MAIN.ConveyorVelocityRaw",
-            "MAIN.GuiSensorSpacing12Mm",
-            "MAIN.GuiSensorSpacing34Mm",
-            "MAIN.GuiSensorSpacing56Mm",
-            "MAIN.GuiSensorSpacing78Mm",
+            *[
+                SENSOR_SPACING_SYMBOLS[pair]
+                for pair in ADJACENT_LIGHT_BARRIER_PAIRS
+            ],
             "MAIN.LastVelocityTimeMs",
             "MAIN.LastVelocityTime2Ms",
             "MAIN.LastVelocityTime3Ms",
@@ -1043,6 +1144,8 @@ class AdsWorker(QObject):
                 int(values[f"MAIN.LightBarrierLastEventTimeMs{index}"])
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
+            "light_barrier_event_history": history,
+            "light_barrier_filtered_event_history": filtered_history,
             "plc_event_clock_ms": int(values["MAIN.LightBarrierEventClockMs"]),
             "sampled_monotonic_ns": (read_started_ns + read_finished_ns) // 2,
             "ads_roundtrip_ns": read_finished_ns - read_started_ns,
@@ -1070,11 +1173,13 @@ class AdsWorker(QObject):
             ),
             "full_steps_per_sec": float(values["MAIN.ConveyorFullStepsPerSec"]),
             "velocity_raw": int(values["MAIN.ConveyorVelocityRaw"]),
-            "sensor_spacings": (
-                float(values["MAIN.GuiSensorSpacing12Mm"]),
-                float(values["MAIN.GuiSensorSpacing34Mm"]),
-                float(values["MAIN.GuiSensorSpacing56Mm"]),
-                float(values["MAIN.GuiSensorSpacing78Mm"]),
+            "sensor_spacings": tuple(
+                float(values[SENSOR_SPACING_SYMBOLS[pair]])
+                for pair in LIGHT_BARRIER_PAIRS
+            ),
+            "adjacent_sensor_spacings": tuple(
+                float(values[SENSOR_SPACING_SYMBOLS[pair]])
+                for pair in ADJACENT_LIGHT_BARRIER_PAIRS
             ),
             "velocity_times_ms": (
                 int(values["MAIN.LastVelocityTimeMs"]),
@@ -1322,19 +1427,18 @@ class AdsController(QObject):
                 "default_conveyor_calibration",
             )
         self.calibration_cache.update(calibration)
-        self.force_response_delays_ms = [
-            float(value)
-            for value in snapshot.get(
-                "force_response_delays_ms", FORCE_RESPONSE_DELAY_DEFAULTS_MS
-            )
-        ]
-        self.force_single_nozzle_response_delays_ms = [
+        canonical_force_delays = [
             float(value)
             for value in snapshot.get(
                 "force_single_nozzle_response_delays_ms",
-                FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS,
+                snapshot.get(
+                    "force_response_delays_ms",
+                    FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS,
+                ),
             )
         ]
+        self.force_single_nozzle_response_delays_ms = list(canonical_force_delays)
+        self.force_response_delays_ms = list(canonical_force_delays)
         self.initial_snapshot_ready.emit(snapshot)
 
     @pyqtSlot(object)
@@ -1350,19 +1454,18 @@ class AdsController(QObject):
 
     @pyqtSlot(object)
     def on_force_delay_status(self, status: dict) -> None:
-        self.force_response_delays_ms = [
-            float(value)
-            for value in status.get(
-                "response_delays_ms", self.force_response_delays_ms
-            )
-        ]
-        self.force_single_nozzle_response_delays_ms = [
+        canonical_force_delays = [
             float(value)
             for value in status.get(
                 "single_nozzle_response_delays_ms",
-                self.force_single_nozzle_response_delays_ms,
+                status.get(
+                    "response_delays_ms",
+                    self.force_single_nozzle_response_delays_ms,
+                ),
             )
         ]
+        self.force_single_nozzle_response_delays_ms = list(canonical_force_delays)
+        self.force_response_delays_ms = list(canonical_force_delays)
         self.force_delay_status_ready.emit(status)
 
     @pyqtSlot(str, object)
@@ -1379,13 +1482,15 @@ class AdsController(QObject):
                 self.calibration_cache[cache_key] = values[symbol]
         for index in range(1, ARRAY_COUNT + 1):
             symbol = f"MAIN.GuiForceResponseDelayMs{index}"
-            if symbol in values:
-                self.force_response_delays_ms[index - 1] = float(values[symbol])
             single_symbol = f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}"
             if single_symbol in values:
-                self.force_single_nozzle_response_delays_ms[index - 1] = float(
-                    values[single_symbol]
-                )
+                value = float(values[single_symbol])
+            elif symbol in values:
+                value = float(values[symbol])
+            else:
+                continue
+            self.force_single_nozzle_response_delays_ms[index - 1] = value
+            self.force_response_delays_ms[index - 1] = value
         self.write_finished.emit(context)
 
     def queue_write(self, symbol: str, value: object, context: str) -> None:
@@ -1488,46 +1593,37 @@ class AdsController(QObject):
             "force_delay_reset",
         )
 
-    def set_force_response_delays(
-        self, array_index: int, single_nozzle_ms: float, four_nozzle_ms: float
+    def set_force_response_delay(
+        self, array_index: int, response_delay_ms: float
     ) -> None:
         if array_index not in range(1, ARRAY_COUNT + 1):
             raise ValueError(f"Unknown array index: {array_index}")
+        value = max(0.0, min(1000.0, float(response_delay_ms)))
+        self.force_single_nozzle_response_delays_ms[array_index - 1] = value
+        self.force_response_delays_ms[array_index - 1] = value
         self.write_now(
             {
-                f"MAIN.GuiForceSingleNozzleResponseDelayMs{array_index}": float(
-                    single_nozzle_ms
-                ),
-                f"MAIN.GuiForceResponseDelayMs{array_index}": float(
-                    four_nozzle_ms
-                ),
+                f"MAIN.GuiForceSingleNozzleResponseDelayMs{array_index}": value,
+                f"MAIN.GuiForceResponseDelayMs{array_index}": value,
             },
-            f"force_response_delays_array_{array_index}",
+            f"force_response_delay_array_{array_index}",
         )
 
-    def set_all_force_response_delays(
-        self, single_nozzle_ms: list[float], four_nozzle_ms: list[float]
-    ) -> None:
-        if (
-            len(single_nozzle_ms) != ARRAY_COUNT
-            or len(four_nozzle_ms) != ARRAY_COUNT
-        ):
-            raise ValueError("Force response delay lists must contain four values")
-        single_values = [
-            max(0.0, min(1000.0, float(value))) for value in single_nozzle_ms
+    def set_all_force_response_delays(self, response_delays_ms: list[float]) -> None:
+        if len(response_delays_ms) != ARRAY_COUNT:
+            raise ValueError("Force response delay list must contain four values")
+        values_by_array = [
+            max(0.0, min(1000.0, float(value))) for value in response_delays_ms
         ]
-        four_values = [
-            max(0.0, min(1000.0, float(value))) for value in four_nozzle_ms
-        ]
-        self.force_single_nozzle_response_delays_ms = single_values
-        self.force_response_delays_ms = four_values
+        self.force_single_nozzle_response_delays_ms = list(values_by_array)
+        self.force_response_delays_ms = list(values_by_array)
         values = {
-            f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}": single_values[index - 1]
+            f"MAIN.GuiForceSingleNozzleResponseDelayMs{index}": values_by_array[index - 1]
             for index in range(1, ARRAY_COUNT + 1)
         }
         values.update(
             {
-                f"MAIN.GuiForceResponseDelayMs{index}": four_values[index - 1]
+                f"MAIN.GuiForceResponseDelayMs{index}": values_by_array[index - 1]
                 for index in range(1, ARRAY_COUNT + 1)
             }
         )
@@ -1729,7 +1825,10 @@ class ArrayRow:
         self.offset.setDecimals(1)
         self.offset.setSingleStep(1.0)
         self.offset.setValue(0.0)
-        self.offset.setToolTip("Distance from the detected front edge to the target impulse location")
+        self.offset.setToolTip(
+            "Desired leading-edge position across the nozzle when force begins; "
+            "0 mm means aligned with the nozzle"
+        )
 
         self.estimated_delay = QLabel("0.0 ms")
         self.estimated_delay.setMinimumWidth(90)
@@ -1804,16 +1903,20 @@ class ArrayRow:
 
 class LightBarrierSettingsDialog(QDialog):
     setting_changed = pyqtSignal(int, bool, bool)
-    measurement_changed = pyqtSignal(float, float, float, float, int)
+    measurement_changed = pyqtSignal(object, object, int)
+    save_requested = pyqtSignal()
 
     def __init__(
         self,
         ads: AdsController,
         inverted: list[bool],
         debounce_enabled: list[bool],
-        sensor_spacings_mm: tuple[float, float, float, float],
+        sensor_spacings_mm: tuple[float, ...],
+        sensor_to_array_spacings_mm: tuple[float, ...],
         debounce_ms: int,
         parent: QWidget | None = None,
+        *,
+        light_barrier_plot: LightBarrierPlot | None = None,
     ) -> None:
         super().__init__(parent)
         self.ads = ads
@@ -1823,35 +1926,66 @@ class LightBarrierSettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         measurement_box = QGroupBox("Measurement Settings")
         measurement_grid = QGridLayout(measurement_box)
-        self.spacing_controls: list[QDoubleSpinBox] = []
-        spacing_labels = tuple(
-            f"Sensor spacing {first}-{second}"
-            for first, second in LIGHT_BARRIER_PAIRS
-        )
-        spacing_symbols = (
-            "MAIN.GuiSensorSpacing12Mm",
-            "MAIN.GuiSensorSpacing34Mm",
-            "MAIN.GuiSensorSpacing56Mm",
-            "MAIN.GuiSensorSpacing78Mm",
-        )
-        for index, (label, symbol, value) in enumerate(
-            zip(spacing_labels, spacing_symbols, sensor_spacings_mm)
-        ):
+        values_by_pair = dict(zip(LIGHT_BARRIER_PAIRS, sensor_spacings_mm))
+        self.spacing_controls_by_pair: dict[
+            tuple[int, int], QDoubleSpinBox
+        ] = {}
+        for display_index, pair in enumerate(LIGHT_BARRIER_PAIRS):
+            label = f"Sensor spacing {pair[0]}-{pair[1]}"
+            symbol = SENSOR_SPACING_SYMBOLS[pair]
             control = QDoubleSpinBox()
             control.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
             control.setSuffix(" mm")
             control.setDecimals(1)
             control.setSingleStep(1.0)
-            control.setValue(float(value))
+            control.setValue(
+                float(values_by_pair.get(pair, SENSOR_SPACING_DEFAULTS_MM[pair]))
+            )
             control.setToolTip(f"Physical distance for {label.lower()}")
             control.valueChanged.connect(
                 lambda changed, s=symbol, name=label: self._write_measurement_setting(
                     s, float(changed), name
                 )
             )
-            self.spacing_controls.append(control)
-            measurement_grid.addWidget(QLabel(label), index, 0)
-            measurement_grid.addWidget(control, index, 1)
+            self.spacing_controls_by_pair[pair] = control
+            column = display_index * 2
+            measurement_grid.addWidget(QLabel(label), 0, column)
+            measurement_grid.addWidget(control, 0, column + 1)
+        self.spacing_controls = [
+            self.spacing_controls_by_pair[pair]
+            for pair in LIGHT_BARRIER_PAIRS
+        ]
+
+        sensor_to_array_values = dict(
+            zip(range(1, ARRAY_COUNT + 1), sensor_to_array_spacings_mm)
+        )
+        self.sensor_to_array_controls: list[QDoubleSpinBox] = []
+        for display_index, (sensor, array) in enumerate(SENSOR_TO_ARRAY_MAPPINGS):
+            label = f"Sensor {sensor} to array {array}"
+            control = QDoubleSpinBox()
+            control.setRange(0.0, SENSOR_SPACING_MAX_MM)
+            control.setSuffix(" mm")
+            control.setDecimals(1)
+            control.setSingleStep(1.0)
+            control.setValue(
+                float(
+                    sensor_to_array_values.get(
+                        array, SENSOR_TO_ARRAY_DEFAULTS_MM[array - 1]
+                    )
+                )
+            )
+            control.setToolTip(
+                f"Physical distance from light barrier {sensor} to nozzle array {array}"
+            )
+            control.valueChanged.connect(
+                lambda changed, a=array, name=label: self._write_measurement_setting(
+                    SENSOR_TO_ARRAY_SYMBOLS[a], float(changed), name
+                )
+            )
+            self.sensor_to_array_controls.append(control)
+            column = display_index * 2
+            measurement_grid.addWidget(QLabel(label), 1, column)
+            measurement_grid.addWidget(control, 1, column + 1)
 
         self.debounce_ms_control = QSpinBox()
         self.debounce_ms_control.setRange(
@@ -1869,9 +2003,9 @@ class LightBarrierSettingsDialog(QDialog):
                 "Light barrier debounce",
             )
         )
-        measurement_grid.addWidget(QLabel("Light barrier debounce"), 4, 0)
-        measurement_grid.addWidget(self.debounce_ms_control, 4, 1)
-        measurement_grid.setColumnStretch(2, 1)
+        measurement_grid.addWidget(QLabel("Light barrier debounce"), 2, 0)
+        measurement_grid.addWidget(self.debounce_ms_control, 2, 1)
+        measurement_grid.setColumnStretch(7, 1)
         layout.addWidget(measurement_box)
 
         settings_box = QGroupBox("Signal Settings")
@@ -1905,23 +2039,51 @@ class LightBarrierSettingsDialog(QDialog):
             grid.addWidget(invert_control, sensor, 1, Qt.AlignmentFlag.AlignCenter)
             grid.addWidget(debounce_control, sensor, 2, Qt.AlignmentFlag.AlignCenter)
 
-        layout.addWidget(settings_box)
+        self.light_barrier_plot = light_barrier_plot
+        if light_barrier_plot is not None:
+            signal_splitter = QSplitter(Qt.Orientation.Horizontal)
+            signal_splitter.setChildrenCollapsible(False)
+            signal_splitter.addWidget(settings_box)
+            signal_splitter.addWidget(light_barrier_plot)
+            signal_splitter.setSizes([350, 650])
+            layout.addWidget(signal_splitter, 1)
+            light_barrier_plot.show()
+        else:
+            layout.addWidget(settings_box)
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.accept)
+        self.save_changes_button = QPushButton("Save Changes")
+        self.save_changes_button.setToolTip("Save globally for all profiles and future sessions")
+        self.save_changes_button.clicked.connect(self._request_save)
         button_layout = QHBoxLayout()
         button_layout.addStretch(1)
+        button_layout.addWidget(self.save_changes_button)
         button_layout.addWidget(close_button)
         layout.addLayout(button_layout)
 
+        self.save_status = QLabel("Save Changes keeps these settings globally for all profiles.")
+        self.save_status.setWordWrap(True)
+        layout.addWidget(self.save_status)
         self.ads.connection_changed.connect(self._connection_changed)
         self._connection_changed(self.ads.is_connected, "")
+
+    def _request_save(self) -> None:
+        # Commit text still being edited before the parent builds the profile.
+        for control in (*self.spacing_controls, *self.sensor_to_array_controls,
+                        self.debounce_ms_control):
+            control.interpretText()
+        self.save_requested.emit()
 
     def _write_measurement_setting(
         self, symbol: str, value: float, label: str
     ) -> None:
         self.ads.queue_write(symbol, value, label)
         self.measurement_changed.emit(
-            *(float(control.value()) for control in self.spacing_controls),
+            tuple(float(control.value()) for control in self.spacing_controls),
+            tuple(
+                float(control.value())
+                for control in self.sensor_to_array_controls
+            ),
             int(self.debounce_ms_control.value()),
         )
 
@@ -1941,6 +2103,7 @@ class LightBarrierSettingsDialog(QDialog):
     def _connection_changed(self, connected: bool, _message: str) -> None:
         for control in (
             *self.spacing_controls,
+            *self.sensor_to_array_controls,
             self.debounce_ms_control,
             *self.invert_controls,
             *self.debounce_controls,
@@ -2364,8 +2527,7 @@ class ForceDelaySettingsDialog(QDialog):
         self.ads = ads
         self.debounce_ms = int(debounce_ms)
         self.debounce_enabled = list(debounce_enabled)
-        self.single_nozzle_inputs: list[QDoubleSpinBox] = []
-        self.four_nozzle_inputs: list[QDoubleSpinBox] = []
+        self.response_delay_inputs: list[QDoubleSpinBox] = []
         self.trigger_debounce_labels: list[QLabel] = []
         self.setWindowTitle("Force Delay Settings")
         self.setModal(True)
@@ -2389,9 +2551,8 @@ class ForceDelaySettingsDialog(QDialog):
         layout.setSpacing(12)
 
         description = QLabel(
-            "Set the valve-to-force response compensation for each nozzle array. "
-            "The PLC uses the one-nozzle value for one active nozzle, the four-nozzle "
-            "value for four or more, and interpolates for two or three."
+            "Set one valve-to-force response compensation for each nozzle array. "
+            "The same value is used regardless of how many nozzles are active."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
@@ -2403,8 +2564,7 @@ class ForceDelaySettingsDialog(QDialog):
             (
                 "Array",
                 "Trigger",
-                "One nozzle",
-                "Four or more nozzles",
+                "Force response",
                 "Trigger debounce",
             )
         ):
@@ -2413,14 +2573,10 @@ class ForceDelaySettingsDialog(QDialog):
             table.addWidget(label, 0, column)
 
         for array_index, barrier in enumerate(self.TRIGGER_BARRIERS, start=1):
-            single_input = self._delay_input(
+            response_input = self._delay_input(
                 self.ads.force_single_nozzle_response_delays_ms[array_index - 1]
             )
-            four_input = self._delay_input(
-                self.ads.force_response_delays_ms[array_index - 1]
-            )
-            self.single_nozzle_inputs.append(single_input)
-            self.four_nozzle_inputs.append(four_input)
+            self.response_delay_inputs.append(response_input)
             enabled = (
                 barrier <= len(self.debounce_enabled)
                 and self.debounce_enabled[barrier - 1]
@@ -2430,9 +2586,8 @@ class ForceDelaySettingsDialog(QDialog):
             self.trigger_debounce_labels.append(debounce_label)
             table.addWidget(QLabel(f"Array {array_index}"), array_index, 0)
             table.addWidget(QLabel(f"LB{barrier}"), array_index, 1)
-            table.addWidget(single_input, array_index, 2)
-            table.addWidget(four_input, array_index, 3)
-            table.addWidget(debounce_label, array_index, 4)
+            table.addWidget(response_input, array_index, 2)
+            table.addWidget(debounce_label, array_index, 3)
         layout.addLayout(table)
 
         debounce_note = QLabel(
@@ -2446,12 +2601,12 @@ class ForceDelaySettingsDialog(QDialog):
         debounce_note.setStyleSheet("color: #9a6700;")
         layout.addWidget(debounce_note)
 
-        self.status_label = QLabel("Values are loaded from the current PLC/profile state.")
+        self.status_label = QLabel("Values are loaded from the current PLC state.")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
         buttons = QHBoxLayout()
-        self.defaults_button = QPushButton("Reset Fields to 15 ms")
+        self.defaults_button = QPushButton("Reset Fields to 8.7 ms")
         self.apply_button = QPushButton("Apply to PLC")
         self.close_button = QPushButton("Close")
         buttons.addWidget(self.defaults_button)
@@ -2465,16 +2620,17 @@ class ForceDelaySettingsDialog(QDialog):
         self.close_button.clicked.connect(self.accept)
 
     def _restore_defaults(self) -> None:
-        for control in (*self.single_nozzle_inputs, *self.four_nozzle_inputs):
-            control.setValue(15.0)
+        for control, default in zip(
+            self.response_delay_inputs, FORCE_RESPONSE_DELAY_DEFAULTS_MS
+        ):
+            control.setValue(default)
         self.status_label.setText(
-            "All fields reset to 15.0 ms. Press Apply to PLC to write them."
+            "All fields reset to 8.7 ms. Press Apply to PLC to write them."
         )
 
     def _apply(self) -> None:
-        single_values = [control.value() for control in self.single_nozzle_inputs]
-        four_values = [control.value() for control in self.four_nozzle_inputs]
-        self.ads.set_all_force_response_delays(single_values, four_values)
+        values = [control.value() for control in self.response_delay_inputs]
+        self.ads.set_all_force_response_delays(values)
         if self.ads.is_connected:
             self.status_label.setText(
                 "Force response settings for Arrays 1-4 queued for the PLC."
@@ -2541,17 +2697,11 @@ class ForceDelayDialog(QDialog):
         self.response_delay_input.setSingleStep(0.1)
         self.response_delay_input.setSuffix(" ms")
         self.response_delay_input.setValue(
-            self.ads.force_response_delays_ms[0]
-        )
-        self.single_response_delay_input = QDoubleSpinBox()
-        self.single_response_delay_input.setRange(0.0, 1000.0)
-        self.single_response_delay_input.setDecimals(1)
-        self.single_response_delay_input.setSingleStep(0.1)
-        self.single_response_delay_input.setSuffix(" ms")
-        self.single_response_delay_input.setValue(
             self.ads.force_single_nozzle_response_delays_ms[0]
         )
-        self.effective_response_label = QLabel("15.0 ms (4 active nozzles)")
+        self.effective_response_label = QLabel(
+            f"{FORCE_RESPONSE_DELAY_DEFAULTS_MS[0]:.1f} ms"
+        )
         self.apply_response_button = QPushButton("Apply Compensation")
         settings.addWidget(QLabel("Array"), 0, 0)
         settings.addWidget(self.array_input, 0, 1)
@@ -2563,13 +2713,11 @@ class ForceDelayDialog(QDialog):
         settings.addWidget(self.window_input, 1, 3)
         settings.addWidget(QLabel("Minimum peak rise"), 2, 0)
         settings.addWidget(self.minimum_rise_input, 2, 1)
-        settings.addWidget(QLabel("Four-nozzle response"), 2, 2)
+        settings.addWidget(QLabel("Force response"), 2, 2)
         settings.addWidget(self.response_delay_input, 2, 3)
-        settings.addWidget(QLabel("Single-nozzle response"), 3, 2)
-        settings.addWidget(self.single_response_delay_input, 3, 3)
-        settings.addWidget(QLabel("Effective response"), 4, 2)
-        settings.addWidget(self.effective_response_label, 4, 3)
-        settings.addWidget(self.apply_response_button, 5, 3)
+        settings.addWidget(QLabel("Effective response"), 3, 2)
+        settings.addWidget(self.effective_response_label, 3, 3)
+        settings.addWidget(self.apply_response_button, 4, 3)
         layout.addWidget(settings_box)
 
         command_layout = QHBoxLayout()
@@ -2661,31 +2809,19 @@ class ForceDelayDialog(QDialog):
         self.window_input.setEnabled(enabled)
         self.minimum_rise_input.setEnabled(enabled)
         self.response_delay_input.setEnabled(enabled)
-        self.single_response_delay_input.setEnabled(enabled)
         self.apply_response_button.setEnabled(enabled and self.ads.is_connected)
 
     def _array_changed(self) -> None:
         array_index = int(self.array_input.currentData())
         with QSignalBlocker(self.response_delay_input):
             self.response_delay_input.setValue(
-                self.ads.force_response_delays_ms[array_index - 1]
-            )
-        with QSignalBlocker(self.single_response_delay_input):
-            self.single_response_delay_input.setValue(
                 self.ads.force_single_nozzle_response_delays_ms[array_index - 1]
             )
 
     def _apply_response_delay(self) -> None:
         array_index = int(self.array_input.currentData())
-        four_nozzle_ms = self.response_delay_input.value()
-        single_nozzle_ms = self.single_response_delay_input.value()
-        self.ads.force_response_delays_ms[array_index - 1] = four_nozzle_ms
-        self.ads.force_single_nozzle_response_delays_ms[
-            array_index - 1
-        ] = single_nozzle_ms
-        self.ads.set_force_response_delays(
-            array_index, single_nozzle_ms, four_nozzle_ms
-        )
+        response_delay_ms = self.response_delay_input.value()
+        self.ads.set_force_response_delay(array_index, response_delay_ms)
         self.state_label.setText(
             f"Array {array_index} compensation queued"
         )
@@ -2744,7 +2880,7 @@ class ForceDelayDialog(QDialog):
         else:
             effective_delay = float(effective_delays[selected_array - 1])
         self.effective_response_label.setText(
-            f"{effective_delay:.2f} ms ({active_count} active nozzles)"
+            f"{effective_delay:.2f} ms (all nozzle counts)"
         )
         self.state_label.setText(
             self.STATUS_TEXT.get(int(status["status_code"]), "Unknown state")
@@ -2938,6 +3074,60 @@ class ForceDelayDialog(QDialog):
         super().closeEvent(event)
 
 
+class HighSpeedCameraDialog(QDialog):
+    """LB4-triggered USB-camera view and half-second frame review."""
+
+    def __init__(
+        self, ads_controller: AdsController, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.ads = ads_controller
+        self._closing = False
+        self.setWindowTitle("USB High-Speed Camera – Light Barrier 4")
+        self.resize(1180, 760)
+
+        layout = QVBoxLayout(self)
+        self.camera_tab = PressureDelayTab(
+            self,
+            ads_controller=self.ads,
+            fixed_light_barrier=4,
+            initial_post_trigger_ms=500,
+            initial_exposure_us=1000.0,
+            record_on_trigger=True,
+            review_only=True,
+        )
+        layout.addWidget(self.camera_tab)
+
+        self.ads.connection_changed.connect(self.camera_tab.set_ads_connected)
+        self.ads.setup_status_ready.connect(self.camera_tab.process_setup_status)
+        self.camera_tab.status_message.connect(self._show_status_message)
+        self.camera_tab.set_ads_connected(self.ads.is_connected)
+        self.ads.set_setup_polling(True)
+        self.camera_tab.activate()
+
+    @pyqtSlot(str)
+    def _show_status_message(self, message: str) -> None:
+        parent = self.parentWidget()
+        if isinstance(parent, QMainWindow) and parent.statusBar() is not None:
+            parent.statusBar().showMessage(message)
+
+    def closeEvent(self, event) -> None:
+        if not self._closing:
+            self._closing = True
+            self.camera_tab.shutdown()
+            self.ads.set_setup_polling(False)
+            try:
+                self.ads.connection_changed.disconnect(
+                    self.camera_tab.set_ads_connected
+                )
+                self.ads.setup_status_ready.disconnect(
+                    self.camera_tab.process_setup_status
+                )
+            except (TypeError, RuntimeError):
+                pass
+        super().closeEvent(event)
+
+
 class PressureControlWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -2951,6 +3141,11 @@ class PressureControlWindow(QMainWindow):
             LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS
         )
         self.selected_roadmap_transition: SelectedRoadmapTransition | None = None
+        # This follows the most recently chosen profile folder, so the roadmap
+        # chooser reports calibrations saved outside the default directory too.
+        self.profile_directory = PROFILE_DIR.resolve()
+        self.profile_path: Path | None = None
+        self.profile_title: str | None = None
         self.conveyor_calibration = {
             "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
             "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
@@ -2958,21 +3153,27 @@ class PressureControlWindow(QMainWindow):
         }
 
         self.setWindowTitle("Nozzle Array Pressure Control")
-        self.resize(1450, 560)
 
         self._build_ui()
+        self.resize(
+            1450,
+            self.centralWidget().widget().sizeHint().height()
+            + self.statusBar().sizeHint().height(),
+        )
         self.ads = AdsController(self)
         self.ur_angle = UrAngleController(self)
         self._connect_signals()
         self.logging_status.setText("Logging: connecting")
         self.statusBar().showMessage(f"Connecting to ADS controller ({ADS_TIMEOUT_MS} ms timeout)...")
+        self.global_light_barrier_settings = None
+        self._load_global_light_barrier_settings()
         self.ads.start()
 
     def _build_ui(self) -> None:
         root = QWidget()
         main_layout = QVBoxLayout(root)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(6)
 
         self.transition_context_frame = QFrame()
         self.transition_context_frame.setObjectName("transitionContext")
@@ -2983,7 +3184,7 @@ class PressureControlWindow(QMainWindow):
         transition_context_layout = QHBoxLayout(self.transition_context_frame)
         transition_context_layout.addStretch(1)
         self.transition_source_image = QLabel()
-        self.transition_source_image.setFixedSize(120, 88)
+        self.transition_source_image.setFixedSize(240, 176)
         self.transition_source_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         transition_context_layout.addWidget(self.transition_source_image)
         self.transition_context_text = QLabel()
@@ -2991,9 +3192,19 @@ class PressureControlWindow(QMainWindow):
         self.transition_context_text.setStyleSheet(
             "font-size: 17px; font-weight: 700; color: #0b4f83; padding: 6px 14px;"
         )
-        transition_context_layout.addWidget(self.transition_context_text)
+        transition_details_layout = QVBoxLayout()
+        transition_details_layout.setSpacing(4)
+        transition_details_layout.addWidget(self.transition_context_text)
+        self.transition_flips_text = QLabel()
+        self.transition_flips_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.transition_flips_text.setStyleSheet(
+            "font-size: 14px; color: #0b4f83; padding: 0px 14px 6px;"
+        )
+        self.transition_flips_text.setVisible(False)
+        transition_details_layout.addWidget(self.transition_flips_text)
+        transition_context_layout.addLayout(transition_details_layout)
         self.transition_target_image = QLabel()
-        self.transition_target_image.setFixedSize(120, 88)
+        self.transition_target_image.setFixedSize(240, 176)
         self.transition_target_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         transition_context_layout.addWidget(self.transition_target_image)
         transition_context_layout.addStretch(1)
@@ -3001,34 +3212,31 @@ class PressureControlWindow(QMainWindow):
         main_layout.addWidget(self.transition_context_frame)
 
         machine_layout = QHBoxLayout()
-        self.sensor_spacing_12 = QDoubleSpinBox()
-        self.sensor_spacing_12.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
-        self.sensor_spacing_12.setSuffix(" mm")
-        self.sensor_spacing_12.setDecimals(1)
-        self.sensor_spacing_12.setSingleStep(1.0)
-        self.sensor_spacing_12.setValue(SENSOR_SPACING_12_DEFAULT_MM)
-        self.sensor_spacing_12.setToolTip("Physical distance between light barrier 1 and light barrier 2")
-        self.sensor_spacing_34 = QDoubleSpinBox()
-        self.sensor_spacing_34.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
-        self.sensor_spacing_34.setSuffix(" mm")
-        self.sensor_spacing_34.setDecimals(1)
-        self.sensor_spacing_34.setSingleStep(1.0)
-        self.sensor_spacing_34.setValue(SENSOR_SPACING_34_DEFAULT_MM)
-        self.sensor_spacing_34.setToolTip("Physical distance between light barrier 3 and light barrier 4")
-        self.sensor_spacing_56 = QDoubleSpinBox()
-        self.sensor_spacing_56.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
-        self.sensor_spacing_56.setSuffix(" mm")
-        self.sensor_spacing_56.setDecimals(1)
-        self.sensor_spacing_56.setSingleStep(1.0)
-        self.sensor_spacing_56.setValue(SENSOR_SPACING_56_DEFAULT_MM)
-        self.sensor_spacing_56.setToolTip("Physical distance between light barrier 5 and light barrier 6")
-        self.sensor_spacing_78 = QDoubleSpinBox()
-        self.sensor_spacing_78.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
-        self.sensor_spacing_78.setSuffix(" mm")
-        self.sensor_spacing_78.setDecimals(1)
-        self.sensor_spacing_78.setSingleStep(1.0)
-        self.sensor_spacing_78.setValue(SENSOR_SPACING_78_DEFAULT_MM)
-        self.sensor_spacing_78.setToolTip("Physical distance between light barrier 7 and light barrier 8")
+        self.sensor_spacing_controls: dict[tuple[int, int], QDoubleSpinBox] = {}
+        for pair in LIGHT_BARRIER_PAIRS:
+            control = QDoubleSpinBox()
+            control.setRange(SENSOR_SPACING_MIN_MM, SENSOR_SPACING_MAX_MM)
+            control.setSuffix(" mm")
+            control.setDecimals(1)
+            control.setSingleStep(1.0)
+            control.setValue(SENSOR_SPACING_DEFAULTS_MM[pair])
+            control.setToolTip(
+                f"Physical distance between light barrier {pair[0]} and light barrier {pair[1]}"
+            )
+            self.sensor_spacing_controls[pair] = control
+            setattr(self, f"sensor_spacing_{pair[0]}{pair[1]}", control)
+        self.sensor_to_array_controls: dict[int, QDoubleSpinBox] = {}
+        for sensor, array in SENSOR_TO_ARRAY_MAPPINGS:
+            control = QDoubleSpinBox()
+            control.setRange(0.0, SENSOR_SPACING_MAX_MM)
+            control.setSuffix(" mm")
+            control.setDecimals(1)
+            control.setSingleStep(1.0)
+            control.setValue(SENSOR_TO_ARRAY_DEFAULTS_MM[array - 1])
+            control.setToolTip(
+                f"Physical distance from light barrier {sensor} to nozzle array {array}"
+            )
+            self.sensor_to_array_controls[array] = control
         self.light_barrier_debounce = QSpinBox()
         self.light_barrier_debounce.setRange(
             LIGHT_BARRIER_DEBOUNCE_MIN_MS, LIGHT_BARRIER_DEBOUNCE_MAX_MS
@@ -3072,9 +3280,14 @@ class PressureControlWindow(QMainWindow):
         main_layout.addLayout(machine_layout)
 
         control_box = QGroupBox("Online Settings")
-        grid = QGridLayout(control_box)
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(8)
+        control_layout = QVBoxLayout(control_box)
+        control_layout.setContentsMargins(6, 6, 6, 6)
+        self.online_status_table = QWidget()
+        grid = QGridLayout(self.online_status_table)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(4)
 
         headers = [
             "Array",
@@ -3083,7 +3296,7 @@ class PressureControlWindow(QMainWindow):
             "Pressure",
             "Delay",
             "Pulse Duration",
-            "Offset",
+            "Nozzle Offset",
             "Est. Velocity",
             "Est. Offset Delay",
             "Status",
@@ -3106,6 +3319,19 @@ class PressureControlWindow(QMainWindow):
             grid.addWidget(row.status, row_number, 9)
 
         grid.setColumnStretch(9, 1)
+        status_scroll = QScrollArea()
+        status_scroll.setWidgetResizable(True)
+        status_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        status_scroll.setWidget(self.online_status_table)
+        status_scroll.setMinimumWidth(500)
+        status_scroll.setFixedHeight(
+            self.online_status_table.sizeHint().height()
+            + self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        )
+        # Keep capturing completed passes while the settings dialog is closed.
+        self.light_barrier_plot = LightBarrierPlot(self, live_updates=False, plc_filtered=True)
+        self.light_barrier_plot.hide()
+        control_layout.addWidget(status_scroll)
         main_layout.addWidget(control_box)
 
         ur_layout = QHBoxLayout()
@@ -3132,7 +3358,9 @@ class PressureControlWindow(QMainWindow):
         ur_layout.addStretch(1)
         main_layout.addLayout(ur_layout)
 
-        button_layout = QHBoxLayout()
+        options_row = QWidget()
+        button_layout = QHBoxLayout(options_row)
+        button_layout.setContentsMargins(0, 0, 0, 0)
         self.reconnect_button = QPushButton("Reconnect")
         self.calibrate_conveyor_button = QPushButton("Calibrate Conveyor")
         self.calibrate_conveyor_button.setToolTip("Open the conveyor step calibration")
@@ -3144,9 +3372,17 @@ class PressureControlWindow(QMainWindow):
         )
         self.light_barrier_settings_button = QPushButton("Light Barrier Settings")
         self.light_barrier_settings_button.setToolTip(
-            "Configure inversion and debounce separately for each light barrier"
+            "Configure velocity-pair and sensor-to-array spacings plus inversion and debounce"
         )
         self.light_barrier_settings_button.setEnabled(False)
+        self.show_offset_equation_button = QPushButton("Show Offset Equation")
+        self.show_offset_equation_button.setToolTip(
+            "Show how sensor-to-array distance, velocity, force response and offset set trigger timing"
+        )
+        self.high_speed_camera_button = QPushButton("USB High-Speed Camera")
+        self.high_speed_camera_button.setToolTip(
+            "Open the LB4-triggered camera view with adjustable recording duration"
+        )
         self.logging_status = QLabel("Logging: offline")
         self.logging_status.setMinimumWidth(170)
         self.load_button = QPushButton("Load Profile")
@@ -3162,27 +3398,46 @@ class PressureControlWindow(QMainWindow):
         button_layout.addWidget(self.jog_conveyor_button)
         button_layout.addWidget(self.force_delay_settings_button)
         button_layout.addWidget(self.light_barrier_settings_button)
+        button_layout.addWidget(self.show_offset_equation_button)
+        button_layout.addWidget(self.high_speed_camera_button)
         button_layout.addWidget(self.logging_status)
         button_layout.addStretch(1)
         button_layout.addWidget(self.load_roadmap_button)
         button_layout.addWidget(self.load_button)
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.write_all_button)
-        main_layout.addLayout(button_layout)
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        options_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        options_scroll.setWidget(options_row)
+        options_scroll.setFixedHeight(
+            options_row.sizeHint().height()
+            + self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        )
+        main_layout.addWidget(options_scroll)
+        main_layout.addStretch(1)
 
-        self.setCentralWidget(root)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(root)
+        self.setCentralWidget(scroll)
         self.setStatusBar(QStatusBar())
 
     def _connect_signals(self) -> None:
         self.ads.connection_changed.connect(self.on_connection_changed)
         self.ads.initial_snapshot_ready.connect(self.apply_initial_snapshot)
         self.ads.live_snapshot_ready.connect(self.apply_live_snapshot)
+        self.ads.setup_status_ready.connect(self.light_barrier_plot.process_status)
         self.ads.write_finished.connect(self.on_write_finished)
         self.ads.operation_failed.connect(self.on_ads_error)
         self.reconnect_button.clicked.connect(self.reconnect)
         self.calibrate_conveyor_button.clicked.connect(self.open_conveyor_calibration)
         self.jog_conveyor_button.clicked.connect(self.open_conveyor_jogging)
         self.force_delay_settings_button.clicked.connect(self.open_force_delay_settings)
+        self.show_offset_equation_button.clicked.connect(self.show_offset_equation)
+        self.high_speed_camera_button.clicked.connect(self.open_high_speed_camera)
         self.load_roadmap_button.clicked.connect(self.load_pose_roadmap)
         self.load_button.clicked.connect(self.load_profile)
         self.save_button.clicked.connect(self.save_profile)
@@ -3191,18 +3446,22 @@ class PressureControlWindow(QMainWindow):
         self.ur_angle.busy_changed.connect(self.on_ur_angle_busy_changed)
         self.ur_angle.angle_applied.connect(self.on_ur_angle_applied)
         self.ur_angle.operation_failed.connect(self.on_ur_angle_error)
-        self.sensor_spacing_12.valueChanged.connect(
-            lambda value: self.write_sensor_spacing("MAIN.GuiSensorSpacing12Mm", value, "Sensor spacing 1-2")
-        )
-        self.sensor_spacing_34.valueChanged.connect(
-            lambda value: self.write_sensor_spacing("MAIN.GuiSensorSpacing34Mm", value, "Sensor spacing 3-4")
-        )
-        self.sensor_spacing_56.valueChanged.connect(
-            lambda value: self.write_sensor_spacing("MAIN.GuiSensorSpacing56Mm", value, "Sensor spacing 5-6")
-        )
-        self.sensor_spacing_78.valueChanged.connect(
-            lambda value: self.write_sensor_spacing("MAIN.GuiSensorSpacing78Mm", value, "Sensor spacing 7-8")
-        )
+        for pair, control in self.sensor_spacing_controls.items():
+            control.valueChanged.connect(
+                lambda value, p=pair: self.write_sensor_spacing(
+                    SENSOR_SPACING_SYMBOLS[p],
+                    value,
+                    f"Sensor spacing {p[0]}-{p[1]}",
+                )
+            )
+        for sensor, array in SENSOR_TO_ARRAY_MAPPINGS:
+            self.sensor_to_array_controls[array].valueChanged.connect(
+                lambda value, s=sensor, a=array: self.write_sensor_spacing(
+                    SENSOR_TO_ARRAY_SYMBOLS[a],
+                    value,
+                    f"Sensor {s} to array {a}",
+                )
+            )
         self.light_barrier_debounce.valueChanged.connect(
             lambda value: self.ads.queue_write(
                 "MAIN.GuiBarrierCalibrationDebounceMs",
@@ -3285,6 +3544,7 @@ class PressureControlWindow(QMainWindow):
 
     @pyqtSlot(bool, str)
     def on_connection_changed(self, connected: bool, message: str) -> None:
+        self.light_barrier_plot.set_connected(connected)
         self.reconnect_button.setEnabled(True)
         self.light_barrier_settings_button.setEnabled(connected)
         if connected:
@@ -3301,7 +3561,8 @@ class PressureControlWindow(QMainWindow):
 
     @pyqtSlot(object)
     def apply_initial_snapshot(self, snapshot: dict) -> None:
-        spacing_12, spacing_34, spacing_56, spacing_78 = snapshot["sensor_spacings"]
+        sensor_spacings = tuple(snapshot["sensor_spacings"])
+        sensor_to_array_spacings = tuple(snapshot["sensor_to_array_spacings"])
         light_barrier_debounce = snapshot["light_barrier_debounce_ms"]
         self.light_barrier_inverted = list(
             snapshot.get("light_barrier_inverted", LIGHT_BARRIER_INVERT_DEFAULTS)
@@ -3319,26 +3580,30 @@ class PressureControlWindow(QMainWindow):
             "mm_per_full_step": float(calibration["mm_per_full_step"]),
             "valid": bool(calibration["valid"]),
         }
-        with (
-            QSignalBlocker(self.sensor_spacing_12),
-            QSignalBlocker(self.sensor_spacing_34),
-            QSignalBlocker(self.sensor_spacing_56),
-            QSignalBlocker(self.sensor_spacing_78),
-            QSignalBlocker(self.light_barrier_debounce),
-            QSignalBlocker(self.conveyor_enabled),
-            QSignalBlocker(self.conveyor_reverse),
-            QSignalBlocker(self.conveyor_speed),
-            QSignalBlocker(self.conveyor_max_speed),
-        ):
-            self.sensor_spacing_12.setValue(spacing_12)
-            self.sensor_spacing_34.setValue(spacing_34)
-            self.sensor_spacing_56.setValue(spacing_56)
-            self.sensor_spacing_78.setValue(spacing_78)
+        controls_to_block = [
+            *self.sensor_spacing_controls.values(),
+            *self.sensor_to_array_controls.values(),
+            self.light_barrier_debounce,
+            self.conveyor_enabled,
+            self.conveyor_reverse,
+            self.conveyor_speed,
+            self.conveyor_max_speed,
+        ]
+        blockers = [QSignalBlocker(control) for control in controls_to_block]
+        try:
+            for pair, spacing in zip(
+                LIGHT_BARRIER_PAIRS, sensor_spacings
+            ):
+                self.sensor_spacing_controls[pair].setValue(spacing)
+            for array, spacing in enumerate(sensor_to_array_spacings, start=1):
+                self.sensor_to_array_controls[array].setValue(spacing)
             self.light_barrier_debounce.setValue(light_barrier_debounce)
             self.conveyor_enabled.setChecked(bool(conveyor_settings["enabled"]))
             self.conveyor_reverse.setChecked(bool(conveyor_settings["reverse"]))
             self.conveyor_speed.setValue(float(conveyor_settings["speed_mm_per_sec"]))
             self.conveyor_max_speed.setValue(CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC)
+        finally:
+            del blockers
 
         arrays_by_index = {int(values["index"]): values for values in snapshot["arrays"]}
         for row in self.rows:
@@ -3354,6 +3619,7 @@ class PressureControlWindow(QMainWindow):
 
         self.last_shot_counter = None
         self.logging_status.setText("Logging: waiting")
+        self._apply_global_light_barrier_settings(write_to_plc=True)
 
     @pyqtSlot(str)
     def on_write_finished(self, context: str) -> None:
@@ -3389,10 +3655,14 @@ class PressureControlWindow(QMainWindow):
 
     def write_all_values(self) -> None:
         values = {
-            "MAIN.GuiSensorSpacing12Mm": float(self.sensor_spacing_12.value()),
-            "MAIN.GuiSensorSpacing34Mm": float(self.sensor_spacing_34.value()),
-            "MAIN.GuiSensorSpacing56Mm": float(self.sensor_spacing_56.value()),
-            "MAIN.GuiSensorSpacing78Mm": float(self.sensor_spacing_78.value()),
+            **{
+                SENSOR_SPACING_SYMBOLS[pair]: float(control.value())
+                for pair, control in self.sensor_spacing_controls.items()
+            },
+            **{
+                SENSOR_TO_ARRAY_SYMBOLS[array]: float(control.value())
+                for array, control in self.sensor_to_array_controls.items()
+            },
             "MAIN.GuiBarrierCalibrationDebounceMs": int(
                 self.light_barrier_debounce.value()
             ),
@@ -3426,7 +3696,7 @@ class PressureControlWindow(QMainWindow):
             {
                 f"MAIN.GuiForceResponseDelayMs{index}": float(delay_ms)
                 for index, delay_ms in enumerate(
-                    self.ads.force_response_delays_ms, start=1
+                    self.ads.force_single_nozzle_response_delays_ms, start=1
                 )
             }
         )
@@ -3463,6 +3733,96 @@ class PressureControlWindow(QMainWindow):
         self.ads.queue_write(symbol_name, float(value), label)
         self.statusBar().showMessage(f"{label} queued: {value:.1f} mm")
 
+    def _current_light_barrier_settings(self) -> dict:
+        return {
+            "version": 1,
+            "light_barrier_debounce_ms": self.light_barrier_debounce.value(),
+            "light_barrier_inverted": list(self.light_barrier_inverted),
+            "light_barrier_debounce_enabled": list(self.light_barrier_debounce_enabled),
+            **{f"sensor_spacing_{a}{b}_mm": control.value()
+               for (a, b), control in self.sensor_spacing_controls.items()},
+            **{f"sensor_{sensor}_to_array_{array}_spacing_mm": self.sensor_to_array_controls[array].value()
+               for sensor, array in SENSOR_TO_ARRAY_MAPPINGS},
+        }
+
+    def _validate_global_light_barrier_settings(self, settings) -> dict:
+        if not isinstance(settings, dict) or settings.get("version") != 1:
+            raise ValueError("Unsupported global light barrier settings format")
+        for key in ("light_barrier_inverted", "light_barrier_debounce_enabled"):
+            values = settings.get(key)
+            if (not isinstance(values, list) or len(values) != LIGHT_BARRIER_COUNT
+                    or any(type(value) is not bool for value in values)):
+                raise ValueError(f"{key} must contain eight boolean values")
+        numeric_controls = {
+            "light_barrier_debounce_ms": self.light_barrier_debounce,
+            **{f"sensor_spacing_{a}{b}_mm": control
+               for (a, b), control in self.sensor_spacing_controls.items()},
+            **{f"sensor_{sensor}_to_array_{array}_spacing_mm": self.sensor_to_array_controls[array]
+               for sensor, array in SENSOR_TO_ARRAY_MAPPINGS},
+        }
+        for key, control in numeric_controls.items():
+            value = settings.get(key)
+            if (type(value) not in (int, float)
+                    or not control.minimum() <= value <= control.maximum()):
+                raise ValueError(f"Invalid global setting: {key}")
+        if type(settings["light_barrier_debounce_ms"]) is not int:
+            raise ValueError("Light barrier debounce must be an integer")
+        return settings
+
+    def _load_global_light_barrier_settings(self) -> None:
+        try:
+            settings = json.loads(LIGHT_BARRIER_SETTINGS_FILE.read_text(encoding="utf-8"))
+            self.global_light_barrier_settings = self._validate_global_light_barrier_settings(settings)
+            self._apply_global_light_barrier_settings()
+        except FileNotFoundError:
+            pass  # Until the first global save, use the current PLC settings.
+        except (OSError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Global Light Barrier Settings", f"Could not load settings: {exc}")
+
+    def save_global_light_barrier_settings(self) -> bool:
+        temporary_path = None
+        try:
+            settings = self._validate_global_light_barrier_settings(self._current_light_barrier_settings())
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=LIGHT_BARRIER_SETTINGS_FILE.parent,
+                prefix="light_barrier_settings_", suffix=".tmp", delete=False,
+            ) as file:
+                temporary_path = Path(file.name)
+                json.dump(settings, file, indent=2)
+                file.write("\n")
+            temporary_path.replace(LIGHT_BARRIER_SETTINGS_FILE)
+            self.global_light_barrier_settings = settings
+            self.statusBar().showMessage("Light barrier settings saved globally")
+            return True
+        except (OSError, ValueError, TypeError) as exc:
+            QMessageBox.critical(self, "Save Failed", f"Could not save global light barrier settings: {exc}")
+            return False
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+    def _apply_global_light_barrier_settings(self, *, write_to_plc=False) -> None:
+        settings = self.global_light_barrier_settings
+        if settings is None:
+            return
+        spacings = tuple(settings[f"sensor_spacing_{a}{b}_mm"] for a, b in LIGHT_BARRIER_PAIRS)
+        to_arrays = tuple(settings[f"sensor_{sensor}_to_array_{array}_spacing_mm"]
+                          for sensor, array in SENSOR_TO_ARRAY_MAPPINGS)
+        self._update_light_barrier_measurements(spacings, to_arrays, settings["light_barrier_debounce_ms"])
+        self.light_barrier_inverted = list(settings["light_barrier_inverted"])
+        self.light_barrier_debounce_enabled = list(settings["light_barrier_debounce_enabled"])
+        if write_to_plc:
+            values = {
+                "MAIN.GuiBarrierCalibrationDebounceMs": settings["light_barrier_debounce_ms"],
+                **{SENSOR_SPACING_SYMBOLS[pair]: value for pair, value in zip(LIGHT_BARRIER_PAIRS, spacings)},
+                **{SENSOR_TO_ARRAY_SYMBOLS[array]: value for array, value in enumerate(to_arrays, 1)},
+                **{f"MAIN.GuiLightBarrierInvert{sensor}": value
+                   for sensor, value in enumerate(self.light_barrier_inverted, 1)},
+                **{f"MAIN.GuiLightBarrierDebounceEnabled{sensor}": value
+                   for sensor, value in enumerate(self.light_barrier_debounce_enabled, 1)},
+            }
+            self.ads.write_now(values, "global_light_barrier_settings")
+
     def open_light_barrier_settings(self) -> None:
         if not self.ads.is_connected:
             self.statusBar().showMessage("Light barrier settings: ADS offline")
@@ -3471,20 +3831,31 @@ class PressureControlWindow(QMainWindow):
             self.ads,
             self.light_barrier_inverted,
             self.light_barrier_debounce_enabled,
-            (
-                self.sensor_spacing_12.value(),
-                self.sensor_spacing_34.value(),
-                self.sensor_spacing_56.value(),
-                self.sensor_spacing_78.value(),
+            tuple(
+                self.sensor_spacing_controls[pair].value()
+                for pair in LIGHT_BARRIER_PAIRS
+            ),
+            tuple(
+                self.sensor_to_array_controls[array].value()
+                for array in range(1, ARRAY_COUNT + 1)
             ),
             self.light_barrier_debounce.value(),
             self,
+            light_barrier_plot=self.light_barrier_plot,
         )
+        dialog.save_requested.connect(lambda: dialog.save_status.setText(
+            "Saved globally for all profiles." if self.save_global_light_barrier_settings()
+            else "Save failed; previous global settings were kept."
+        ))
         dialog.setting_changed.connect(self._update_light_barrier_setting)
         dialog.measurement_changed.connect(
             self._update_light_barrier_measurements
         )
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            self.light_barrier_plot.hide()
+            self.light_barrier_plot.setParent(self)
 
     @pyqtSlot(int, bool, bool)
     def _update_light_barrier_setting(
@@ -3493,22 +3864,28 @@ class PressureControlWindow(QMainWindow):
         self.light_barrier_inverted[sensor - 1] = inverted
         self.light_barrier_debounce_enabled[sensor - 1] = debounce_enabled
 
-    @pyqtSlot(float, float, float, float, int)
+    @pyqtSlot(object, object, int)
     def _update_light_barrier_measurements(
         self,
-        spacing_12: float,
-        spacing_34: float,
-        spacing_56: float,
-        spacing_78: float,
+        sensor_spacings: tuple[float, ...],
+        sensor_to_array_spacings: tuple[float, ...],
         debounce_ms: int,
     ) -> None:
-        controls_and_values = (
-            (self.sensor_spacing_12, spacing_12),
-            (self.sensor_spacing_34, spacing_34),
-            (self.sensor_spacing_56, spacing_56),
-            (self.sensor_spacing_78, spacing_78),
+        controls_and_values = [
+            *(
+                (self.sensor_spacing_controls[pair], spacing)
+                for pair, spacing in zip(
+                    LIGHT_BARRIER_PAIRS, sensor_spacings
+                )
+            ),
+            *(
+                (self.sensor_to_array_controls[array], spacing)
+                for array, spacing in enumerate(
+                    sensor_to_array_spacings, start=1
+                )
+            ),
             (self.light_barrier_debounce, debounce_ms),
-        )
+        ]
         blockers = [QSignalBlocker(control) for control, _value in controls_and_values]
         try:
             for control, value in controls_and_values:
@@ -3533,7 +3910,12 @@ class PressureControlWindow(QMainWindow):
             return
         try:
             document = load_roadmap_document(path)
-            dialog = RoadmapTransitionDialog(document, self)
+            # Scan the active profile directory before the pose pair is picked so
+            # each offered path can immediately show whether it was calibrated.
+            self.profile_directory.mkdir(parents=True, exist_ok=True)
+            dialog = RoadmapTransitionDialog(
+                document, self, profile_directory=self.profile_directory
+            )
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 self.statusBar().showMessage("Pose roadmap closed without selection")
                 return
@@ -3541,6 +3923,7 @@ class PressureControlWindow(QMainWindow):
                 self.statusBar().showMessage("No calibratable transition selected")
                 return
             self._apply_roadmap_transition(dialog.selected_transition)
+            self.profile_title = None
         except (OSError, KeyError, RuntimeError, TypeError, ValueError) as exc:
             QMessageBox.critical(self, "Roadmap Load Failed", str(exc))
 
@@ -3550,17 +3933,20 @@ class PressureControlWindow(QMainWindow):
         self.selected_roadmap_transition = selection
         transition = selection.transition
         angle = (
-            "kein einzelner Sollwinkel"
+            ("no single target angle" if transition.is_multi_reorientation else "angle not saved")
             if transition.signed_angle_deg is None
             else f"{transition.signed_angle_deg:+.1f}°"
         )
-        via = (
-            f"<br><span style='color:#8a5a00;'>Experimentell / nicht bevorzugt · "
-            f"{transition.flip_count} Flips über "
-            f"{' → '.join(map(str, transition.via_pose_ids))}</span>"
-            if transition.is_multi_reorientation
-            else ""
-        )
+        via = ""
+        if transition.is_multi_reorientation:
+            intermediate_poses = (
+                f" via {' → '.join(map(str, transition.via_pose_ids))}"
+                if transition.via_pose_ids else ""
+            )
+            via = (
+                "<br><span style='color:#8a5a00;'>Experimental · "
+                f"{transition.flip_count} flips{intermediate_poses}</span>"
+            )
         self.transition_context_text.setText(
             f"{selection.part_name}<br>"
             f"{transition.display_name}<br>"
@@ -3568,6 +3954,33 @@ class PressureControlWindow(QMainWindow):
             f"{action_display_label(transition.actuation)} · "
             f"{angle}</span>{via}"
         )
+        flip_lines = []
+        if transition.is_multi_reorientation:
+            flips_by_id = {flip.edge_id: flip for flip in selection.component_flips}
+            pose_ids = (
+                transition.source_pose_id, *transition.via_pose_ids, transition.target_pose_id
+            )
+            for index, edge_id in enumerate(transition.component_edge_ids):
+                flip = flips_by_id.get(edge_id)
+                pose_pair = (
+                    f"Pose {pose_ids[index]} → Pose {pose_ids[index + 1]} · "
+                    if index + 1 < len(pose_ids) else ""
+                )
+                details = "axis / angle unavailable"
+                if flip is not None:
+                    flip_angle = (
+                        "angle not saved" if flip.signed_angle_deg is None
+                        else f"{flip.signed_angle_deg:+.1f}°"
+                    )
+                    details = f"{action_display_label(flip.actuation)} · <b>{flip_angle}</b>"
+                flip_lines.append(f"<b>Flip {index + 1}:</b> {pose_pair}{details}")
+            if not flip_lines:
+                flip_lines.append(
+                    "Individual flip details were not saved.<br>"
+                    "Select the path again to restore them."
+                )
+        self.transition_flips_text.setText("<br>".join(flip_lines))
+        self.transition_flips_text.setVisible(transition.is_multi_reorientation)
         self._set_transition_pose_image(
             self.transition_source_image,
             selection.source_pose,
@@ -3579,13 +3992,21 @@ class PressureControlWindow(QMainWindow):
             f"Pose {transition.target_pose_id}",
         )
         self.transition_context_frame.setVisible(True)
+        if not self.isMaximized() and not self.isFullScreen():
+            content = self.centralWidget().widget()
+            content.layout().activate()
+            required_size = content.sizeHint()
+            self.resize(
+                max(self.width(), required_size.width()),
+                max(self.height(), required_size.height() + self.statusBar().sizeHint().height()),
+            )
         self.statusBar().showMessage(
             f"Calibration context selected: {transition.display_name}"
         )
 
     @staticmethod
     def _set_transition_pose_image(label: QLabel, pose, fallback_text: str) -> None:
-        pixmap = pose_pixmap(pose, 112, 82)
+        pixmap = pose_pixmap(pose, 224, 164)
         if pixmap.isNull():
             label.setPixmap(QPixmap())
             label.setText(fallback_text)
@@ -3673,8 +4094,65 @@ class PressureControlWindow(QMainWindow):
         dialog.exec()
         self.statusBar().showMessage("Force delay settings closed")
 
+    def show_offset_equation(self) -> None:
+        lines = [
+            "Offset timing equation",
+            "",
+            "D = distance from the array's even-numbered trigger sensor to its nozzle array",
+            "x = requested Offset (leading-edge position across the nozzle)",
+            "v = matching measured velocity, F = effective force-response delay",
+            "M = manual Delay",
+            "",
+            "Travel time = (D + x) * 1000 / v",
+            "Offset delay = clamp(Travel time - F, 0, 30000 ms)",
+            "Final command delay = M + Offset delay",
+            "",
+            "With M = 0 and no clamp, x = 0 means the workpiece leading edge is "
+            "aligned at 0 mm across the nozzle when force begins.",
+            "Positive x moves the force point farther across the nozzle.",
+            "",
+            "Current values:",
+        ]
+        for row, (sensor, array) in zip(self.rows, SENSOR_TO_ARRAY_MAPPINGS):
+            active_nozzles = sum(
+                checkbox.isChecked() for checkbox in row.nozzle_enabled
+            )
+            force_response_ms = calculate_force_response_delay(
+                self.ads.force_single_nozzle_response_delays_ms[array - 1],
+                self.ads.force_response_delays_ms[array - 1],
+                active_nozzles,
+            )
+            velocity = float(row.last_displayed_velocity or 0.0)
+            timing = calculate_offset_timing(
+                self.sensor_to_array_controls[array].value(),
+                row.offset.value(),
+                velocity,
+                force_response_ms,
+                row.delay.value(),
+            )
+            prefix = (
+                f"Array {array}: LB {sensor - 1}-{sensor} velocity; "
+                f"D={self.sensor_to_array_controls[array].value():.1f} mm, "
+                f"x={row.offset.value():.1f} mm, v={velocity:.1f} mm/s, "
+                f"F={force_response_ms:.1f} ms, M={row.delay.value()} ms"
+            )
+            if timing is None:
+                lines.append(f"{prefix} -> waiting for a valid velocity")
+            else:
+                lines.append(
+                    f'{prefix} -> command delay={timing["total_trigger_delay_ms"]:.1f} ms'
+                )
+        QMessageBox.information(self, "Offset Equation", "\n".join(lines))
+
+    def open_high_speed_camera(self) -> None:
+        dialog = HighSpeedCameraDialog(self.ads, self)
+        dialog.exec()
+        self.statusBar().showMessage("USB high-speed camera window closed")
+
     @pyqtSlot(object)
     def apply_live_snapshot(self, snapshot: dict) -> None:
+        if "light_barriers" in snapshot:
+            self.light_barrier_plot.process_status(snapshot)
         velocities = snapshot["velocities"]
         delays = snapshot["delays"]
         self._log_light_barrier_events(snapshot)
@@ -3794,8 +4272,10 @@ class PressureControlWindow(QMainWindow):
             ])
 
     def save_profile(self) -> None:
-        PROFILE_DIR.mkdir(exist_ok=True)
-        if self.selected_roadmap_transition is not None:
+        self.profile_directory.mkdir(parents=True, exist_ok=True)
+        if self.profile_path is not None:
+            default_name = self.profile_path.name
+        elif self.selected_roadmap_transition is not None:
             default_name = (
                 f"{self.selected_roadmap_transition.profile_name_stem}.json"
             )
@@ -3804,55 +4284,81 @@ class PressureControlWindow(QMainWindow):
         path, _selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save Profile",
-            str(PROFILE_DIR / default_name),
+            str(self.profile_directory / default_name),
             "JSON Profile (*.json)",
         )
         if not path:
             return
+        self.profile_directory = Path(path).expanduser().resolve().parent
 
         profile = {
             "version": PROFILE_VERSION,
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "title": (
+                self.selected_roadmap_transition.transition.display_name
+                if self.selected_roadmap_transition is not None
+                else self.profile_title if self.profile_title is not None else "Pressure profile"
+            ),
             "ur_ry_angle_deg": self.ur_angle_input.value(),
+            # Light barrier fields are informational snapshots only. Global
+            # settings are saved separately and never restored from a profile.
             "light_barrier_debounce_ms": self.light_barrier_debounce.value(),
             "light_barrier_inverted": list(self.light_barrier_inverted),
             "light_barrier_debounce_enabled": list(
                 self.light_barrier_debounce_enabled
             ),
-            "sensor_spacing_12_mm": self.sensor_spacing_12.value(),
-            "sensor_spacing_34_mm": self.sensor_spacing_34.value(),
-            "sensor_spacing_56_mm": self.sensor_spacing_56.value(),
-            "sensor_spacing_78_mm": self.sensor_spacing_78.value(),
+            **{
+                f"sensor_spacing_{pair[0]}{pair[1]}_mm": control.value()
+                for pair, control in self.sensor_spacing_controls.items()
+            },
+            # Retained as a machine-state snapshot for profile compatibility;
+            # load_profile intentionally does not apply these global values.
+            **{
+                f"sensor_{sensor}_to_array_{array}_spacing_mm": (
+                    self.sensor_to_array_controls[array].value()
+                )
+                for sensor, array in SENSOR_TO_ARRAY_MAPPINGS
+            },
             "conveyor_enabled": self.conveyor_enabled.isChecked(),
             "conveyor_reverse": self.conveyor_reverse.isChecked(),
             "conveyor_speed_mm_per_sec": self.conveyor_speed.value(),
             "conveyor_max_speed_mm_per_sec": self.conveyor_max_speed.value(),
             "conveyor_calibration": self.conveyor_calibration.copy(),
+            "force_delays_ms": list(
+                self.ads.force_single_nozzle_response_delays_ms
+            ),
             "force_response_delays_ms": list(
-                self.ads.force_response_delays_ms
+                self.ads.force_single_nozzle_response_delays_ms
             ),
             "force_single_nozzle_response_delays_ms": list(
                 self.ads.force_single_nozzle_response_delays_ms
             ),
             "arrays": [row.values() for row in self.rows],
         }
+        if self.selected_roadmap_transition is not None:
+            profile["roadmap_transition"] = roadmap_transition_metadata(
+                self.selected_roadmap_transition
+            )
 
         try:
             Path(path).write_text(json.dumps(profile, indent=2), encoding="utf-8")
+            self.profile_path = Path(path).expanduser().resolve()
+            self.profile_title = profile["title"]
             self.statusBar().showMessage(f"Profile saved: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Save Failed", str(exc))
 
     def load_profile(self) -> None:
-        PROFILE_DIR.mkdir(exist_ok=True)
+        self.profile_directory.mkdir(parents=True, exist_ok=True)
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Load Profile",
-            str(PROFILE_DIR),
+            str(self.profile_directory),
             "JSON Profile (*.json)",
         )
         if not path:
             return
+        self.profile_directory = Path(path).expanduser().resolve().parent
 
         try:
             profile = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -3891,106 +4397,27 @@ class PressureControlWindow(QMainWindow):
                     "mm_per_full_step": 0.0,
                     "valid": False,
                 }
-            if profile_version >= 3:
-                response_delays = profile.get(
-                    "force_response_delays_ms", FORCE_RESPONSE_DELAY_DEFAULTS_MS
-                )
-                if len(response_delays) != ARRAY_COUNT:
-                    raise ValueError("Force response delay list must contain four values")
-                self.ads.force_response_delays_ms = [
-                    max(0.0, min(1000.0, float(value)))
-                    for value in response_delays
-                ]
-            else:
-                self.ads.force_response_delays_ms = list(
-                    FORCE_RESPONSE_DELAY_DEFAULTS_MS
-                )
-            if profile_version >= 4:
-                single_response_delays = profile.get(
-                    "force_single_nozzle_response_delays_ms",
-                    FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS,
-                )
-                if len(single_response_delays) != ARRAY_COUNT:
-                    raise ValueError(
-                        "Single-nozzle response delay list must contain four values"
-                    )
-                self.ads.force_single_nozzle_response_delays_ms = [
-                    max(0.0, min(1000.0, float(value)))
-                    for value in single_response_delays
-                ]
-            else:
-                self.ads.force_single_nozzle_response_delays_ms = list(
-                    FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS
-                )
-            light_barrier_debounce = int(
-                profile.get(
-                    "light_barrier_debounce_ms",
-                    self.light_barrier_debounce.value(),
-                )
-            )
-            sensor_spacings = (
-                float(profile.get("sensor_spacing_12_mm", self.sensor_spacing_12.value())),
-                float(profile.get("sensor_spacing_34_mm", self.sensor_spacing_34.value())),
-                float(profile.get("sensor_spacing_56_mm", self.sensor_spacing_56.value())),
-                float(profile.get("sensor_spacing_78_mm", self.sensor_spacing_78.value())),
-            )
-            profile_inversions = profile.get(
-                "light_barrier_inverted", self.light_barrier_inverted
-            )
-            if not isinstance(profile_inversions, list) or len(profile_inversions) not in {
-                6,
-                LIGHT_BARRIER_COUNT,
-            }:
-                raise ValueError("Light barrier inversion list must contain six or eight values")
-            profile_inversions = [
-                *profile_inversions,
-                *LIGHT_BARRIER_INVERT_DEFAULTS[len(profile_inversions) :],
+            # All light barrier settings and force response values are global.
+            # Profile loads must leave the current machine settings unchanged.
+            controls_to_block = [
+                self.ur_angle_input,
+                self.light_barrier_debounce,
+                *self.sensor_spacing_controls.values(),
+                *self.sensor_to_array_controls.values(),
+                self.conveyor_enabled,
+                self.conveyor_reverse,
+                self.conveyor_speed,
+                self.conveyor_max_speed,
             ]
-            self.light_barrier_inverted = [
-                bool(value) for value in profile_inversions
-            ]
-            profile_debounce_enabled = profile.get(
-                "light_barrier_debounce_enabled",
-                self.light_barrier_debounce_enabled,
-            )
-            if (
-                not isinstance(profile_debounce_enabled, list)
-                or len(profile_debounce_enabled) not in {6, LIGHT_BARRIER_COUNT}
-            ):
-                raise ValueError(
-                    "Light barrier debounce enable list must contain six or eight values"
-                )
-            profile_debounce_enabled = [
-                *profile_debounce_enabled,
-                *LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS[
-                    len(profile_debounce_enabled) :
-                ],
-            ]
-            self.light_barrier_debounce_enabled = [
-                bool(value) for value in profile_debounce_enabled
-            ]
-            with (
-                QSignalBlocker(self.ur_angle_input),
-                QSignalBlocker(self.light_barrier_debounce),
-                QSignalBlocker(self.sensor_spacing_12),
-                QSignalBlocker(self.sensor_spacing_34),
-                QSignalBlocker(self.sensor_spacing_56),
-                QSignalBlocker(self.sensor_spacing_78),
-                QSignalBlocker(self.conveyor_enabled),
-                QSignalBlocker(self.conveyor_reverse),
-                QSignalBlocker(self.conveyor_speed),
-                QSignalBlocker(self.conveyor_max_speed),
-            ):
+            blockers = [QSignalBlocker(control) for control in controls_to_block]
+            try:
                 self.ur_angle_input.setValue(ur_angle_deg)
-                self.light_barrier_debounce.setValue(light_barrier_debounce)
-                self.sensor_spacing_12.setValue(sensor_spacings[0])
-                self.sensor_spacing_34.setValue(sensor_spacings[1])
-                self.sensor_spacing_56.setValue(sensor_spacings[2])
-                self.sensor_spacing_78.setValue(sensor_spacings[3])
                 self.conveyor_enabled.setChecked(conveyor_enabled)
                 self.conveyor_reverse.setChecked(conveyor_reverse)
                 self.conveyor_speed.setValue(conveyor_speed)
                 self.conveyor_max_speed.setValue(conveyor_max_speed)
+            finally:
+                del blockers
 
             arrays = profile.get("arrays", [])
             if len(arrays) > ARRAY_COUNT:
@@ -4022,7 +4449,19 @@ class PressureControlWindow(QMainWindow):
                 if row.index in values_by_index:
                     row.set_values(values_by_index[row.index])
 
+            saved_selection = selection_from_pressure_profile(
+                profile, Path(path).expanduser().resolve()
+            )
+            if saved_selection is not None:
+                self._apply_roadmap_transition(saved_selection)
+            else:
+                self.selected_roadmap_transition = None
+                self.transition_context_frame.setVisible(False)
+
             self.write_all_values()
+            self.profile_path = Path(path).expanduser().resolve()
+            title = profile.get("title")
+            self.profile_title = title if isinstance(title, str) else None
             self.statusBar().showMessage(f"Profile loaded: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Load Failed", str(exc))

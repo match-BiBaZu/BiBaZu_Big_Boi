@@ -347,29 +347,32 @@ Impuls nicht verschieben.
 Aktuell gilt pro Array:
 
 ```text
-effective_force_response_ms = Interpolation nach aktiver Duesenzahl
-offset_delay_ms = max(0, offset_mm * 1000 / measured_velocity_mm_s
-                         - effective_force_response_ms)
+force_response_ms = ein Wert je Array, unabhaengig von der aktiven Duesenzahl
+travel_delay_ms = (sensor_to_array_mm + offset_mm) * 1000
+                  / measured_velocity_mm_s
+offset_delay_ms = clamp(travel_delay_ms - force_response_ms,
+                        0, 30000)
 total_wait_ms = manual_delay_ms + offset_delay_ms
 ```
 
-`Offset` bedeutet den gewuenschten Weg vom ausloesenden Lichtschrankenpunkt bis
-zum Kraftwirkpunkt an der Duese. Die Kraftantwortzeit wird abgezogen, weil das
-Ventil entsprechend frueher geschaltet werden muss. Ohne gueltige
-Geschwindigkeitsmessung wird `offset_delay_ms = 0`; dann wirkt nur der manuelle
-Delay.
+`sensor_to_array_mm` ist je Array der vom Benutzer gemessene Abstand LB2 ->
+Array 1, LB4 -> Array 2, LB6 -> Array 3 beziehungsweise LB8 -> Array 4. `Offset`
+ist jetzt die gewuenschte Position der vorderen Bauteilkante relativ zur Duese:
+bei `0 mm` soll die Kante beim Einsetzen der Kraft genau am Duesenanfang stehen,
+ein positiver Wert verschiebt den Kraftwirkpunkt weiter ueber die Duese. Die
+Kraftantwortzeit wird abgezogen, weil das Ventil entsprechend frueher
+geschaltet werden muss. Der manuelle Delay wird als separater zusaetzlicher
+Term addiert. Ohne gueltige Geschwindigkeitsmessung wird `offset_delay_ms = 0`;
+dann wirkt nur der manuelle Delay. `Show Offset Equation` in der Pressure-GUI
+zeigt Formel, Zuordnung und aktuelle Werte als Popup.
 
-Die Kraftantwortzeit ist pro Array mit zwei Endpunkten einstellbar:
-
-- eine aktive Duese: `GuiForceSingleNozzleResponseDelayMsN`
-- vier oder mehr aktive Duesen: `GuiForceResponseDelayMsN`
-- zwei und drei aktive Duesen: lineare Interpolation zwischen beiden Werten
-- fuenf und sechs aktive Duesen verwenden derzeit denselben Endpunkt wie vier
-
-Aktueller Default fuer beide Endpunkte aller Arrays ist `15.0 ms`. Fruehere
-Messungen zeigten beispielhaft etwa 34 ms fuer eine Duese und etwa 25.8 ms fuer
-vier Duesen an Array 1; die tatsaechlich geeigneten Werte muessen jedoch mit dem
-aktuellen Aufbau, Druck, Ventilzustand und Messverfahren neu bestaetigt werden.
+Die Kraftantwortzeit ist pro Array mit genau einem Wert einstellbar und gilt
+fuer jede aktive Duesenzahl. Aktueller Default aller Arrays ist `8.7 ms`. Die
+alten ADS-Symbole `GuiForceSingleNozzleResponseDelayMsN` und
+`GuiForceResponseDelayMsN` bleiben aus Kompatibilitaetsgruenden bestehen; die
+GUI schreibt denselben Wert in beide, und die SPS verwendet den ersten Wert.
+Die tatsaechlich geeigneten Werte muessen mit dem aktuellen Aufbau, Druck,
+Ventilzustand und Messverfahren neu bestaetigt werden.
 
 Wenn der Kraftimpuls bei hoeherer Bauteilgeschwindigkeit raeumlich zunehmend zu
 frueh liegt, ist die abgezogene Kraftantwortzeit wahrscheinlich zu gross. Eine
@@ -397,12 +400,13 @@ alle 24 Ventilausgaenge zwangsweise aus und normale Arraytrigger deaktiviert.
 
 Der Hauptdialog bietet `Force Delay Settings` statt der frueheren
 Kraftpeak-Messung. Alle vier Arrays werden gleichzeitig dargestellt. Pro Array
-koennen die Kraftantwortzeiten fuer eine aktive Duese und fuer vier oder mehr
-aktive Duesen im Bereich `0..1000 ms` eingestellt werden. Zwei und drei aktive
-Duesen werden weiterhin linear interpoliert. `Reset Fields to 15 ms` setzt nur
-die Eingabefelder zurueck; `Apply to PLC` schreibt alle acht Werte gemeinsam in
-einem ADS-Batch. Die Werte werden ausserdem in Druckprofilen gespeichert und
-beim Profil-Laden wiederhergestellt.
+kann eine einzige Kraftantwortzeit im Bereich `0..1000 ms` eingestellt werden;
+die aktive Duesenzahl aendert diese Kompensation nicht mehr. `Reset Fields to
+8.7 ms` setzt nur die Eingabefelder zurueck; `Apply to PLC` schreibt die vier
+Werte gemeinsam in einem ADS-Batch und spiegelt sie zusaetzlich in die vier
+Legacy-Symbole. Die Kraftantwort ist ein globaler Maschinenwert. Ihr aktueller
+Stand wird aus Kompatibilitaetsgruenden im Druckprofil protokolliert, beim Laden
+aber nicht angewendet.
 
 Der Dialog zeigt fuer jedes Array auch die zugehoerige Triggerlichtschranke und
 den aktuellen Debounce-Zustand. Debouncing verschiebt die akzeptierte Flanke um
@@ -478,14 +482,32 @@ Startdatei: `CSVSaver/PressureControlGUI.py`
 Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
 
 - Foerderband Enable, Reverse, Reset und Geschwindigkeit
-- `Light Barrier Settings` mit Sensorabstaenden LB1-2, LB3-4, LB5-6 und LB7-8,
-  globaler Debounce-Zeit sowie Invert-/Debounce-Enable je Lichtschranke
+- `Light Barrier Settings` mit den vier Geschwindigkeitspaaren LB1-2, LB3-4,
+  LB5-6 und LB7-8 in der ersten Zeile sowie LB2 -> Array 1, LB4 -> Array 2,
+  LB6 -> Array 3 und LB8 -> Array 4 in der zweiten Zeile; dazu globale
+  Debounce-Zeit sowie Invert-/Debounce-Enable je Lichtschranke
 - UR-Ry-Sollwinkel mit explizitem `Apply UR Angle`
 - vier Arrayzeilen mit Array-Enable, sechs Duesen-Checkboxen, Druck, manuellem
   Delay, Pulsdauer, Offset, geschaetzter Geschwindigkeit und Offsetdelay
 - `Calibrate Conveyor`
 - `Jog Conveyor`
 - `Force Delay Settings` fuer alle vier Arrays
+- `Show Offset Equation` mit der realen Timingformel und aktuellen Zahlen
+- `USB High-Speed Camera` in der unteren Leiste; der separate Dialog zeigt das
+  Livebild, wird mit `Record` auf LB4 scharfgeschaltet, speichert ab der
+  LB4-Flanke fuer die einstellbare Aufnahmedauer (Default 500 ms) und laedt das
+  Ergebnis direkt in den Frame Review. Die Belichtung wird beim Verbinden
+  standardmaessig auf 1000 µs gesetzt und bleibt ueber Eingabefeld und
+  `Apply Exposure` aenderbar. `Output` und `Browse` legen den Speicherort der
+  Session-Ordner fest. `Recording folder name` benennt optional den neuen
+  Unterordner; leer bedeutet automatische Benennung. Ein bereits vorhandener
+  Name wird nicht ueberschrieben, sondern erhaelt `_01`, `_02` usw. Slider sowie
+  `Previous`/`Next` erlauben das Durchgehen aller aufgenommenen Frames. Sobald
+  eine Session geladen ist, ueberschreibt der weiterlaufende Live-Preview-Stream
+  das ausgewaehlte Review-Bild nicht mehr; erst das Scharfschalten einer neuen
+  Aufnahme aktiviert das Livebild wieder. Der Dialog ist bewusst auf Aufnahme
+  und Review reduziert; Testdruck, Impulsdauer, Fastest-Response und
+  Delay-Auswertung werden dort nicht gezeigt.
 - Profil laden/speichern
 - `Load Pose Roadmap` zur Auswahl eines gerichteten Kalibrieruebergangs
 - `Write All Values`
@@ -493,7 +515,12 @@ Die Haupt-GUI ist die Bedienoberflaeche fuer normale Versuche. Sie enthaelt:
 Die Lichtschranken-Invertierung wird im Settings-Dialog sichtbar dargestellt und
 zusammen mit dem Profil gespeichert. Selektives Abschalten der Entprellung ist
 im selben Dialog moeglich. Alle acht Lichtschranken sind standardmaessig
-invertiert und nicht entprellt; alle vier Sensorabstaende starten bei `40 mm`.
+invertiert und nicht entprellt. Die vier Messpaare LB1-2, LB3-4, LB5-6 und
+LB7-8 starten bei `40 mm`. Die vier Sensor-zu-Array-Abstaende starten bei
+`50/45/45/48 mm` fuer Array 1 bis 4. Sie sind globale Maschinenwerte und werden
+durch das Laden eines Pressure-Profils nicht veraendert. Die Zwischenabstaende
+LB2-3, LB4-5 und LB6-7 bleiben in der SPS und der Conveyor Setup GUI erhalten,
+erscheinen aber nicht mehr in diesem Pressure-Dialog.
 
 `Conveyor max` ist in der Haupt-GUI bewusst ausgeblendet und wird vorlaeufig
 fest mit `1000.0 mm/s` gespeichert und an die SPS geschrieben. Auch ein Profil
@@ -531,8 +558,15 @@ Dateiname beispielsweise:
 Df1a_Uebergang_9-35_wall_main_neg_x.json
 ```
 
-Die Profilversion ist 9. Version 9 ergaenzt LB7/LB8 sowie den Abstand LB7-8;
-der Roadmap-Kontext beeinflusst weiterhin nur Anzeige und Dateinamensvorschlag.
+Die Profilversion ist 12. Version 12 ersetzte die zwei Kraftantwort-Endpunkte je
+Array durch genau einen `force_delays_ms`-Wert. Kraftantwort und die in Version
+11 eingefuehrten Sensor-zu-Array-Abstaende sind inzwischen globale
+Maschinenwerte. Ihre Felder bleiben als kompatibler Maschinen-Snapshot im
+Profil erhalten, werden beim Laden jedoch ignoriert. Version 10 hatte
+die Zwischenabstaende LB2-3, LB4-5 und LB6-7 im Pressure-Profil; diese bleiben
+in der SPS/Conveyor-GUI erhalten und werden von der Pressure-GUI ebenfalls nicht
+mehr geladen oder geschrieben. Der Roadmap-Kontext beeinflusst weiterhin nur
+Anzeige und Dateinamensvorschlag.
 
 Beim Oeffnen von Kalibrier- oder Jogdialogen wird normales Conveyor-Enable
 ausgeschaltet. Beim Schliessen erfolgt kein automatischer Wiederanlauf.
@@ -550,11 +584,14 @@ den normalen Duesenbetrieb. Sie bietet:
 - gespeicherte Logikinvertierung pro Lichtschranke
 - Auswahl zweier Lichtschranken und automatische Distanzmessung ueber die im
   SPS-Zyklus gelatchte EL7047-Position
-- Anwenden des gemessenen Abstandes auf Paar 1-2, 3-4 oder 5-6
+- Anwenden des gemessenen Abstandes auf jedes benachbarte Paar 1-2 bis 7-8;
+  gespeichert wird in `GuiSensorSpacing12Mm` bis `GuiSensorSpacing78Mm`
 - alternative Lichtschranken-Distanzkalibrierung mit der zyklisch gelesenen
   UR-TCP-Pose
 - Foerderband-Geschwindigkeitsplausibilitaet bei konstanter Bandfahrt
 - UR-Geschwindigkeitsplausibilitaet ueber mehrere Vorwaerts-/Rueckwaertspassagen
+- Anzeige aller sieben SPS-Abstaende am Fensterrand; LB2-3, LB4-5 und LB6-7
+  stehen in der zweiten Zeile
 - High-Speed-Aufnahme und manuelle LB-bis-Bewegung-Auswertung mit der zweiten
   Baumer-USB-Kamera
 
@@ -605,6 +642,14 @@ schreibt Druck und alle gesicherten Timingwerte zurueck. Beim Schliessen fordert
 die GUI ebenfalls die Wiederherstellung an. Bei ADS-Verlust muss nach dem
 Wiederverbinden der Restore-Knopf verwendet werden.
 
+Die `Stop trigger`-Auswahl bleibt zwischen Aufnahmen bedienbar. Wird bei noch
+aktivem Fastest-Response-Modus eine andere Lichtschranke ausgewaehlt, schreibt
+die GUI zuerst automatisch das fuer die bisherige Lichtschranke gesicherte
+SPS-Setup zurueck. Erst nach dem erfolgreichen Restore ist eine neue Aufnahme
+oder das Aktivieren von Fastest Response fuer die neue Lichtschranke moeglich.
+Grau bleibt die Auswahl nur waehrend Aufnahme, Bildanalyse oder laufendem
+SPS-Schreib-/Restore-Vorgang sowie bei Verbindungsverlust mit offenem Restore.
+
 `Test pressure` und `Apply Pressure` schreiben `GuiPressureMbarN` fuer das
 gekoppelte Array im Bereich 0..6000 mbar. Die Pulsdauer und Duesenauswahl werden
 nicht durch diese Druckaenderung veraendert. `Pulse duration` und
@@ -636,9 +681,10 @@ Host-Monotonic-Uhr abgebildet. Die verwendete Quelle steht in
 `session.json -> trigger.source`.
 
 Standardausgabe ist
-`Pictures\BiBaZu\PressureDelayCalibration\YYYYMMDD_HHMMSS_LB<n>_<druck>mbar`,
-zum Beispiel `20260903_104310_LB4_3000mbar`. Der Ordnername verwendet die
-ausgewaehlte Lichtschranke und den fuer die Aufnahme protokollierten SPS-Druck.
+`Pictures\BiBaZu\PressureDelayCalibration\LB<n>_<druck>mbar_<impulsdauer>ms_HHMMSS_DDMMYYYY`,
+zum Beispiel `LB4_3000mbar_10ms_104310_03092026`. Der Ordnername verwendet die
+ausgewaehlte Lichtschranke sowie den fuer die Aufnahme protokollierten SPS-Druck
+und die Impulsdauer.
 Jede Session
 enthaelt JPEG-Einzelbilder, `frames.csv` und `session.json`. Der erste sichtbare
 Bewegungsframe wird nach jeder vollstaendig gespeicherten Aufnahme automatisch
@@ -666,12 +712,24 @@ Mit `Compare Recordings…` lassen sich im Frame-Review mehrere Session-Ordner
 per Ctrl/Shift auswaehlen. Alternativ kann ein gemeinsamer Elternordner
 ausgewaehlt werden; darin enthaltene Sessions werden rekursiv gefunden. Fuer
 einen belastbaren Vergleich akzeptiert ein Plot nur Aufnahmen derselben
-Lichtschranke. Er zeigt alle Einzelmessungen (Druck in bar gegen Delay in ms),
-die Mittelwerte je Druckstufe und bei mehr als drei Wiederholungen derselben
-Druckstufe Fehlerbalken von ±1 Standardabweichung. Eine lineare
-Kleinste-Quadrate-Regression ueber alle gueltigen Messungen wird mit Gleichung
-und R² eingeblendet. Nicht markierte Sessions sowie Sessions ohne Druckwert
-werden uebersprungen und im Plotdialog gezaehlt.
+Lichtschranke. Vor dem Plot analysiert der Batch-Worker jede noch nicht
+ausgewertete Session einzeln und speichert deren automatisch gefundenen
+First-Movement-Frame. Bereits gespeicherte Ergebnisse und insbesondere manuelle
+Korrekturen werden wiederverwendet und nicht ueberschrieben. Er zeigt alle
+gueltigen Einzelmessungen (Druck in bar gegen Delay in ms),
+die Mittelwerte je Druckstufe und bei mehr als drei Wiederholungen desselben
+X-Werts Fehlerbalken von ±1 Standardabweichung. Der Plotdialog besitzt zwei
+horizontal scrollbar angeordnete Galerien: `Pressure on X` erzeugt fuer jede
+protokollierte Impulsdauer einen eigenen Druck-Delay-Plot; `Impulse duration on
+X` erzeugt fuer jeden Druckwert einen eigenen Impulsdauer-Delay-Plot. Neben
+jedem Plot steht ein vorgeschlagener fester Delay. Dieser ist der gleich
+gewichtete Mittelwert der Mittelwerte aller dargestellten X-Sollwerte, damit
+unterschiedlich viele Wiederholungen einen Sollwert nicht staerker gewichten.
+Jeder Einzelplot kann unabhaengig als SVG oder PNG gespeichert werden. Eine
+lineare Kleinste-Quadrate-Regression ueber die jeweils dargestellten gueltigen
+Messungen wird mit Gleichung und R² eingeblendet. Fehlgeschlagene
+Einzelanalysen sowie Sessions ohne Druck- oder Impulsdauerwert werden
+uebersprungen und im Plotdialog gezaehlt.
 
 Die Legacy-Umgebung benoetigt jetzt neben PyQt6 und pyads auch Harvester,
 GenICam, NumPy und OpenCV. Die reproduzierbaren Abhaengigkeiten stehen in der
@@ -1117,18 +1175,20 @@ Diese Abweichung ist derzeit dokumentiert, aber noch nicht im Code korrigiert.
 
 ## 10. Profile
 
-Profile liegen als JSON in `CSVSaver/pressure_profiles`. Aktuelle Version ist 8;
-Versionen 1 bis 8 werden weiterhin geladen. Das aktuelle Format speichert:
+Profile liegen als JSON in `CSVSaver/pressure_profiles`. Aktuelle Version ist 12;
+Versionen 1 bis 12 werden weiterhin geladen. Das aktuelle Format speichert:
 
 - Erstellzeit und Profilversion
 - UR-Ry-Sollwinkel
 - globale Lichtschranken-Entprellzeit
-- sechs Invertierungsflags
-- sechs Debounce-Enable-Flags
+- acht Invertierungsflags
+- acht Debounce-Enable-Flags
+- die vier Geschwindigkeitspaar-Abstaende LB1-2, LB3-4, LB5-6 und LB7-8
+- die vier Sensor-zu-Array-Abstaende als nicht angewendeten Maschinen-Snapshot
 - Conveyor Enable, Reverse und Geschwindigkeit; der weiterhin gespeicherte
   Maximalwert ist fest auf `1000.0 mm/s` gesetzt
 - Conveyor-Markierungsabstand, `mm/Vollschritt` und Gueltigkeit
-- Kraftantwortzeit je Array fuer eine Duese und fuer vier oder mehr Duesen
+- genau eine Kraftantwortzeit je Array als nicht angewendeten Maschinen-Snapshot
 - je Array: Enable, sechs Duesen-Flags, Druck, manueller Delay, Pulsdauer und
   Offset
 
@@ -1137,10 +1197,12 @@ Alte Profile ohne Kalibrierfaktor werden als unkalibriert behandelt. Sehr alte
 Profile mit zwei Eintraegen pro Array werden beim Laden auf das aktuelle
 Sechs-Duesen-Format migriert.
 
-Wichtig: Ein Profil kann aktuelle SPS-Defaults, Sensorabstaende,
-Invertierungs-/Debounce-Zustaende und Kalibrierwerte ueberschreiben. Nach dem
-Laden deshalb die sichtbaren Werte pruefen. Der UR bewegt sich erst nach dem
-separaten Apply-Befehl.
+Die Sensor-zu-Array-Abstaende sind globale Maschinenwerte mit den Defaults
+`50/45/45/48 mm` fuer Array 1 bis 4. Wie die Kraftantwort mit dem Default
+`8.7 ms` werden ihre Profilfelder beim Laden ignoriert. Ein Profil kann weiterhin die
+Geschwindigkeitspaar-Abstaende, Invertierungs-/Debounce-Zustaende und
+Kalibrierwerte ueberschreiben. Der UR bewegt sich erst nach dem separaten
+Apply-Befehl.
 
 ## 11. Logging
 
@@ -1254,7 +1316,7 @@ python ConveyorSetupGUI.py
 python PressureControlGUI.py
 ```
 
-Zuletzt liefen 54 Pressure-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
+Zuletzt liefen 93 Pressure-/High-Speed-GUI-Unit-Tests erfolgreich. Hardwaretests sind davon getrennt und
 muessen nach jedem Umzug erneut durchgefuehrt werden.
 
 Im Verzeichnis `ReorientationControlGUI`:
@@ -1322,8 +1384,8 @@ abgedeckt. Sie ersetzen keine Hardwareabnahme.
   relativen Fehler.
 - Array 3 nutzt die Geschwindigkeitsmessung LB5-6 und den Trigger LB6; Array 4
   nutzt getrennt LB7-8 und den Trigger LB8.
-- Die Kraftantwortinterpolation endet derzeit bei vier aktiven Duesen; vier,
-  fuenf und sechs verwenden denselben Endwert.
+- Die Kraftantwortkompensation verwendet pro Array einen gemeinsamen Wert fuer
+  jede aktive Duesenzahl.
 - Lichtschranken-Debouncing verschiebt den Arraytrigger; bei einer Aenderung der
   Entprellung muss deshalb der raeumliche Offset erneut geprueft werden.
 - Sensorabstaende sind effektive Schaltpunktabstaende, nicht zwingend der mit
@@ -1397,8 +1459,10 @@ PLC:                192.168.0.23 / AMS 10.145.4.14.1.1 / Port 851
 UR:                 10.10.10.10 / TCP 30002 / RTDE 30004
 PLC-Zyklus:         1 ms
 Arrays/Duesen:      4 / 6
-Sensorabstaende:    40.0 mm, 40.0 mm, 40.0 mm, 40.0 mm
+Geschwindigkeitspaare: 40.0 mm, 40.0 mm, 40.0 mm, 40.0 mm
+Sensor-zu-Array:    50.0 mm, 45.0 mm, 45.0 mm, 48.0 mm
 Bandkalibrierung:   0.32960026 mm/Vollschritt, 64 Inkremente/Vollschritt
 Force-Delay:        2000-ms-Fenster, 0.05 Mindestanstieg
+Force-Response:     8.7 ms fuer alle vier Arrays
 Profile:            JSON Version 9, alte Versionen 1-8 ladbar
 ```

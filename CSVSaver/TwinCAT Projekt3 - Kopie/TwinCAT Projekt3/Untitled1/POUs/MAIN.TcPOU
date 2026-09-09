@@ -95,9 +95,16 @@ VAR
 	GuiNozzleEnabled24		: BOOL := FALSE;
 	GuiResetVelocityEstimates	: BOOL := FALSE;
 	GuiSensorSpacing12Mm	: REAL := 40.0;
+	GuiSensorSpacing23Mm	: REAL := 196.0;
 	GuiSensorSpacing34Mm	: REAL := 40.0;
+	GuiSensorSpacing45Mm	: REAL := 196.0;
 	GuiSensorSpacing56Mm	: REAL := 40.0;
+	GuiSensorSpacing67Mm	: REAL := 196.0;
 	GuiSensorSpacing78Mm	: REAL := 40.0;
+	GuiSensor2ToArray1SpacingMm	: REAL := 50.0;
+	GuiSensor4ToArray2SpacingMm	: REAL := 45.0;
+	GuiSensor6ToArray3SpacingMm	: REAL := 45.0;
+	GuiSensor8ToArray4SpacingMm	: REAL := 48.0;
 	GuiConveyorEnabled		: BOOL := FALSE;
 	GuiVelocityCheckMode	: BOOL := FALSE;
 	GuiConveyorReverse		: BOOL := FALSE;
@@ -125,14 +132,14 @@ VAR
 	GuiForceDelayWindowMs		: UINT := 2000;
 	GuiForceDelayMinRise		: REAL := 0.05;
 	GuiForceDelayReset		: BOOL := FALSE;
-	GuiForceResponseDelayMs1	: REAL := 15.0;
-	GuiForceResponseDelayMs2	: REAL := 15.0;
-	GuiForceResponseDelayMs3	: REAL := 15.0;
-	GuiForceResponseDelayMs4	: REAL := 15.0;
-	GuiForceSingleNozzleResponseDelayMs1	: REAL := 15.0;
-	GuiForceSingleNozzleResponseDelayMs2	: REAL := 15.0;
-	GuiForceSingleNozzleResponseDelayMs3	: REAL := 15.0;
-	GuiForceSingleNozzleResponseDelayMs4	: REAL := 15.0;
+	GuiForceResponseDelayMs1	: REAL := 8.7;
+	GuiForceResponseDelayMs2	: REAL := 8.7;
+	GuiForceResponseDelayMs3	: REAL := 8.7;
+	GuiForceResponseDelayMs4	: REAL := 8.7;
+	GuiForceSingleNozzleResponseDelayMs1	: REAL := 8.7;
+	GuiForceSingleNozzleResponseDelayMs2	: REAL := 8.7;
+	GuiForceSingleNozzleResponseDelayMs3	: REAL := 8.7;
+	GuiForceSingleNozzleResponseDelayMs4	: REAL := 8.7;
 	// BiBaZu Reorientation Control ADS contract
 	GuiReorientationControlActive	: BOOL := FALSE;
 	GuiReorientationHeartbeat		: UDINT := 0;
@@ -262,6 +269,7 @@ VAR
 	BatchSensorFalling				: ARRAY [1..8] OF BOOL;
 	BatchSensorStable				: ARRAY [1..8] OF BOOL;
 	BatchPairSpacingMm				: ARRAY [1..4] OF REAL;
+	BatchSensorToArraySpacingMm	: ARRAY [1..4] OF REAL;
 	BatchSensorNeedsClear			: ARRAY [1..8] OF BOOL;
 	PairedFirstBarrierFalling		: ARRAY [1..4] OF BOOL;
 	PairedFirstBarrierLocked		: ARRAY [1..4] OF BOOL;
@@ -447,6 +455,17 @@ VAR
 	LightBarrier7FallingEdge	: BOOL := FALSE;
 	LightBarrier8FallingEdge	: BOOL := FALSE;
 	LightBarrierEventClockMs	: UDINT := 0; //1 ms PLC task cycle counter
+	// ADS diagnostic ring: version, sequence, clock, then 256 records
+	// (sequence, timestamp_ms, sensor * 2 + stable_state). Never consumed by ADS.
+	LightBarrierEventHistory : ARRAY[0..770] OF UDINT;
+	LightBarrierHistorySlot : UDINT := 0;
+	// Actual alternating-gate outputs used by velocity timing and array triggers.
+	// Same ring layout, but code bit 0 is the accepted-edge BOOL (1 for one cycle).
+	LightBarrierFilteredEventHistory : ARRAY[0..770] OF UDINT;
+	LightBarrierFilteredSignal : ARRAY[1..8] OF BOOL;
+	LastLightBarrierFilteredSignal : ARRAY[1..8] OF BOOL;
+	LightBarrierFilteredSensor : INT;
+	LightBarrierFilteredSlot : UDINT;
 	LightBarrierEventCount1	: UDINT := 0;
 	LightBarrierEventCount2	: UDINT := 0;
 	LightBarrierEventCount3	: UDINT := 0;
@@ -1480,6 +1499,30 @@ FOR BatchLoopIndex := 1 TO 4 DO
 	END_IF
 END_FOR
 
+// Capture the exact gate BOOLs, including their return to FALSE next cycle.
+// This diagnostic buffer never participates in trigger or velocity decisions.
+LightBarrierFilteredSignal[1] := PairedFirstBarrierFalling[1];
+LightBarrierFilteredSignal[2] := PairedSecondBarrierFalling[1];
+LightBarrierFilteredSignal[3] := PairedFirstBarrierFalling[2];
+LightBarrierFilteredSignal[4] := PairedSecondBarrierFalling[2];
+LightBarrierFilteredSignal[5] := PairedFirstBarrierFalling[3];
+LightBarrierFilteredSignal[6] := PairedSecondBarrierFalling[3];
+LightBarrierFilteredSignal[7] := PairedFirstBarrierFalling[4];
+LightBarrierFilteredSignal[8] := PairedSecondBarrierFalling[4];
+LightBarrierFilteredEventHistory[0] := 1;
+LightBarrierFilteredEventHistory[2] := LightBarrierEventClockMs;
+FOR LightBarrierFilteredSensor := 1 TO 8 DO
+	IF LightBarrierFilteredSignal[LightBarrierFilteredSensor] <> LastLightBarrierFilteredSignal[LightBarrierFilteredSensor] THEN
+		LightBarrierFilteredSlot := 3 + (((LightBarrierFilteredEventHistory[1] + 1) MOD 256) * 3);
+		LightBarrierFilteredEventHistory[LightBarrierFilteredSlot + 1] := LightBarrierEventClockMs;
+		LightBarrierFilteredEventHistory[LightBarrierFilteredSlot + 2] := INT_TO_UDINT(LightBarrierFilteredSensor) * 2
+			+ BOOL_TO_UDINT(LightBarrierFilteredSignal[LightBarrierFilteredSensor]);
+		LightBarrierFilteredEventHistory[LightBarrierFilteredSlot] := LightBarrierFilteredEventHistory[1] + 1;
+		LightBarrierFilteredEventHistory[1] := LightBarrierFilteredEventHistory[LightBarrierFilteredSlot];
+	END_IF
+	LastLightBarrierFilteredSignal[LightBarrierFilteredSensor] := LightBarrierFilteredSignal[LightBarrierFilteredSensor];
+END_FOR
+
 // Production-run ownership.  State 20 accepts parts continuously; state 30
 // refuses new commits and drains the already accepted queue.
 IF GuiReorientationControlActive AND (ReorientationState = 0) THEN
@@ -1573,45 +1616,87 @@ ELSE
 END_IF
 
 // Record every accepted stable transition at PLC-cycle resolution for ADS diagnostics.
+LightBarrierEventHistory[0] := 1;
+LightBarrierEventHistory[2] := LightBarrierEventClockMs;
 IF LightBarrierStable1 <> LastLightBarrier1 THEN
 	LightBarrierEventCount1 := LightBarrierEventCount1 + 1;
 	LightBarrierLastEventTimeMs1 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition1 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 2 + BOOL_TO_UDINT(LightBarrierStable1);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 IF LightBarrierStable2 <> LastLightBarrier2 THEN
 	LightBarrierEventCount2 := LightBarrierEventCount2 + 1;
 	LightBarrierLastEventTimeMs2 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition2 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 4 + BOOL_TO_UDINT(LightBarrierStable2);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 IF LightBarrierStable3 <> LastLightBarrier3 THEN
 	LightBarrierEventCount3 := LightBarrierEventCount3 + 1;
 	LightBarrierLastEventTimeMs3 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition3 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 6 + BOOL_TO_UDINT(LightBarrierStable3);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 IF LightBarrierStable4 <> LastLightBarrier4 THEN
 	LightBarrierEventCount4 := LightBarrierEventCount4 + 1;
 	LightBarrierLastEventTimeMs4 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition4 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 8 + BOOL_TO_UDINT(LightBarrierStable4);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 IF LightBarrierStable5 <> LastLightBarrier5 THEN
 	LightBarrierEventCount5 := LightBarrierEventCount5 + 1;
 	LightBarrierLastEventTimeMs5 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition5 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 10 + BOOL_TO_UDINT(LightBarrierStable5);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 IF LightBarrierStable6 <> LastLightBarrier6 THEN
 	LightBarrierEventCount6 := LightBarrierEventCount6 + 1;
 	LightBarrierLastEventTimeMs6 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition6 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 12 + BOOL_TO_UDINT(LightBarrierStable6);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 IF LightBarrierStable7 <> LastLightBarrier7 THEN
 	LightBarrierEventCount7 := LightBarrierEventCount7 + 1;
 	LightBarrierLastEventTimeMs7 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition7 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 14 + BOOL_TO_UDINT(LightBarrierStable7);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 IF LightBarrierStable8 <> LastLightBarrier8 THEN
 	LightBarrierEventCount8 := LightBarrierEventCount8 + 1;
 	LightBarrierLastEventTimeMs8 := LightBarrierEventClockMs;
 	LightBarrierLastEventPosition8 := StepperInternalPosition;
+	LightBarrierHistorySlot := 3 + (((LightBarrierEventHistory[1] + 1) MOD 256) * 3);
+	LightBarrierEventHistory[LightBarrierHistorySlot + 1] := LightBarrierEventClockMs;
+	LightBarrierEventHistory[LightBarrierHistorySlot + 2] := 16 + BOOL_TO_UDINT(LightBarrierStable8);
+	LightBarrierEventHistory[LightBarrierHistorySlot] := LightBarrierEventHistory[1] + 1;
+	LightBarrierEventHistory[1] := LightBarrierEventHistory[LightBarrierHistorySlot];
 END_IF
 
 // Continuous part cursor. Every sensor sees sequence 1, 2, 3, ... in exactly
@@ -1646,6 +1731,10 @@ BatchPairSpacingMm[1] := GuiSensorSpacing12Mm;
 BatchPairSpacingMm[2] := GuiSensorSpacing34Mm;
 BatchPairSpacingMm[3] := GuiSensorSpacing56Mm;
 BatchPairSpacingMm[4] := GuiSensorSpacing78Mm;
+BatchSensorToArraySpacingMm[1] := GuiSensor2ToArray1SpacingMm;
+BatchSensorToArraySpacingMm[2] := GuiSensor4ToArray2SpacingMm;
+BatchSensorToArraySpacingMm[3] := GuiSensor6ToArray3SpacingMm;
+BatchSensorToArraySpacingMm[4] := GuiSensor8ToArray4SpacingMm;
 
 IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (ReorientationState = 30)) THEN
 	FOR BatchLoopIndex := 1 TO 8 DO
@@ -1886,18 +1975,17 @@ IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (Reorientatio
 									END_IF
 								END_FOR
 								BatchSlotIndex := UDINT_TO_INT((BatchNextSensorSequence[BatchLoopIndex] - 1) MOD 128);
-								IF BatchNozzleCount <= 1 THEN
-									BatchResponseDelayMs := BatchQueueForceSingleMs[BatchSlotIndex, BatchJobIndex];
-								ELSE
-									BatchResponseDelayMs := BatchQueueForceResponseMs[BatchSlotIndex, BatchJobIndex];
-								END_IF
-								BatchComputedDelayMs := UINT_TO_REAL(BatchQueueDelayMs[BatchSlotIndex, BatchJobIndex]);
-								IF (BatchElapsedMs > 0) AND (BatchPairSpacingMm[BatchJobIndex] > 0.0)
-									AND (BatchQueueOffsetMm[BatchSlotIndex, BatchJobIndex] > 0.0) THEN
-									BatchComputedDelayMs := BatchComputedDelayMs
-										+ BatchQueueOffsetMm[BatchSlotIndex, BatchJobIndex]
-										* UDINT_TO_REAL(BatchElapsedMs) / BatchPairSpacingMm[BatchJobIndex]
-										- BatchResponseDelayMs;
+				// One response-delay setting is used for every nozzle count.
+				BatchResponseDelayMs := BatchQueueForceSingleMs[BatchSlotIndex, BatchJobIndex];
+				BatchComputedDelayMs := UINT_TO_REAL(BatchQueueDelayMs[BatchSlotIndex, BatchJobIndex]);
+				IF (BatchElapsedMs > 0) AND (BatchPairSpacingMm[BatchJobIndex] > 0.0)
+					AND ((BatchSensorToArraySpacingMm[BatchJobIndex]
+					+ BatchQueueOffsetMm[BatchSlotIndex, BatchJobIndex]) > 0.0) THEN
+					BatchComputedDelayMs := BatchComputedDelayMs
+						+ (BatchSensorToArraySpacingMm[BatchJobIndex]
+						+ BatchQueueOffsetMm[BatchSlotIndex, BatchJobIndex])
+						* UDINT_TO_REAL(BatchElapsedMs) / BatchPairSpacingMm[BatchJobIndex]
+						- BatchResponseDelayMs;
 								END_IF
 								IF BatchComputedDelayMs < 0.0 THEN BatchComputedDelayMs := 0.0; END_IF
 								IF BatchComputedDelayMs > 31000.0 THEN BatchComputedDelayMs := 31000.0; END_IF
@@ -2379,48 +2467,19 @@ IF GuiNozzleEnabled22 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
 IF GuiNozzleEnabled23 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
 IF GuiNozzleEnabled24 THEN ActiveNozzleCount4 := ActiveNozzleCount4 + 1; END_IF
 
-IF ActiveNozzleCount1 <= 1 THEN
-	EffectiveForceResponseDelayMs1 := GuiForceSingleNozzleResponseDelayMs1;
-ELSIF ActiveNozzleCount1 >= 4 THEN
-	EffectiveForceResponseDelayMs1 := GuiForceResponseDelayMs1;
-ELSE
-	EffectiveForceResponseDelayMs1 := GuiForceSingleNozzleResponseDelayMs1
-		+ (GuiForceResponseDelayMs1 - GuiForceSingleNozzleResponseDelayMs1)
-		* TO_REAL(ActiveNozzleCount1 - 1) / 3.0;
-END_IF
-IF ActiveNozzleCount2 <= 1 THEN
-	EffectiveForceResponseDelayMs2 := GuiForceSingleNozzleResponseDelayMs2;
-ELSIF ActiveNozzleCount2 >= 4 THEN
-	EffectiveForceResponseDelayMs2 := GuiForceResponseDelayMs2;
-ELSE
-	EffectiveForceResponseDelayMs2 := GuiForceSingleNozzleResponseDelayMs2
-		+ (GuiForceResponseDelayMs2 - GuiForceSingleNozzleResponseDelayMs2)
-		* TO_REAL(ActiveNozzleCount2 - 1) / 3.0;
-END_IF
-IF ActiveNozzleCount3 <= 1 THEN
-	EffectiveForceResponseDelayMs3 := GuiForceSingleNozzleResponseDelayMs3;
-ELSIF ActiveNozzleCount3 >= 4 THEN
-	EffectiveForceResponseDelayMs3 := GuiForceResponseDelayMs3;
-ELSE
-	EffectiveForceResponseDelayMs3 := GuiForceSingleNozzleResponseDelayMs3
-		+ (GuiForceResponseDelayMs3 - GuiForceSingleNozzleResponseDelayMs3)
-		* TO_REAL(ActiveNozzleCount3 - 1) / 3.0;
-END_IF
-IF ActiveNozzleCount4 <= 1 THEN
-	EffectiveForceResponseDelayMs4 := GuiForceSingleNozzleResponseDelayMs4;
-ELSIF ActiveNozzleCount4 >= 4 THEN
-	EffectiveForceResponseDelayMs4 := GuiForceResponseDelayMs4;
-ELSE
-	EffectiveForceResponseDelayMs4 := GuiForceSingleNozzleResponseDelayMs4
-		+ (GuiForceResponseDelayMs4 - GuiForceSingleNozzleResponseDelayMs4)
-		* TO_REAL(ActiveNozzleCount4 - 1) / 3.0;
-END_IF
+// The legacy four-nozzle variables remain in the ADS interface, but the same
+// single force-response value is now used for every active-nozzle count.
+EffectiveForceResponseDelayMs1 := GuiForceSingleNozzleResponseDelayMs1;
+EffectiveForceResponseDelayMs2 := GuiForceSingleNozzleResponseDelayMs2;
+EffectiveForceResponseDelayMs3 := GuiForceSingleNozzleResponseDelayMs3;
+EffectiveForceResponseDelayMs4 := GuiForceSingleNozzleResponseDelayMs4;
 
-IF VelocityMeasurementValid AND (EstimatedVelocityMmPerSec1 > 0.0) THEN
-	IF GuiOffsetMm1 < 0.0 THEN
+IF NOT GuiReorientationControlActive AND VelocityMeasurementValid AND (EstimatedVelocityMmPerSec1 > 0.0) THEN
+	IF (GuiSensor2ToArray1SpacingMm + GuiOffsetMm1) <= 0.0 THEN
 		EstimatedOffsetDelayMs1 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs1 := (GuiOffsetMm1 * 1000.0 / EstimatedVelocityMmPerSec1) - EffectiveForceResponseDelayMs1;
+		EstimatedOffsetDelayMs1 := ((GuiSensor2ToArray1SpacingMm + GuiOffsetMm1)
+			* 1000.0 / EstimatedVelocityMmPerSec1) - EffectiveForceResponseDelayMs1;
 		IF EstimatedOffsetDelayMs1 < 0.0 THEN
 			EstimatedOffsetDelayMs1 := 0.0;
 		END_IF
@@ -2429,11 +2488,12 @@ ELSE
 	EstimatedOffsetDelayMs1 := 0.0;
 END_IF
 
-IF VelocityMeasurement2Valid AND (EstimatedVelocityMmPerSec2 > 0.0) THEN
-	IF GuiOffsetMm2 < 0.0 THEN
+IF NOT GuiReorientationControlActive AND VelocityMeasurement2Valid AND (EstimatedVelocityMmPerSec2 > 0.0) THEN
+	IF (GuiSensor4ToArray2SpacingMm + GuiOffsetMm2) <= 0.0 THEN
 		EstimatedOffsetDelayMs2 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs2 := (GuiOffsetMm2 * 1000.0 / EstimatedVelocityMmPerSec2) - EffectiveForceResponseDelayMs2;
+		EstimatedOffsetDelayMs2 := ((GuiSensor4ToArray2SpacingMm + GuiOffsetMm2)
+			* 1000.0 / EstimatedVelocityMmPerSec2) - EffectiveForceResponseDelayMs2;
 		IF EstimatedOffsetDelayMs2 < 0.0 THEN
 			EstimatedOffsetDelayMs2 := 0.0;
 		END_IF
@@ -2442,11 +2502,12 @@ ELSE
 	EstimatedOffsetDelayMs2 := 0.0;
 END_IF
 
-IF VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec3 > 0.0) THEN
-	IF GuiOffsetMm3 < 0.0 THEN
+IF NOT GuiReorientationControlActive AND VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec3 > 0.0) THEN
+	IF (GuiSensor6ToArray3SpacingMm + GuiOffsetMm3) <= 0.0 THEN
 		EstimatedOffsetDelayMs3 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs3 := (GuiOffsetMm3 * 1000.0 / EstimatedVelocityMmPerSec3) - EffectiveForceResponseDelayMs3;
+		EstimatedOffsetDelayMs3 := ((GuiSensor6ToArray3SpacingMm + GuiOffsetMm3)
+			* 1000.0 / EstimatedVelocityMmPerSec3) - EffectiveForceResponseDelayMs3;
 		IF EstimatedOffsetDelayMs3 < 0.0 THEN
 			EstimatedOffsetDelayMs3 := 0.0;
 		END_IF
@@ -2455,11 +2516,12 @@ ELSE
 	EstimatedOffsetDelayMs3 := 0.0;
 END_IF
 
-IF VelocityMeasurement4Valid AND (EstimatedVelocityMmPerSec4 > 0.0) THEN
-	IF GuiOffsetMm4 < 0.0 THEN
+IF NOT GuiReorientationControlActive AND VelocityMeasurement4Valid AND (EstimatedVelocityMmPerSec4 > 0.0) THEN
+	IF (GuiSensor8ToArray4SpacingMm + GuiOffsetMm4) <= 0.0 THEN
 		EstimatedOffsetDelayMs4 := 0.0;
 	ELSE
-		EstimatedOffsetDelayMs4 := (GuiOffsetMm4 * 1000.0 / EstimatedVelocityMmPerSec4) - EffectiveForceResponseDelayMs4;
+		EstimatedOffsetDelayMs4 := ((GuiSensor8ToArray4SpacingMm + GuiOffsetMm4)
+			* 1000.0 / EstimatedVelocityMmPerSec4) - EffectiveForceResponseDelayMs4;
 		IF EstimatedOffsetDelayMs4 < 0.0 THEN
 			EstimatedOffsetDelayMs4 := 0.0;
 		END_IF

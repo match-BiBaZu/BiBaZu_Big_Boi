@@ -360,17 +360,11 @@ def load_pressure_profile(
             5000.0,
         ),
         conveyor_calibration=calibration,
-        force_response_delays_ms=_float_list(
-            payload.get("force_response_delays_ms"),
-            "force_response_delays_ms",
-            4,
-            baseline.force_response_delays_ms,
-        ),  # type: ignore[arg-type]
-        force_single_nozzle_response_delays_ms=_float_list(
-            payload.get("force_single_nozzle_response_delays_ms"),
-            "force_single_nozzle_response_delays_ms",
-            4,
-            baseline.force_single_nozzle_response_delays_ms,
+        # Force response is a global machine setting. Legacy profile fields are
+        # intentionally ignored so selecting a transition cannot overwrite it.
+        force_response_delays_ms=baseline.force_response_delays_ms,  # type: ignore[arg-type]
+        force_single_nozzle_response_delays_ms=(
+            baseline.force_single_nozzle_response_delays_ms
         ),  # type: ignore[arg-type]
         arrays=_normalize_arrays(payload.get("arrays", [])),
         sha256=hashlib.sha256(raw).hexdigest(),

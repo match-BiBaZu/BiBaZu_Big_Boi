@@ -9,6 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import (
     QObject,
     QSignalBlocker,
+    Qt,
     QThread,
     QTimer,
     pyqtSignal,
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -31,8 +33,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStatusBar,
+    QScrollArea,
     QStyle,
     QSpinBox,
+    QSplitter,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -42,14 +46,19 @@ from PyQt6.QtWidgets import (
 from read_ur_tcp_pose import read_tcp_pose_from_connection
 from plc_control_lease import PlcControlLease
 from high_speed_calibration import PressureDelayTab
+from light_barrier_plot import LightBarrierPlot
 
 from PressureControlGUI import (
+    ADJACENT_LIGHT_BARRIER_PAIRS,
     ADS_TIMEOUT_MS,
     AMS_NET_ID,
     PLC_IP,
     LIGHT_BARRIER_COUNT,
     LIGHT_BARRIER_INVERT_DEFAULTS,
     LIGHT_BARRIER_PAIRS,
+    SENSOR_SPACING_DEFAULTS_MM,
+    SENSOR_SPACING_DISPLAY_PAIRS,
+    SENSOR_SPACING_SYMBOLS,
     AdsController,
     ConveyorCalibrationDialog,
     ConveyorJogDialog,
@@ -57,18 +66,15 @@ from PressureControlGUI import (
 )
 
 
-SENSOR_SPACING_SYMBOLS = {
-    (1, 2): "MAIN.GuiSensorSpacing12Mm",
-    (3, 4): "MAIN.GuiSensorSpacing34Mm",
-    (5, 6): "MAIN.GuiSensorSpacing56Mm",
-    (7, 8): "MAIN.GuiSensorSpacing78Mm",
-}
-
-ADJACENT_BARRIER_PAIRS = tuple(
-    (sensor, sensor + 1) for sensor in range(1, LIGHT_BARRIER_COUNT)
+ADJACENT_BARRIER_PAIRS = ADJACENT_LIGHT_BARRIER_PAIRS
+DEFAULT_ADJACENT_SPACINGS_MM = tuple(
+    SENSOR_SPACING_DEFAULTS_MM[pair] for pair in ADJACENT_BARRIER_PAIRS
 )
-DEFAULT_ADJACENT_SPACINGS_MM = (40.0, 196.0, 40.0, 196.0, 40.0, 196.0, 40.0)
 CONSISTENCY_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_consistency.csv"
+CONSISTENCY_RAW_HEADER = [
+    *[f"plc_time_lb{sensor}_ms" for sensor in range(1, LIGHT_BARRIER_COUNT + 1)],
+    *[f"speed_{first}_{second}_mm_per_sec" for first, second in ADJACENT_BARRIER_PAIRS],
+]
 CONSISTENCY_LOG_HEADER = [
     "local_timestamp",
     "part_number",
@@ -93,6 +99,26 @@ BARRIER_STATUS_TEXT = {
     4: "Measurement cancelled or invalid",
     5: "EL7047 error",
 }
+
+
+def adjacent_sensor_spacings_from_status(status: dict) -> tuple[float, ...]:
+    """Return all seven adjacent spacings, including a legacy-status fallback."""
+    adjacent = status.get("adjacent_sensor_spacings")
+    if adjacent is not None and len(adjacent) == len(ADJACENT_BARRIER_PAIRS):
+        return tuple(float(value) for value in adjacent)
+
+    values = dict(SENSOR_SPACING_DEFAULTS_MM)
+    paired = status.get("sensor_spacings")
+    if paired is not None:
+        for pair, value in zip(LIGHT_BARRIER_PAIRS, paired):
+            values[pair] = float(value)
+    return tuple(values[pair] for pair in ADJACENT_BARRIER_PAIRS)
+
+
+def sensor_spacing_from_status(status: dict, pair: tuple[int, int]) -> float:
+    index = ADJACENT_BARRIER_PAIRS.index(tuple(sorted(pair)))
+    return adjacent_sensor_spacings_from_status(status)[index]
+
 
 UR_HOST = "10.10.10.10"
 UR_PRIMARY_PORT = 30002
@@ -219,16 +245,39 @@ def analyze_barrier_run(
 class BarrierRunCollector:
     """Join individual PLC barrier events into forward LB1-to-LB8 traversals."""
 
-    def __init__(self, edge_state: bool) -> None:
-        self.edge_state = bool(edge_state)
+    def __init__(
+        self, edge_state: bool, *, single_part: bool = False,
+        maximum_traversal_ms: int = 10_000,
+    ) -> None:
+        if maximum_traversal_ms <= 0:
+            raise ValueError("Maximum traversal time must be positive")
+        # The PLC normalizes FALSE to part present and TRUE to clear beam.
+        # Single-part acquisition has the same physical edge as the held plot.
+        self.edge_state = False if single_part else bool(edge_state)
+        self.single_part = bool(single_part)
+        self.maximum_traversal_ms = int(maximum_traversal_ms)
         self.event_counts = None
         self.active_runs: list[list[int]] = []
+        self.history_sequence = None
+        self.missed_sensors = []
+        self.single_part_locked = False
+        self.single_part_lb8_seen = False
+        self.ignored_repeated_edges = 0
+        self.discarded_runs = 0
+        self.last_discard_reason = ""
 
-    def start(self, event_counts: list[int] | tuple[int, ...]) -> None:
+    def start(self, event_counts: list[int] | tuple[int, ...], history=None) -> None:
         if len(event_counts) != LIGHT_BARRIER_COUNT:
             raise ValueError("An event count is required for every light barrier")
         self.event_counts = [int(value) for value in event_counts]
         self.active_runs = []
+        self.history_sequence = int(history[1]) if history is not None else None
+        self.missed_sensors = []
+        self.single_part_locked = False
+        self.single_part_lb8_seen = False
+        self.ignored_repeated_edges = 0
+        self.discarded_runs = 0
+        self.last_discard_reason = ""
 
     def process(self, status: dict) -> tuple[list[tuple[int, ...]], bool]:
         counts = status.get("light_barrier_event_counts")
@@ -242,22 +291,155 @@ class BarrierRunCollector:
         ):
             return [], False
 
+        history = status.get("light_barrier_event_history")
+        if history is not None:
+            return self._process_history(history)
+
         events = []
         missed_event = False
+        self.missed_sensors = []
         for index in range(LIGHT_BARRIER_COUNT):
             current_count = int(counts[index])
             event_delta = (current_count - self.event_counts[index]) & 0xFFFFFFFF
             self.event_counts[index] = current_count
-            if event_delta == 1:
+            if self.single_part and index == LIGHT_BARRIER_COUNT - 1 and event_delta > 1:
+                # LB8 activation AND clearance are needed for the latch's
+                # lifecycle; the latest timestamp alone cannot recover both.
+                missed_event = True
+                self.missed_sensors.append(index + 1)
+                continue
+            # With two transitions and the selected edge last, only the
+            # unselected edge was overwritten. Its timestamp is not needed.
+            if event_delta == 1 or (
+                event_delta == 2 and bool(states[index]) == self.edge_state
+            ):
                 events.append((index + 1, int(event_times[index]), bool(states[index])))
             elif event_delta > 1:
                 missed_event = True
+                self.missed_sensors.append(index + 1)
 
         if missed_event:
+            self.discarded_runs += len(self.active_runs)
             self.active_runs = []
+            if self.single_part:
+                self.single_part_locked = True
+                self.single_part_lb8_seen = False
+            # Do not seed a new run from this ambiguous snapshot: its events
+            # can belong to different parts on either side of the gap.
+            return [], True
 
+        if events:
+            reference = events[0][1]
+            for _, timestamp, _ in events[1:]:
+                if (timestamp - reference) & 0xFFFFFFFF < 0x80000000:
+                    reference = timestamp
+            reference = int(status.get("plc_event_clock_ms", reference))
+            events.sort(key=lambda event: -((reference - event[1]) & 0xFFFFFFFF))
+        completed = self._join_events(events)
+        if "plc_event_clock_ms" in status:
+            self._expire_single_run(int(status["plc_event_clock_ms"]))
+        return completed, False
+
+    def _process_history(self, history) -> tuple[list[tuple[int, ...]], bool]:
+        # Layout: version, global sequence, PLC clock; then 256 records of
+        # (sequence, timestamp_ms, sensor * 2 + stable_state).
+        current_sequence = int(history[1])
+        if self.history_sequence is None:
+            self.history_sequence = current_sequence
+            self.active_runs = []
+            self.single_part_locked = self.single_part
+            self.single_part_lb8_seen = False
+            return [], False
+        delta = (current_sequence - self.history_sequence) & 0xFFFFFFFF
+        if delta > 256:
+            self.history_sequence = current_sequence
+            self.discarded_runs += len(self.active_runs)
+            self.active_runs = []
+            if self.single_part:
+                self.single_part_locked = True
+                self.single_part_lb8_seen = False
+            self.missed_sensors = []
+            return [], True
+        events = []
+        for offset in range(1, delta + 1):
+            sequence = (self.history_sequence + offset) & 0xFFFFFFFF
+            slot = 3 + (sequence % 256) * 3
+            recorded_sequence, timestamp, code = map(int, history[slot:slot + 3])
+            if recorded_sequence != sequence or not 2 <= code <= 17:
+                # An inconsistent ADS snapshot must not advance the cursor.
+                # Retry from the same sequence on the next poll.
+                return [], False
+            events.append((code // 2, timestamp, bool(code % 2)))
+        self.history_sequence = current_sequence
+        self.missed_sensors = []
+        completed = self._join_events(events)
+        # Expire after replaying the batch, so a delayed poll can still recover
+        # a valid traversal that finished before the time limit.
+        self._expire_single_run(int(history[2]))
+        return completed, False
+
+    def _discard_single_run(self, reason: str) -> None:
+        self.discarded_runs += len(self.active_runs)
+        self.active_runs = []
+        self.last_discard_reason = reason + "; waiting for LB 8 to activate and clear"
+
+    def _expire_single_run(self, timestamp: int) -> None:
+        if self.single_part and self.active_runs:
+            elapsed = (timestamp - self.active_runs[0][0]) & 0xFFFFFFFF
+            if elapsed > self.maximum_traversal_ms:
+                self._discard_single_run("Maximum traversal time exceeded")
+
+    def _join_single_event(self, sensor: int, timestamp: int, state: bool):
+        if not self.single_part_locked:
+            if sensor != 1 or state:
+                return None
+            self.single_part_locked = True
+            self.single_part_lb8_seen = False
+            self.active_runs = [[timestamp]]
+            return None
+
+        run = self.active_runs[0] if self.active_runs else None
+        if state:
+            if sensor == LIGHT_BARRIER_COUNT and self.single_part_lb8_seen:
+                completed = tuple(run) if run is not None and len(run) == LIGHT_BARRIER_COUNT else None
+                self.active_runs = []
+                self.single_part_locked = False
+                self.single_part_lb8_seen = False
+                return completed
+            return None
+
+        if sensor == LIGHT_BARRIER_COUNT:
+            self.single_part_lb8_seen = True
+        if run is None:
+            return None
+        if sensor <= len(run):
+            # Latch the first activation for the entire physical traversal,
+            # including LB1. There is deliberately no repeated-edge timeout.
+            self.ignored_repeated_edges += 1
+            return None
+        if sensor != len(run) + 1:
+            self._discard_single_run(
+                f"Unexpected LB {sensor}; expected LB {len(run) + 1}"
+            )
+            return None
+        elapsed = (timestamp - run[-1]) & 0xFFFFFFFF
+        if not 0 < elapsed <= 60_000:
+            self._discard_single_run("Invalid light barrier timestamp order")
+            return None
+        run.append(timestamp)
+        # Even after all eight timestamps are present, wait for LB8 clearance
+        # before publishing the row and allowing another LB1 activation.
+        return None
+
+    def _join_events(self, events) -> list[tuple[int, ...]]:
         completed = []
         for sensor, event_time, edge_state in events:
+            self._expire_single_run(event_time)
+            if self.single_part:
+                run = self._join_single_event(sensor, event_time, edge_state)
+                if run is not None:
+                    completed.append(run)
+                continue
             if edge_state != self.edge_state:
                 continue
             if sensor == 1:
@@ -268,11 +450,15 @@ class BarrierRunCollector:
             )
             if matching_run is None:
                 continue
+            elapsed = (event_time - matching_run[-1]) & 0xFFFFFFFF
+            if not 0 < elapsed <= 60_000:
+                self.active_runs.remove(matching_run)
+                continue
             matching_run.append(event_time)
             if sensor == LIGHT_BARRIER_COUNT:
                 completed.append(tuple(matching_run))
                 self.active_runs.remove(matching_run)
-        return completed, missed_event
+        return completed
 
 
 class SpeedCurveWidget(QWidget):
@@ -639,7 +825,7 @@ class ConveyorSetupWindow(QMainWindow):
         self.consistency_plot_dialog = None
 
         self.setWindowTitle("Conveyor and Light Barrier Setup")
-        self.resize(900, 790)
+        self.resize(1400, 950)
         self._build_ui()
         self._connect_signals()
         self._set_controls_enabled(False)
@@ -891,11 +1077,7 @@ class ConveyorSetupWindow(QMainWindow):
             distance_input.setDecimals(3)
             distance_input.setSuffix(" mm")
             distance_input.setValue(default_distance)
-            distance_input.setToolTip(
-                "Loaded from the PLC"
-                if pair in SENSOR_SPACING_SYMBOLS
-                else "Editable assumed distance; initially 196 mm"
-            )
+            distance_input.setToolTip("Loaded from the PLC")
             row = index // 4
             column = (index % 4) * 2
             distances_layout.addWidget(
@@ -904,7 +1086,7 @@ class ConveyorSetupWindow(QMainWindow):
             distances_layout.addWidget(distance_input, row, column + 1)
             self.consistency_spacing_inputs.append(distance_input)
         self.consistency_reload_distances_button = QPushButton(
-            "Reload 1-2 / 3-4 / 5-6 / 7-8 from PLC"
+            "Reload all adjacent distances from PLC"
         )
         distances_layout.addWidget(
             self.consistency_reload_distances_button, 2, 0, 1, 8
@@ -914,8 +1096,9 @@ class ConveyorSetupWindow(QMainWindow):
         controls_group = QGroupBox("Traversal Logging and Consistency Check")
         controls_layout = QGridLayout(controls_group)
         self.consistency_edge = QComboBox()
-        self.consistency_edge.addItem("ON transition", True)
-        self.consistency_edge.addItem("OFF transition", False)
+        self.consistency_edge.addItem("Activation: 1 → 0 (part enters)", False)
+        self.consistency_edge.addItem("Clearance: 0 → 1 (beam clear)", True)
+        self.consistency_edge.setEnabled(False)
         self.consistency_tolerance = QDoubleSpinBox()
         self.consistency_tolerance.setRange(1.0, 100.0)
         self.consistency_tolerance.setDecimals(1)
@@ -923,6 +1106,23 @@ class ConveyorSetupWindow(QMainWindow):
         self.consistency_tolerance.setValue(50.0)
         self.consistency_tolerance.setToolTip(
             "Maximum allowed speed change between two neighboring chute sections"
+        )
+        self.consistency_single_part = QCheckBox("One part at a time")
+        self.consistency_single_part.setChecked(True)
+        self.consistency_single_part.setToolTip(
+            "Use when only one part is between LB 1 and LB 8. "
+            "Record each first activation (1 → 0), ignore all repeats until LB 8 "
+            "activates and clears (0 → 1), then release all sensors together. "
+            "Table and export use the same activation edges as the held plot."
+        )
+        self.consistency_maximum_traversal = QDoubleSpinBox()
+        self.consistency_maximum_traversal.setRange(0.1, 600.0)
+        self.consistency_maximum_traversal.setDecimals(1)
+        self.consistency_maximum_traversal.setSuffix(" s")
+        self.consistency_maximum_traversal.setValue(10.0)
+        self.consistency_maximum_traversal.setToolTip(
+            "Discard incomplete single-part traversals after this total time from LB 1. "
+            "After a discard, wait for LB 8 clearance or stop and restart logging."
         )
         self.consistency_start_button = QPushButton("Start New Log")
         self.consistency_start_button.setIcon(
@@ -934,6 +1134,11 @@ class ConveyorSetupWindow(QMainWindow):
         )
         self.consistency_clear_button = QPushButton("Clear Table")
         self.consistency_plot_button = QPushButton("Open Speed Curves")
+        self.consistency_export_button = QPushButton("Export Raw CSV...")
+        self.consistency_export_button.setEnabled(False)
+        self.consistency_export_button.setToolTip(
+            "Export all table rows: eight PLC timestamps [ms], then seven speeds [mm/s]"
+        )
         self.consistency_conveyor_speed = QDoubleSpinBox()
         self.consistency_conveyor_speed.setRange(0.1, 1000.0)
         self.consistency_conveyor_speed.setDecimals(2)
@@ -950,6 +1155,8 @@ class ConveyorSetupWindow(QMainWindow):
         )
         self.consistency_conveyor_state_label = QLabel("Stopped")
         self.consistency_state_label = QLabel("Ready")
+        self.consistency_state_label.setWordWrap(True)
+        self.consistency_acquisition_label = QLabel("0 repeated edges ignored; 0 traversals discarded")
         controls_layout.addWidget(QLabel("Recorded edge"), 0, 0)
         controls_layout.addWidget(self.consistency_edge, 0, 1)
         controls_layout.addWidget(QLabel("Maximum adjacent speed change"), 0, 2)
@@ -958,6 +1165,7 @@ class ConveyorSetupWindow(QMainWindow):
         controls_layout.addWidget(self.consistency_stop_button, 1, 1)
         controls_layout.addWidget(self.consistency_clear_button, 1, 2)
         controls_layout.addWidget(self.consistency_plot_button, 1, 3)
+        controls_layout.addWidget(self.consistency_export_button, 1, 4)
         controls_layout.addWidget(QLabel("Conveyor speed"), 2, 0)
         controls_layout.addWidget(self.consistency_conveyor_speed, 2, 1)
         controls_layout.addWidget(self.consistency_conveyor_start_button, 2, 2)
@@ -968,6 +1176,10 @@ class ConveyorSetupWindow(QMainWindow):
         )
         controls_layout.addWidget(QLabel("Logging"), 4, 0)
         controls_layout.addWidget(self.consistency_state_label, 4, 1, 1, 3)
+        controls_layout.addWidget(self.consistency_single_part, 5, 0, 1, 2)
+        controls_layout.addWidget(QLabel("Maximum traversal time"), 5, 2)
+        controls_layout.addWidget(self.consistency_maximum_traversal, 5, 3)
+        controls_layout.addWidget(self.consistency_acquisition_label, 6, 0, 1, 5)
         controls_layout.setColumnStretch(3, 1)
         consistency_layout.addWidget(controls_group)
 
@@ -987,27 +1199,49 @@ class ConveyorSetupWindow(QMainWindow):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.consistency_table.horizontalHeader().setStretchLastSection(True)
-        consistency_layout.addWidget(self.consistency_table, 1)
+        self.consistency_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.consistency_splitter.setChildrenCollapsible(False)
+        self.consistency_splitter.addWidget(self.consistency_table)
+        self.light_barrier_plot = LightBarrierPlot()
+        self.consistency_single_part.toggled.connect(self.light_barrier_plot.set_single_part)
+        self.consistency_maximum_traversal.valueChanged.connect(
+            self.light_barrier_plot.set_maximum_traversal_seconds
+        )
+        self.consistency_splitter.addWidget(self.light_barrier_plot)
+        self.consistency_splitter.setSizes([760, 560])
+        consistency_layout.addWidget(self.consistency_splitter, 1)
         self.consistency_summary_label = QLabel("No completed parts")
         consistency_layout.addWidget(self.consistency_summary_label)
         self.calibration_tabs.addTab(consistency_tab, "Consistency")
 
         self.pressure_delay_tab = PressureDelayTab(self, ads_controller=self.ads)
         self.calibration_tabs.addTab(self.pressure_delay_tab, "Pressure Delay")
-        layout.addWidget(self.calibration_tabs)
+        layout.addWidget(self.calibration_tabs, 1)
 
         spacing_group = QGroupBox("Velocity Sensor Spacings")
-        spacing_layout = QHBoxLayout(spacing_group)
-        self.spacing_labels = [QLabel("-") for _ in LIGHT_BARRIER_PAIRS]
-        for pair, label in zip(LIGHT_BARRIER_PAIRS, self.spacing_labels):
-            spacing_layout.addWidget(QLabel(f"LB {pair[0]}-{pair[1]}"))
-            spacing_layout.addWidget(label)
-            spacing_layout.addSpacing(18)
-        spacing_layout.addStretch(1)
+        spacing_layout = QGridLayout(spacing_group)
+        self.spacing_labels_by_pair = {
+            pair: QLabel("-") for pair in SENSOR_SPACING_DISPLAY_PAIRS
+        }
+        self.spacing_labels = [
+            self.spacing_labels_by_pair[pair]
+            for pair in SENSOR_SPACING_DISPLAY_PAIRS
+        ]
+        for display_index, pair in enumerate(SENSOR_SPACING_DISPLAY_PAIRS):
+            row = display_index // len(LIGHT_BARRIER_PAIRS)
+            column = (display_index % len(LIGHT_BARRIER_PAIRS)) * 2
+            spacing_layout.addWidget(QLabel(f"LB {pair[0]}-{pair[1]}"), row, column)
+            spacing_layout.addWidget(
+                self.spacing_labels_by_pair[pair], row, column + 1
+            )
+        spacing_layout.setColumnStretch(7, 1)
         layout.addWidget(spacing_group)
-        layout.addStretch(1)
 
-        self.setCentralWidget(root)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(root)
+        self.setCentralWidget(scroll)
         self.setStatusBar(QStatusBar())
 
     def _connect_signals(self) -> None:
@@ -1036,6 +1270,7 @@ class ConveyorSetupWindow(QMainWindow):
             lambda: self._stop_ur_speed_monitor()
         )
         self.consistency_start_button.clicked.connect(self._start_consistency_monitor)
+        self.consistency_single_part.toggled.connect(self._update_consistency_controls)
         self.consistency_stop_button.clicked.connect(
             lambda: self._stop_consistency_monitor()
         )
@@ -1043,6 +1278,7 @@ class ConveyorSetupWindow(QMainWindow):
             self._clear_consistency_samples
         )
         self.consistency_plot_button.clicked.connect(self._open_consistency_plot)
+        self.consistency_export_button.clicked.connect(self._export_consistency_raw)
         self.consistency_reload_distances_button.clicked.connect(
             self._reload_consistency_distances
         )
@@ -1153,10 +1389,8 @@ class ConveyorSetupWindow(QMainWindow):
         self.ur_second_sensor.setEnabled(settings_enabled)
         self.ur_target_speed.setEnabled(not self.ur_monitor_active)
 
-        spacings = self.latest_status.get("sensor_spacings") if self.latest_status else None
-        if spacings is not None and supported_pair:
-            spacing_index = LIGHT_BARRIER_PAIRS.index(pair)
-            spacing = float(spacings[spacing_index])
+        if self.latest_status is not None and supported_pair:
+            spacing = sensor_spacing_from_status(self.latest_status, pair)
             self.ur_monitor_distance.setText(f"{spacing:.3f} mm")
         else:
             self.ur_monitor_distance.setText("-")
@@ -1302,8 +1536,7 @@ class ConveyorSetupWindow(QMainWindow):
             return
 
         pair = tuple(sorted(self._selected_ur_sensors()))
-        spacing_index = LIGHT_BARRIER_PAIRS.index(pair)
-        distance_mm = float(status["sensor_spacings"][spacing_index])
+        distance_mm = sensor_spacing_from_status(status, pair)
         expected_elapsed_ms = (
             distance_mm * 1000.0 / self.ur_target_speed.value()
         )
@@ -1414,17 +1647,12 @@ class ConveyorSetupWindow(QMainWindow):
     def _reload_consistency_distances(self) -> None:
         if not self.latest_status:
             return
-        plc_spacings = self.latest_status.get("sensor_spacings")
-        if plc_spacings is None:
-            return
-        for plc_index, pair in enumerate(LIGHT_BARRIER_PAIRS):
-            adjacent_index = ADJACENT_BARRIER_PAIRS.index(pair)
-            self.consistency_spacing_inputs[adjacent_index].setValue(
-                float(plc_spacings[plc_index])
-            )
+        plc_spacings = adjacent_sensor_spacings_from_status(self.latest_status)
+        for control, spacing in zip(self.consistency_spacing_inputs, plc_spacings):
+            control.setValue(spacing)
         self.consistency_spacings_initialized = True
         self.consistency_state_label.setText(
-            "Loaded paired distances from PLC; intermediate distances remain assumptions"
+            "Loaded all adjacent light-barrier distances from PLC"
         )
 
     def _start_consistency_monitor(self) -> None:
@@ -1444,12 +1672,28 @@ class ConveyorSetupWindow(QMainWindow):
             self._clear_consistency_samples()
         self.consistency_session_spacings = spacings
         self.consistency_collector = BarrierRunCollector(
-            bool(self.consistency_edge.currentData())
+            bool(self.consistency_edge.currentData()),
+            single_part=self.consistency_single_part.isChecked(),
+            maximum_traversal_ms=round(self.consistency_maximum_traversal.value() * 1000),
         )
-        self.consistency_collector.start(event_counts)
+        history = self.latest_status.get("light_barrier_event_history")
+        self.consistency_collector.start(event_counts, history)
+        if self.consistency_collector.single_part and self.light_barrier_plot.trace.part_active:
+            # Logging can be started while the independently running plot is
+            # already holding a part. Do not mistake a later LB1 pulse of that
+            # part for its first activation; wait for its actual LB8 clearance.
+            self.consistency_collector.single_part_locked = True
+            self.consistency_collector.single_part_lb8_seen = not self.light_barrier_plot.trace.states[7]
         self.consistency_monitor_active = True
+        self.consistency_acquisition_label.setText(
+            "0 repeated edges ignored; 0 traversals discarded"
+        )
         self.consistency_state_label.setText(
             "Monitoring forward traversals from LB 1 through LB 8"
+            + ("; first activations, release after LB 8 clears"
+               if self.consistency_collector.single_part else "")
+            + (" (PLC event buffer)" if history is not None else
+               " (legacy PLC: short pulses can be lost; event buffer requires PLC update)")
         )
         self._update_consistency_controls()
 
@@ -1483,10 +1727,24 @@ class ConveyorSetupWindow(QMainWindow):
             or self.consistency_collector is None
         ):
             return
+        previous_discarded = self.consistency_collector.discarded_runs
         completed_runs, missed_event = self.consistency_collector.process(status)
-        if missed_event:
+        self.consistency_acquisition_label.setText(
+            f"{self.consistency_collector.ignored_repeated_edges} repeated edges ignored; "
+            f"{self.consistency_collector.discarded_runs} traversals discarded"
+        )
+        if self.consistency_collector.discarded_runs > previous_discarded:
             self.consistency_state_label.setText(
-                "A PLC event was missed between polls; incomplete traversals were discarded"
+                f"Traversal discarded: {self.consistency_collector.last_discard_reason}"
+            )
+        if missed_event:
+            sensors = self.consistency_collector.missed_sensors
+            self.consistency_state_label.setText(
+                (f"Selected-edge timestamps lost at LB {', '.join(map(str, sensors))}; "
+                 if sensors else "PLC event buffer overflow or counter reset; ")
+                + ("traversal discarded; waiting for LB 8 to activate and clear"
+                   if self.consistency_collector.single_part else
+                   "incomplete traversals discarded; waiting for a new LB 1 event")
             )
         for event_times in completed_runs:
             try:
@@ -1567,6 +1825,7 @@ class ConveyorSetupWindow(QMainWindow):
             self.consistency_plot_dialog.set_samples([])
 
     def _update_consistency_summary(self) -> None:
+        self.consistency_export_button.setEnabled(bool(self.consistency_samples))
         if not self.consistency_samples:
             self.consistency_summary_label.setText("No completed parts")
             self.consistency_plot_button.setEnabled(False)
@@ -1588,6 +1847,34 @@ class ConveyorSetupWindow(QMainWindow):
             f"section means [mm/s]: {means_text}"
         )
         self.consistency_plot_button.setEnabled(True)
+
+    def _export_consistency_raw(self) -> None:
+        if not self.consistency_samples:
+            return
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Consistency Raw Data",
+            str(CONSISTENCY_LOG_FILE.with_name(
+                f"light_barrier_raw_{datetime.now():%Y%m%d_%H%M%S}.csv"
+            )),
+            "CSV files (*.csv)",
+        )
+        if not filename:
+            return
+        if not Path(filename).suffix:
+            filename += ".csv"
+        try:
+            with Path(filename).open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(CONSISTENCY_RAW_HEADER)
+                for sample in self.consistency_samples:
+                    writer.writerow([*sample["event_times_ms"], *sample["speeds"]])
+        except OSError as exc:
+            QMessageBox.warning(self, "Raw Data Export Failed", str(exc))
+            return
+        self.statusBar().showMessage(
+            f"Exported {len(self.consistency_samples)} parts to {filename}"
+        )
 
     def _open_consistency_plot(self) -> None:
         if not self.consistency_samples:
@@ -1617,7 +1904,15 @@ class ConveyorSetupWindow(QMainWindow):
         )
         self.consistency_conveyor_stop_button.setEnabled(self.connected)
         settings_enabled = not self.consistency_monitor_active
-        self.consistency_edge.setEnabled(settings_enabled)
+        self.consistency_single_part.setEnabled(settings_enabled)
+        if self.consistency_single_part.isChecked():
+            self.consistency_edge.setCurrentIndex(self.consistency_edge.findData(False))
+        self.consistency_maximum_traversal.setEnabled(
+            settings_enabled and self.consistency_single_part.isChecked()
+        )
+        self.consistency_edge.setEnabled(
+            settings_enabled and not self.consistency_single_part.isChecked()
+        )
         self.consistency_tolerance.setEnabled(settings_enabled)
         self.consistency_reload_distances_button.setEnabled(
             ready and settings_enabled
@@ -1673,6 +1968,7 @@ class ConveyorSetupWindow(QMainWindow):
     @pyqtSlot(bool, str)
     def _on_connection_changed(self, connected: bool, message: str) -> None:
         self.connected = connected
+        self.light_barrier_plot.set_connected(connected)
         self.pressure_delay_tab.set_ads_connected(connected)
         self.have_setup_status = False
         self.debounce_initialized = False
@@ -1706,6 +2002,7 @@ class ConveyorSetupWindow(QMainWindow):
     def _on_setup_status(self, status: dict) -> None:
         self.have_setup_status = True
         self.latest_status = status
+        self.light_barrier_plot.process_status(status)
         self.pressure_delay_tab.process_setup_status(status)
         if not self.debounce_initialized:
             blockers = [
@@ -1728,7 +2025,9 @@ class ConveyorSetupWindow(QMainWindow):
             self._set_barrier_indicator(index, barrier_state)
         self._process_ur_capture(status["light_barriers"])
         self._process_ur_speed_monitor(status)
-        if not self.consistency_spacings_initialized and status.get("sensor_spacings"):
+        if not self.consistency_spacings_initialized and (
+            status.get("adjacent_sensor_spacings") or status.get("sensor_spacings")
+        ):
             self._reload_consistency_distances()
         self._process_consistency_monitor(status)
 
@@ -1771,8 +2070,10 @@ class ConveyorSetupWindow(QMainWindow):
             self.measurement_state.setText(
                 BARRIER_STATUS_TEXT.get(status["status_code"], "Unknown state")
             )
-        for label, spacing in zip(self.spacing_labels, status["sensor_spacings"]):
-            label.setText(f"{spacing:.3f} mm")
+        adjacent_spacings = adjacent_sensor_spacings_from_status(status)
+        spacings_by_pair = dict(zip(ADJACENT_BARRIER_PAIRS, adjacent_spacings))
+        for pair, label in self.spacing_labels_by_pair.items():
+            label.setText(f"{spacings_by_pair[pair]:.3f} mm")
 
         active = bool(status["active"])
         ready = bool(status["ready_to_execute"])

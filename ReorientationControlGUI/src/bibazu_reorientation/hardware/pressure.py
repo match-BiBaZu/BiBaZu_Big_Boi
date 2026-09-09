@@ -85,6 +85,16 @@ class _AdsWorker(QObject):
     def _read_baseline(self) -> PressureBaseline:
         import pyads
 
+        force_response_delays_ms = tuple(
+            float(
+                self._read(
+                    f"MAIN.GuiForceSingleNozzleResponseDelayMs{i}",
+                    pyads.PLCTYPE_REAL,
+                    8.7,
+                )
+            )
+            for i in range(1, 5)
+        )
         return PressureBaseline(
             light_barrier_debounce_ms=int(
                 self._read("MAIN.GuiBarrierCalibrationDebounceMs", pyads.PLCTYPE_UDINT, 20)
@@ -112,6 +122,8 @@ class _AdsWorker(QObject):
                 float(self._read("MAIN.GuiConveyorMmPerFullStep", pyads.PLCTYPE_REAL, 0.32960026)),
                 bool(self._read("MAIN.GuiConveyorCalibrationValid", pyads.PLCTYPE_BOOL, False)),
             ),
+            force_response_delays_ms=force_response_delays_ms,
+            force_single_nozzle_response_delays_ms=force_response_delays_ms,
         )
 
     @pyqtSlot(object)

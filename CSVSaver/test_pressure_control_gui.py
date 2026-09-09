@@ -9,12 +9,13 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import ConveyorSetupGUI as setup_gui
 import PressureControlGUI as gui
+import high_speed_calibration as high_speed
 import plc_control_lease
 import ur_angle_control
 from PyQt6.QtCore import QEventLoop, QObject, QThread, QTimer, pyqtSignal
@@ -33,6 +34,8 @@ class FakePlc:
 
     def read_list_by_name(self, names, cache_symbol_info=True):
         self.read_calls.append(list(names))
+        if names in (["MAIN.LightBarrierEventHistory"], ["MAIN.LightBarrierFilteredEventHistory"]):
+            raise gui.pyads.ADSError(1808)
         return {name: 315.0 if name.endswith("MarkerDistanceMm") else 0 for name in names}
 
     def write_list_by_name(self, values, cache_symbol_info=True):
@@ -137,8 +140,13 @@ class AdsThreadTests(unittest.TestCase):
 
     def test_light_barrier_defaults_match_standard_setup(self):
         self.assertEqual(gui.SENSOR_SPACING_12_DEFAULT_MM, 40.0)
+        self.assertEqual(gui.SENSOR_SPACING_23_DEFAULT_MM, 196.0)
         self.assertEqual(gui.SENSOR_SPACING_34_DEFAULT_MM, 40.0)
+        self.assertEqual(gui.SENSOR_SPACING_45_DEFAULT_MM, 196.0)
         self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 40.0)
+        self.assertEqual(gui.SENSOR_SPACING_67_DEFAULT_MM, 196.0)
+        self.assertEqual(gui.SENSOR_SPACING_78_DEFAULT_MM, 40.0)
+        self.assertEqual(gui.SENSOR_TO_ARRAY_DEFAULTS_MM, (50.0, 45.0, 45.0, 48.0))
         self.assertEqual(gui.LIGHT_BARRIER_INVERT_DEFAULTS, (True,) * 8)
         self.assertEqual(gui.LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS, (False,) * 8)
 
@@ -184,6 +192,31 @@ class AdsThreadTests(unittest.TestCase):
             project,
         )
         self.assertIn("GuiSensorSpacing78Mm\t: REAL := 40.0;", main)
+        self.assertIn("GuiSensorSpacing23Mm\t: REAL := 196.0;", main)
+        self.assertIn("GuiSensorSpacing45Mm\t: REAL := 196.0;", main)
+        self.assertIn("GuiSensorSpacing67Mm\t: REAL := 196.0;", main)
+        self.assertIn("GuiSensor2ToArray1SpacingMm\t: REAL := 50.0;", main)
+        self.assertIn("GuiSensor4ToArray2SpacingMm\t: REAL := 45.0;", main)
+        self.assertIn("GuiSensor6ToArray3SpacingMm\t: REAL := 45.0;", main)
+        self.assertIn("GuiSensor8ToArray4SpacingMm\t: REAL := 48.0;", main)
+        self.assertIn("GuiForceResponseDelayMs1\t: REAL := 8.7;", main)
+        self.assertIn("GuiForceSingleNozzleResponseDelayMs4\t: REAL := 8.7;", main)
+        self.assertIn(
+            "((GuiSensor2ToArray1SpacingMm + GuiOffsetMm1)", main
+        )
+        self.assertIn(
+            "+ (BatchSensorToArraySpacingMm[BatchJobIndex]", main
+        )
+        self.assertIn("- BatchResponseDelayMs;", main)
+        self.assertIn(
+            "BatchResponseDelayMs := BatchQueueForceSingleMs[BatchSlotIndex, BatchJobIndex];",
+            main,
+        )
+        self.assertIn(
+            "EffectiveForceResponseDelayMs1 := GuiForceSingleNozzleResponseDelayMs1;",
+            main,
+        )
+        self.assertNotIn("ELSIF ActiveNozzleCount1 >= 4", main)
         self.assertIn(
             "PairedFirstBarrierFalling[4] := LightBarrier7FallingEdge", main
         )
@@ -305,6 +338,7 @@ class AdsThreadTests(unittest.TestCase):
             [False, False, True, True, False, False, True, True],
             [True] * 8,
             (23.54, 39.9, 64.69, 40.0),
+            (180.0, 181.0, 182.0, 183.0),
             20,
         )
 
@@ -320,13 +354,25 @@ class AdsThreadTests(unittest.TestCase):
             [control.value() for control in dialog.spacing_controls],
             [23.5, 39.9, 64.7, 40.0],
         )
+        self.assertEqual(
+            [control.value() for control in dialog.sensor_to_array_controls],
+            [180.0, 181.0, 182.0, 183.0],
+        )
         self.assertEqual(dialog.debounce_ms_control.value(), 20)
         measurement_changes = []
         dialog.measurement_changed.connect(
             lambda *values: measurement_changes.append(values)
         )
         dialog.spacing_controls[0].setValue(25.0)
-        self.assertEqual(measurement_changes[-1], (25.0, 39.9, 64.7, 40.0, 20))
+        self.assertEqual(
+            measurement_changes[-1],
+            ((25.0, 39.9, 64.7, 40.0), (180.0, 181.0, 182.0, 183.0), 20),
+        )
+        dialog.sensor_to_array_controls[0].setValue(185.0)
+        self.assertEqual(
+            controller.pending_writes["MAIN.GuiSensor2ToArray1SpacingMm"],
+            185.0,
+        )
         dialog.debounce_controls[1].setChecked(False)
 
         self.assertEqual(
@@ -350,10 +396,10 @@ class AdsThreadTests(unittest.TestCase):
             controller.calibration_cache["mm_per_full_step"],
             0.32960026,
         )
-        self.assertEqual(controller.force_response_delays_ms, [15.0] * 4)
+        self.assertEqual(controller.force_response_delays_ms, [8.7] * 4)
         self.assertEqual(
             controller.force_single_nozzle_response_delays_ms,
-            [15.0] * 4,
+            [8.7] * 4,
         )
         controller.shutdown()
 
@@ -440,18 +486,41 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(len(plc.read_calls[0]), 14)
         self.assertEqual(status["marker_distance_mm"], 315.0)
 
-    def test_normal_status_uses_one_sum_read(self):
+    def test_normal_status_probes_history_once_then_uses_one_sum_read_on_legacy_plc(self):
         plc = FakePlc()
         worker = gui.AdsWorker()
         worker.client = FakeClient(plc)
 
         snapshot = worker.read_live_snapshot()
 
-        self.assertEqual(len(plc.read_calls), 1)
+        self.assertEqual(plc.read_calls[0], ["MAIN.LightBarrierEventHistory"])
+        self.assertEqual(plc.read_calls[1], ["MAIN.LightBarrierFilteredEventHistory"])
+        self.assertEqual(len(plc.read_calls), 3)
         self.assertEqual(snapshot["shot_counter"], 0)
+        self.assertEqual(snapshot["light_barriers"], [False] * 8)
+        self.assertEqual(snapshot["plc_event_clock_ms"], 0)
+        self.assertIsNone(snapshot["light_barrier_event_history"])
         self.assertFalse(
-            any("MeasuredValveTriggerDelay" in name for name in plc.read_calls[0])
+            any("MeasuredValveTriggerDelay" in name for name in plc.read_calls[2])
         )
+        plc.read_calls.clear()
+        worker.read_live_snapshot()
+        self.assertEqual(len(plc.read_calls), 1)
+
+    def test_initial_snapshot_reads_pair_and_sensor_to_array_spacings(self):
+        plc = FakePlc()
+        worker = gui.AdsWorker()
+        worker.client = FakeClient(plc)
+
+        snapshot = worker.read_initial_snapshot()
+
+        self.assertEqual(len(plc.read_calls), 1)
+        self.assertIn("MAIN.GuiSensorSpacing12Mm", plc.read_calls[0])
+        self.assertNotIn("MAIN.GuiSensorSpacing23Mm", plc.read_calls[0])
+        self.assertIn("MAIN.GuiSensor2ToArray1SpacingMm", plc.read_calls[0])
+        self.assertIn("MAIN.GuiSensor8ToArray4SpacingMm", plc.read_calls[0])
+        self.assertEqual(snapshot["sensor_spacings"], (0.0,) * 4)
+        self.assertEqual(snapshot["sensor_to_array_spacings"], (0.0,) * 4)
 
     def test_force_delay_status_uses_one_sum_read(self):
         plc = FakePlc()
@@ -484,7 +553,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(values["MAIN.GuiForceDelayMinRise"], 0.125)
         controller.shutdown()
 
-    def test_force_response_delay_write_targets_selected_array(self):
+    def test_force_response_delay_write_mirrors_legacy_plc_endpoints(self):
         controller = gui.AdsController()
         controller.connected = True
         writes = []
@@ -492,16 +561,16 @@ class AdsThreadTests(unittest.TestCase):
             lambda values, context: writes.append((values, context))
         )
 
-        controller.set_force_response_delays(3, 36.2, 31.4)
+        controller.set_force_response_delay(3, 36.2)
 
         self.assertEqual(
             writes[0],
             (
                 {
                     "MAIN.GuiForceSingleNozzleResponseDelayMs3": 36.2,
-                    "MAIN.GuiForceResponseDelayMs3": 31.4,
+                    "MAIN.GuiForceResponseDelayMs3": 36.2,
                 },
-                "force_response_delays_array_3",
+                "force_response_delay_array_3",
             ),
         )
         controller.shutdown()
@@ -516,25 +585,24 @@ class AdsThreadTests(unittest.TestCase):
 
         controller.set_all_force_response_delays(
             [16.0, 17.0, 18.0, 19.0],
-            [20.0, 21.0, 22.0, 23.0],
         )
 
         values, context = writes[0]
         self.assertEqual(context, "force_response_delays_all_arrays")
         self.assertEqual(len(values), 8)
         self.assertEqual(values["MAIN.GuiForceSingleNozzleResponseDelayMs1"], 16.0)
-        self.assertEqual(values["MAIN.GuiForceResponseDelayMs4"], 23.0)
+        self.assertEqual(values["MAIN.GuiForceResponseDelayMs4"], 19.0)
         self.assertEqual(
             controller.force_single_nozzle_response_delays_ms,
             [16.0, 17.0, 18.0, 19.0],
         )
         self.assertEqual(
             controller.force_response_delays_ms,
-            [20.0, 21.0, 22.0, 23.0],
+            [16.0, 17.0, 18.0, 19.0],
         )
         controller.shutdown()
 
-    def test_force_delay_settings_support_all_arrays_and_15_ms_reset(self):
+    def test_force_delay_settings_support_all_arrays_and_8_7_ms_reset(self):
         controller = gui.AdsController()
         controller.connected = True
         controller.force_single_nozzle_response_delays_ms = [16.0, 17.0, 18.0, 19.0]
@@ -550,25 +618,18 @@ class AdsThreadTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            [control.value() for control in dialog.single_nozzle_inputs],
+            [control.value() for control in dialog.response_delay_inputs],
             [16.0, 17.0, 18.0, 19.0],
         )
-        self.assertEqual(
-            [control.value() for control in dialog.four_nozzle_inputs],
-            [20.0, 21.0, 22.0, 23.0],
-        )
+        self.assertFalse(hasattr(dialog, "four_nozzle_inputs"))
         self.assertEqual(
             [label.text() for label in dialog.trigger_debounce_labels],
             ["Enabled (20 ms)"] * 4,
         )
         dialog._restore_defaults()
         self.assertEqual(
-            [control.value() for control in dialog.single_nozzle_inputs],
-            [15.0] * 4,
-        )
-        self.assertEqual(
-            [control.value() for control in dialog.four_nozzle_inputs],
-            [15.0] * 4,
+            [control.value() for control in dialog.response_delay_inputs],
+            [8.7] * 4,
         )
         dialog._apply()
 
@@ -577,15 +638,158 @@ class AdsThreadTests(unittest.TestCase):
         dialog.close()
         controller.shutdown()
 
-    def test_force_response_delay_interpolates_nozzle_count(self):
+    def test_force_response_delay_is_independent_of_nozzle_count(self):
         self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 1), 34.0)
-        self.assertAlmostEqual(
-            gui.calculate_force_response_delay(34.0, 25.8, 2), 31.2666667
+        self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 2), 34.0)
+        self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 4), 34.0)
+        self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 6), 34.0)
+
+    def test_high_speed_camera_dialog_uses_requested_lb4_capture_defaults(self):
+        controller = gui.AdsController()
+        controller.connected = True
+        polling = []
+        controller.setup_polling_requested.connect(polling.append)
+
+        with (
+            patch.object(gui.PressureDelayTab, "activate") as activate,
+            patch.object(gui.PressureDelayTab, "shutdown") as shutdown,
+        ):
+            dialog = gui.HighSpeedCameraDialog(controller)
+
+            self.assertEqual(dialog.camera_tab.barrier_input.currentData(), 4)
+            self.assertFalse(dialog.camera_tab.barrier_input.isEnabled())
+            self.assertEqual(dialog.camera_tab.trigger_label.text(), "Start trigger")
+            self.assertEqual(
+                dialog.camera_tab.pressure_array_label.text(), "Array 2 (LB 3/4)"
+            )
+            self.assertEqual(dialog.camera_tab.post_trigger_input.value(), 500)
+            self.assertTrue(dialog.camera_tab.post_trigger_input.isEnabled())
+            self.assertEqual(
+                dialog.camera_tab.post_trigger_label.text(), "Recording duration"
+            )
+            self.assertFalse(
+                dialog.camera_tab.output_input.parentWidget().isHidden()
+            )
+            self.assertFalse(dialog.camera_tab.session_name_input.isHidden())
+            dialog.camera_tab.session_name_input.setText("LB4 Testlauf")
+            self.assertEqual(
+                dialog.camera_tab.session_name_input.text(), "LB4 Testlauf"
+            )
+            self.assertTrue(dialog.camera_tab.browse_output_button.isEnabled())
+            self.assertEqual(dialog.camera_tab.exposure_input.value(), 1000.0)
+            self.assertTrue(dialog.camera_tab.record_on_trigger)
+            self.assertTrue(dialog.camera_tab.review_only)
+            self.assertEqual(
+                dialog.camera_tab.record_button.text(), "Arm Recording for LB4"
+            )
+            self.assertTrue(
+                dialog.camera_tab.pressure_input.parentWidget().isHidden()
+            )
+            self.assertTrue(
+                dialog.camera_tab.pulse_duration_input.parentWidget().isHidden()
+            )
+            self.assertTrue(
+                dialog.camera_tab.enable_fast_response_button.parentWidget().isHidden()
+            )
+            self.assertTrue(dialog.camera_tab.analyze_movement_button.isHidden())
+            self.assertTrue(dialog.camera_tab.mark_movement_button.isHidden())
+            activate.assert_called_once_with()
+
+            dialog.close()
+            self.app.processEvents()
+            shutdown.assert_called_once_with()
+
+        self.assertEqual(polling, [True, False])
+        controller.shutdown()
+
+    def test_triggered_camera_mode_starts_frame_capture_on_lb4_event(self):
+        tab = gui.PressureDelayTab(
+            fixed_light_barrier=4,
+            fixed_post_trigger_ms=500,
+            initial_exposure_us=1000.0,
+            record_on_trigger=True,
         )
-        self.assertAlmostEqual(
-            gui.calculate_force_response_delay(34.0, 25.8, 3), 28.5333333
+        tab.camera.set_recording = MagicMock()
+        tab.camera_status = {"hardware_trigger_available": False}
+        tab.trigger_baseline_count = 10
+        tab.session = SimpleNamespace(
+            light_barrier=4,
+            event_camera_ns=None,
+            post_trigger_ms=500,
+            set_trigger=MagicMock(),
         )
-        self.assertEqual(gui.calculate_force_response_delay(34.0, 25.8, 4), 25.8)
+        counts = [0] * 8
+        counts[3] = 11
+        states = [True] * 8
+        states[3] = False
+
+        tab.process_setup_status(
+            {
+                "light_barrier_event_counts": counts,
+                "light_barrier_event_times_ms": [100] * 8,
+                "light_barriers": states,
+                "sampled_monotonic_ns": 1_000_000_000,
+                "plc_event_clock_ms": 100,
+                "ads_roundtrip_ns": 2_000_000,
+                "arrays": [],
+            }
+        )
+
+        tab.session.set_trigger.assert_called_once()
+        tab.camera.set_recording.assert_called_once_with(True)
+        tab.session = None
+
+    def test_frame_review_is_not_overwritten_by_live_camera_preview(self):
+        tab = gui.PressureDelayTab(review_only=True)
+        tab.review_display_active = True
+        tab._set_pixmap = MagicMock()
+        packet = high_speed.FramePacket(
+            image=None,
+            pixel_format="Mono8",
+            width=640,
+            height=480,
+            frame_id=1,
+            camera_timestamp_ns=1,
+            host_monotonic_ns=1,
+            wall_time_ns=1,
+        )
+
+        tab._show_live_frame(packet)
+
+        tab._set_pixmap.assert_not_called()
+
+    def test_offset_timing_uses_sensor_distance_velocity_and_force_delay(self):
+        timing = gui.calculate_offset_timing(100.0, 10.0, 100.0, 15.0, 5.0)
+
+        self.assertIsNotNone(timing)
+        self.assertEqual(timing["travel_distance_mm"], 110.0)
+        self.assertEqual(timing["travel_delay_ms"], 1100.0)
+        self.assertEqual(timing["compensated_delay_ms"], 1085.0)
+        self.assertEqual(timing["total_trigger_delay_ms"], 1090.0)
+        self.assertEqual(
+            gui.calculate_offset_timing(0.0, 0.0, 100.0, 15.0, 0.0)[
+                "compensated_delay_ms"
+            ],
+            0.0,
+        )
+
+    def test_pressure_gui_offset_equation_popup_shows_mapping_and_formula(self):
+        with patch.object(gui.AdsController, "start"):
+            window = gui.PressureControlWindow()
+        window.sensor_to_array_controls[1].setValue(100.0)
+        window.rows[0].offset.setValue(10.0)
+        window.rows[0].delay.setValue(5)
+        window.rows[0].last_displayed_velocity = 100.0
+
+        with patch.object(gui.QMessageBox, "information") as information:
+            window.show_offset_equation()
+
+        title, message = information.call_args.args[1:3]
+        self.assertEqual(title, "Offset Equation")
+        self.assertIn("Travel time = (D + x) * 1000 / v", message)
+        self.assertIn("Array 1: LB 1-2 velocity", message)
+        self.assertIn("command delay=1096.3 ms", message)
+        window.close()
 
     def test_force_delay_statistics_report_consistency(self):
         result = gui.calculate_force_delay_statistics([230.0, 237.0, 244.0])
@@ -674,9 +878,15 @@ class AdsThreadTests(unittest.TestCase):
 
         snapshot = worker.read_setup_snapshot()
 
-        self.assertEqual(len(plc.read_calls), 1)
-        self.assertEqual(len(plc.read_calls[0]), 109)
-        self.assertIn("MAIN.LightBarrierEventClockMs", plc.read_calls[0])
+        self.assertEqual(plc.read_calls[0], ["MAIN.LightBarrierEventHistory"])
+        self.assertEqual(plc.read_calls[1], ["MAIN.LightBarrierFilteredEventHistory"])
+        self.assertEqual(len(plc.read_calls), 3)
+        self.assertEqual(len(plc.read_calls[2]), 112)
+        self.assertIn("MAIN.LightBarrierEventClockMs", plc.read_calls[2])
+        self.assertIsNone(snapshot["light_barrier_event_history"])
+        self.assertIsNone(snapshot["light_barrier_filtered_event_history"])
+        worker.read_setup_snapshot()
+        self.assertEqual(len(plc.read_calls), 4)  # Missing symbols probed only once.
         self.assertEqual(snapshot["light_barriers"], [False] * 8)
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 8)
         self.assertEqual(snapshot["light_barrier_inverted"], [False] * 8)
@@ -687,6 +897,8 @@ class AdsThreadTests(unittest.TestCase):
         self.assertGreater(snapshot["sampled_monotonic_ns"], 0)
         self.assertGreaterEqual(snapshot["ads_roundtrip_ns"], 0)
         self.assertEqual(snapshot["debounce_ms"], 0)
+        self.assertEqual(snapshot["sensor_spacings"], (0.0,) * 4)
+        self.assertEqual(snapshot["adjacent_sensor_spacings"], (0.0,) * 7)
         self.assertEqual(len(snapshot["arrays"]), 4)
         self.assertEqual(snapshot["arrays"][0]["pressure_mbar"], 0)
 
@@ -847,7 +1059,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def load_profile(self, profile):
+    def load_profile(self, profile, configure_window=None):
         with tempfile.TemporaryDirectory() as directory:
             profile_path = Path(directory) / "profile.json"
             profile_path.write_text(json.dumps(profile), encoding="utf-8")
@@ -860,6 +1072,8 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 ),
             ):
                 window = gui.PressureControlWindow()
+                if configure_window is not None:
+                    configure_window(window)
                 window.load_profile()
                 result = dict(window.conveyor_calibration)
                 result["force_response_delays_ms"] = list(
@@ -877,6 +1091,14 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 result["ur_ry_angle_deg"] = window.ur_angle_input.value()
                 result["conveyor_max_speed"] = window.conveyor_max_speed.value()
                 result["conveyor_max_hidden"] = window.conveyor_max_speed.isHidden()
+                result["sensor_spacings"] = tuple(
+                    window.sensor_spacing_controls[pair].value()
+                    for pair in gui.LIGHT_BARRIER_PAIRS
+                )
+                result["sensor_to_array_spacings"] = tuple(
+                    window.sensor_to_array_controls[array].value()
+                    for array in range(1, gui.ARRAY_COUNT + 1)
+                )
                 window.close()
                 return result
 
@@ -897,9 +1119,15 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 window.close()
 
             profile = json.loads(profile_path.read_text(encoding="utf-8"))
-            self.assertEqual(profile["version"], 9)
+            self.assertEqual(profile["version"], 12)
+            self.assertEqual(profile["force_delays_ms"], [8.7] * 4)
             self.assertEqual(profile["ur_ry_angle_deg"], 20.4)
             self.assertEqual(profile["sensor_spacing_78_mm"], 40.0)
+            self.assertNotIn("sensor_spacing_23_mm", profile)
+            self.assertEqual(profile["sensor_2_to_array_1_spacing_mm"], 50.0)
+            self.assertEqual(profile["sensor_4_to_array_2_spacing_mm"], 45.0)
+            self.assertEqual(profile["sensor_6_to_array_3_spacing_mm"], 45.0)
+            self.assertEqual(profile["sensor_8_to_array_4_spacing_mm"], 48.0)
             self.assertEqual(len(profile["light_barrier_inverted"]), 8)
 
     def test_version_1_profile_loads_uncalibrated(self):
@@ -908,6 +1136,69 @@ class ProfileCompatibilityTests(unittest.TestCase):
         self.assertEqual(result["mm_per_full_step"], 0.0)
         self.assertEqual(result["conveyor_max_speed"], 1000.0)
         self.assertTrue(result["conveyor_max_hidden"])
+        self.assertEqual(
+            result["sensor_spacings"],
+            (40.0, 40.0, 40.0, 40.0),
+        )
+        self.assertEqual(result["sensor_to_array_spacings"], (50.0, 45.0, 45.0, 48.0))
+
+    def test_version_11_profile_does_not_load_any_light_barrier_spacings(self):
+        expected_pairs = (41.0, 42.0, 43.0, 44.0)
+        expected_to_arrays = (181.0, 182.0, 183.0, 184.0)
+        profile = {"version": 11, "arrays": []}
+        profile.update(
+            {
+                f"sensor_spacing_{pair[0]}{pair[1]}_mm": value
+                for pair, value in zip(gui.LIGHT_BARRIER_PAIRS, expected_pairs)
+            }
+        )
+        profile.update(
+            {
+                f"sensor_{sensor}_to_array_{array}_spacing_mm": value
+                for (sensor, array), value in zip(
+                    gui.SENSOR_TO_ARRAY_MAPPINGS, expected_to_arrays
+                )
+            }
+        )
+
+        result = self.load_profile(profile)
+
+        self.assertEqual(result["sensor_spacings"], (40.0,) * 4)
+        self.assertEqual(result["sensor_to_array_spacings"], (50.0, 45.0, 45.0, 48.0))
+
+    def test_profile_load_preserves_current_global_machine_values(self):
+        current_distances = (51.0, 46.0, 47.0, 49.0)
+        current_force_delays = [9.1, 9.2, 9.3, 9.4]
+
+        def configure(window):
+            for array, value in enumerate(current_distances, start=1):
+                window.sensor_to_array_controls[array].setValue(value)
+            window.ads.force_response_delays_ms = list(current_force_delays)
+            window.ads.force_single_nozzle_response_delays_ms = list(
+                current_force_delays
+            )
+
+        result = self.load_profile(
+            {
+                "version": 12,
+                "arrays": [],
+                "force_delays_ms": [100.0] * 4,
+                "force_response_delays_ms": [101.0] * 4,
+                "force_single_nozzle_response_delays_ms": [102.0] * 4,
+                **{
+                    f"sensor_{sensor}_to_array_{array}_spacing_mm": 200.0
+                    for sensor, array in gui.SENSOR_TO_ARRAY_MAPPINGS
+                },
+            },
+            configure,
+        )
+
+        self.assertEqual(result["sensor_to_array_spacings"], current_distances)
+        self.assertEqual(result["force_response_delays_ms"], current_force_delays)
+        self.assertEqual(
+            result["force_single_nozzle_response_delays_ms"],
+            current_force_delays,
+        )
 
     def test_hidden_conveyor_max_ignores_profile_override(self):
         result = self.load_profile(
@@ -933,13 +1224,13 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(result["valid"])
         self.assertEqual(result["mm_per_full_step"], 0.05)
-        self.assertEqual(result["force_response_delays_ms"], [15.0] * 4)
+        self.assertEqual(result["force_response_delays_ms"], [8.7] * 4)
         self.assertEqual(
             result["force_single_nozzle_response_delays_ms"],
-            [15.0] * 4,
+            [8.7] * 4,
         )
 
-    def test_version_3_profile_preserves_force_response_delays(self):
+    def test_version_3_profile_does_not_override_force_response_delays(self):
         result = self.load_profile(
             {
                 "version": 3,
@@ -954,14 +1245,14 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            result["force_response_delays_ms"], [25.8, 26.1, 27.2, 28.3]
+            result["force_response_delays_ms"], [8.7] * 4
         )
         self.assertEqual(
             result["force_single_nozzle_response_delays_ms"],
-            [15.0] * 4,
+            [8.7] * 4,
         )
 
-    def test_version_4_profile_preserves_both_response_delay_endpoints(self):
+    def test_version_4_profile_does_not_override_force_response_delays(self):
         result = self.load_profile(
             {
                 "version": 4,
@@ -983,10 +1274,32 @@ class ProfileCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(
             result["force_single_nozzle_response_delays_ms"],
-            [34.0, 35.0, 36.0, 37.0],
+            [8.7] * 4,
+        )
+        self.assertEqual(
+            result["force_response_delays_ms"],
+            [8.7] * 4,
         )
 
-    def test_version_6_profile_preserves_light_barrier_inversions(self):
+    def test_version_12_profile_does_not_override_force_response_delays(self):
+        result = self.load_profile(
+            {
+                "version": 12,
+                "arrays": [],
+                "force_delays_ms": [21.0, 22.0, 23.0, 24.0],
+            }
+        )
+
+        self.assertEqual(
+            result["force_single_nozzle_response_delays_ms"],
+            [8.7] * 4,
+        )
+        self.assertEqual(
+            result["force_response_delays_ms"],
+            [8.7] * 4,
+        )
+
+    def test_version_6_profile_cannot_override_global_light_barrier_inversions(self):
         result = self.load_profile(
             {
                 "version": 6,
@@ -997,14 +1310,14 @@ class ProfileCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(
             result["light_barrier_inverted"],
-            [False, True, True, False, False, True, True, True],
+            list(gui.LIGHT_BARRIER_INVERT_DEFAULTS),
         )
         self.assertEqual(
             result["light_barrier_debounce_enabled"],
             [False, False, False, False, False, False, False, False],
         )
 
-    def test_version_7_profile_preserves_per_barrier_debounce_settings(self):
+    def test_version_7_profile_cannot_override_global_debounce_settings(self):
         result = self.load_profile(
             {
                 "version": 7,
@@ -1023,7 +1336,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(
             result["light_barrier_debounce_enabled"],
-            [True, False, True, False, True, False, False, False],
+            list(gui.LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS),
         )
 
     def test_version_8_profile_preserves_ur_ry_angle(self):
@@ -1107,21 +1420,26 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
         try:
             dialog = gui.RoadmapTransitionDialog(document)
             self.assertEqual(len(document.poses), 3)
-            self.assertEqual(dialog.transition_table.rowCount(), 2)
+            self.assertEqual(
+                tuple(pose.pose_id for pose in dialog.map_widget.poses), (1, 2)
+            )
+            self.assertEqual(dialog.transition_table.rowCount(), 0)
+            dialog._set_pose_selection(1, 2)
+            self.assertEqual(dialog.transition_table.rowCount(), 1)
             dialog.transition_table.selectRow(0)
             self.assertTrue(dialog.use_button.isEnabled())
             dialog._accept_selected_transition()
             selection = dialog.selected_transition
             self.assertIsNotNone(selection)
-            self.assertEqual(selection.transition.display_name, "Übergang 1-2")
+            self.assertEqual(selection.transition.display_name, "Transition 1-2")
             self.assertEqual(
                 selection.profile_name_stem,
-                "Df1a_Uebergang_1-2_free_y",
+                "Df1a_Transition_1-2_free_y",
             )
         finally:
             directory.cleanup()
 
-    def test_stable_to_stable_transitions_are_sorted_first_and_highlighted(self):
+    def test_pose_pair_filters_paths_and_direct_path_is_highlighted(self):
         directory, document = self.load_document()
         try:
             reversed_document = replace(
@@ -1129,16 +1447,13 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
                 transitions=tuple(reversed(document.transitions)),
             )
             dialog = gui.RoadmapTransitionDialog(reversed_document)
-            self.assertEqual(dialog.transition_table.item(0, 0).text(), "Übergang 1-2")
+            dialog._set_pose_selection(1, 2)
+            self.assertEqual(dialog.transition_table.item(0, 0).text(), "Pose 1 → Pose 2")
             self.assertEqual(
                 dialog.transition_table.item(0, 0).background().color().name(),
                 "#dcefff",
             )
-            self.assertEqual(dialog.transition_table.item(1, 0).text(), "Übergang 3-2")
-            self.assertEqual(
-                dialog.transition_table.item(1, 0).background().color().name(),
-                "#f3f4f6",
-            )
+            self.assertEqual(dialog.transition_table.rowCount(), 1)
         finally:
             directory.cleanup()
 
@@ -1204,6 +1519,7 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
             self.assertTrue(multi.calibratable)
 
             dialog = gui.RoadmapTransitionDialog(document)
+            dialog._set_pose_selection(1, 4)
             row = next(
                 row
                 for row in range(dialog.transition_table.rowCount())
@@ -1214,7 +1530,8 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
                 dialog.transition_table.item(row, 0).background().color().name(),
                 "#fff3cd",
             )
-            self.assertIn("experimentell", dialog.transition_table.item(row, 3).text())
+            self.assertIn("No saved profile", dialog.transition_table.item(row, 3).text())
+            self.assertIn("free Y rotation", dialog.transition_table.item(row, 2).text())
             dialog.transition_table.selectRow(row)
             dialog._accept_selected_transition()
             self.assertEqual(dialog.selected_transition.transition.edge_id, multi.edge_id)
@@ -1223,6 +1540,7 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
         directory, document = self.load_document()
         try:
             dialog = gui.RoadmapTransitionDialog(document)
+            dialog._set_pose_selection(1, 2)
             dialog.transition_table.selectRow(0)
             dialog._accept_selected_transition()
             selection = dialog.selected_transition
@@ -1231,7 +1549,7 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
                 window = gui.PressureControlWindow()
             window._apply_roadmap_transition(selection)
             self.assertFalse(window.transition_context_frame.isHidden())
-            self.assertIn("Übergang 1-2", window.transition_context_text.text())
+            self.assertIn("Transition 1-2", window.transition_context_text.text())
             with patch.object(
                 QFileDialog,
                 "getSaveFileName",
@@ -1240,9 +1558,35 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
                 window.save_profile()
             suggested_path = save_dialog.call_args.args[2]
             self.assertTrue(
-                suggested_path.endswith("Df1a_Uebergang_1-2_free_y.json")
+                suggested_path.endswith("Df1a_Transition_1-2_free_y.json")
             )
             window.close()
+        finally:
+            directory.cleanup()
+
+    def test_saved_transition_metadata_restores_context_and_marks_path_done(self):
+        directory, document = self.load_document()
+        try:
+            chooser = gui.RoadmapTransitionDialog(document)
+            chooser._set_pose_selection(1, 2)
+            chooser.transition_table.selectRow(0)
+            chooser._accept_selected_transition()
+            selection = chooser.selected_transition
+            self.assertIsNotNone(selection)
+            metadata = gui.roadmap_transition_metadata(selection)
+            restored = gui.selection_from_roadmap_transition_metadata(metadata)
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.transition.edge_id, selection.transition.edge_id)
+
+            profile_path = Path(directory.name) / "calibrated.json"
+            profile_path.write_text(
+                json.dumps({"roadmap_transition": metadata}), encoding="utf-8"
+            )
+            chooser = gui.RoadmapTransitionDialog(
+                document, profile_directory=Path(directory.name)
+            )
+            chooser._set_pose_selection(1, 2)
+            self.assertIn("calibrated.json", chooser.transition_table.item(0, 3).text())
         finally:
             directory.cleanup()
 
@@ -1354,7 +1698,7 @@ class ConveyorSetupWindowTests(unittest.TestCase):
             window = setup_gui.ConveyorSetupWindow()
         counts = [0] * 8
         times = [0] * 8
-        states = [False] * 8
+        states = [True] * 8
         status = {
             "light_barrier_event_counts": counts,
             "light_barrier_event_times_ms": times,
@@ -1372,11 +1716,17 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         ):
             counts[sensor - 1] += 1
             times[sensor - 1] = event_time
-            states[sensor - 1] = True
+            states[sensor - 1] = False
             window._process_consistency_monitor(status)
             event_time += round(distance * 2.5)
         counts[7] += 1
         times[7] = event_time
+        states[7] = False
+        window._process_consistency_monitor(status)
+
+        self.assertEqual(window.consistency_table.rowCount(), 0)
+        counts[7] += 1
+        times[7] = event_time + 50
         states[7] = True
         window._process_consistency_monitor(status)
 
@@ -1652,6 +2002,53 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.ads.connected = False
         window.close()
 
+    def test_pressure_delay_barrier_change_restores_fast_response_setup(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        window.ads.connected = True
+        tab.set_ads_connected(True)
+        tab.process_setup_status(
+            {
+                "arrays": [
+                    {
+                        "index": index,
+                        "pressure_mbar": 3000 + index * 100,
+                        "delay_ms": 20 + index,
+                        "pulse_duration_ms": 100,
+                        "offset_mm": float(index),
+                        "force_response_delay_ms": 14.0,
+                        "force_single_nozzle_response_delay_ms": 16.0,
+                    }
+                    for index in range(1, 5)
+                ],
+                "light_barrier_debounce_enabled": [False] * 8,
+            }
+        )
+        tab.barrier_input.setCurrentIndex(3)
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+        tab._enable_fast_response()
+        tab._ads_write_finished(writes[-1][1])
+        self.assertTrue(tab.barrier_input.isEnabled())
+
+        tab.barrier_input.setCurrentIndex(4)
+
+        restored, context = writes[-1]
+        self.assertEqual(context, "pressure_delay_fast_response_restore")
+        self.assertEqual(restored["MAIN.GuiPressureMbar2"], 3200)
+        self.assertIn("MAIN.GuiLightBarrierDebounceEnabled4", restored)
+        self.assertFalse(tab.barrier_input.isEnabled())
+        tab._ads_write_finished(context)
+        self.assertEqual(tab.barrier_input.currentData(), 5)
+        self.assertTrue(tab.barrier_input.isEnabled())
+        self.assertFalse(tab.fast_response_active)
+        self.assertEqual(tab.pressure_input.value(), 3300)
+        window.ads.connected = False
+        window.close()
+
     def test_pressure_delay_uses_the_selected_falling_barrier_edge(self):
         with patch.object(gui.AdsController, "start"):
             window = setup_gui.ConveyorSetupWindow()
@@ -1869,6 +2266,15 @@ class ConveyorSetupWindowTests(unittest.TestCase):
             "full_steps_per_sec": 30.0,
             "velocity_raw": 150,
             "sensor_spacings": (100.0, 110.0, 120.0, 130.0),
+            "adjacent_sensor_spacings": (
+                100.0,
+                201.0,
+                110.0,
+                203.0,
+                120.0,
+                205.0,
+                130.0,
+            ),
         }
         writes = []
         window.ads.write_requested.connect(
@@ -1886,6 +2292,30 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertEqual(window.debounce_time.value(), 20)
         self.assertEqual(
             writes[0][0], {"MAIN.GuiSensorSpacing12Mm": 10.0}
+        )
+        self.assertEqual(
+            [label.text() for label in window.spacing_labels],
+            [
+                "100.000 mm",
+                "110.000 mm",
+                "120.000 mm",
+                "130.000 mm",
+                "201.000 mm",
+                "203.000 mm",
+                "205.000 mm",
+            ],
+        )
+
+        window.latest_status = {
+            **status,
+            "first_sensor": 2,
+            "second_sensor": 3,
+            "distance_mm": 201.5,
+        }
+        window._apply_measurement()
+        self.assertEqual(
+            writes[1],
+            ({"MAIN.GuiSensorSpacing23Mm": 201.5}, "sensor_spacing_23"),
         )
         window.ads.connected = False
         window.close()

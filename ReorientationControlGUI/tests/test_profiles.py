@@ -64,6 +64,22 @@ def test_legacy_machine_values_resolve_from_baseline(tmp_path: Path) -> None:
     assert profile.conveyor_speed_mm_per_sec == 80.0
 
 
+def test_force_response_is_global_and_profile_values_are_ignored(tmp_path: Path) -> None:
+    data = payload()
+    data["force_response_delays_ms"] = [15.0, 16.0, 17.0, 18.0]
+    data["force_single_nozzle_response_delays_ms"] = [25.0, 26.0, 27.0, 28.0]
+    source = tmp_path / "legacy-force-values.json"
+    source.write_text(json.dumps(data), encoding="utf-8")
+
+    profile = load_pressure_profile(source)
+    plan = build_write_plan(profile, actuate=True)
+
+    assert profile.force_response_delays_ms == (8.7,) * 4
+    assert profile.force_single_nozzle_response_delays_ms == (8.7,) * 4
+    assert plan.configuration["MAIN.GuiForceResponseDelayMs1"] == 8.7
+    assert plan.configuration["MAIN.GuiForceSingleNozzleResponseDelayMs1"] == 8.7
+
+
 def test_profile_selection_does_not_create_motion_write(tmp_path: Path) -> None:
     source = tmp_path / "profile.json"
     source.write_text(json.dumps(payload()), encoding="utf-8")

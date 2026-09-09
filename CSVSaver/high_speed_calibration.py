@@ -25,6 +25,7 @@ from PyQt6.QtCore import (
     pyqtSlot,
 )
 from PyQt6.QtGui import QColor, QFileSystemModel, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtSvg import QSvgGenerator
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -40,8 +41,10 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
+    QTabWidget,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -63,6 +66,14 @@ FAST_RESPONSE_ENABLE_CONTEXT = "pressure_delay_fast_response_enable"
 FAST_RESPONSE_RESTORE_CONTEXT = "pressure_delay_fast_response_restore"
 PRESSURE_APPLY_CONTEXT_PREFIX = "pressure_delay_pressure_array_"
 PULSE_DURATION_APPLY_CONTEXT_PREFIX = "pressure_delay_pulse_duration_array_"
+WINDOWS_RESERVED_FOLDER_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 FRAME_COLUMNS = (
     "index",
@@ -92,6 +103,25 @@ RESULT_COLUMNS = (
     "fastest_response_mode",
     "session_directory",
 )
+
+
+def validate_recording_folder_name(value: str) -> str:
+    """Return a safe optional session-folder name or raise a useful error."""
+    name = str(value).strip()
+    if not name:
+        return ""
+    if name in {".", ".."}:
+        raise ValueError("Recording folder name cannot be '.' or '..'.")
+    invalid = '<>:"/\\|?*'
+    if any(character in invalid or ord(character) < 32 for character in name):
+        raise ValueError(
+            'Recording folder name cannot contain < > : " / \\ | ? *.'
+        )
+    if name.endswith((" ", ".")):
+        raise ValueError("Recording folder name cannot end with a space or dot.")
+    if name.split(".", 1)[0].upper() in WINDOWS_RESERVED_FOLDER_NAMES:
+        raise ValueError(f"'{name}' is a reserved Windows folder name.")
+    return name
 
 
 def pressure_array_for_barrier(light_barrier: int) -> int:
@@ -344,6 +374,106 @@ def analyze_recording_movement(
     )
 
 
+def _linear_fit(
+    x_values: list[float], y_values: list[float]
+) -> dict[str, float] | None:
+    if len(x_values) < 2:
+        return None
+    x_mean = statistics.fmean(x_values)
+    denominator = sum((value - x_mean) ** 2 for value in x_values)
+    if denominator <= 0.0:
+        return None
+    y_mean = statistics.fmean(y_values)
+    slope = sum(
+        (x_value - x_mean) * (y_value - y_mean)
+        for x_value, y_value in zip(x_values, y_values)
+    ) / denominator
+    intercept = y_mean - slope * x_mean
+    predictions = [slope * value + intercept for value in x_values]
+    residual_sum = sum(
+        (actual - predicted) ** 2
+        for actual, predicted in zip(y_values, predictions)
+    )
+    total_sum = sum((value - y_mean) ** 2 for value in y_values)
+    return {
+        "slope": slope,
+        "intercept_ms": intercept,
+        "r_squared": 1.0 - residual_sum / total_sum if total_sum > 0.0 else 1.0,
+    }
+
+
+def _build_axis_plot(
+    trials: list[dict[str, Any]],
+    *,
+    light_barrier: int,
+    axis: str,
+    fixed_value: float,
+) -> dict[str, Any]:
+    if axis == "pressure":
+        x_key = "pressure_bar"
+        x_label = "Pressure [bar]"
+        model_variable = "pressure"
+        slope_unit = "ms/bar"
+        fixed_label = f"Impulse duration: {fixed_value:g} ms"
+        title = (
+            f"Pressure-delay comparison · LB {light_barrier} · "
+            f"{fixed_value:g} ms impulse"
+        )
+        export_stem = f"LB{light_barrier}_pressure_{fixed_value:g}ms"
+    elif axis == "pulse_duration":
+        x_key = "pulse_duration_ms"
+        x_label = "Impulse duration [ms]"
+        model_variable = "impulse duration"
+        slope_unit = "ms/ms"
+        pressure_bar = fixed_value / 1000.0
+        fixed_label = f"Pressure: {pressure_bar:g} bar"
+        title = (
+            f"Impulse-duration comparison · LB {light_barrier} · "
+            f"{pressure_bar:g} bar"
+        )
+        export_stem = f"LB{light_barrier}_impulse_{pressure_bar:g}bar"
+    else:
+        raise ValueError(f"Unknown comparison axis: {axis}")
+
+    grouped: dict[float, list[float]] = {}
+    for trial in trials:
+        grouped.setdefault(float(trial[x_key]), []).append(float(trial["delay_ms"]))
+    groups: list[dict[str, Any]] = []
+    for x_value, delays in sorted(grouped.items()):
+        groups.append(
+            {
+                "x_value": x_value,
+                "count": len(delays),
+                "mean_delay_ms": statistics.fmean(delays),
+                "standard_deviation_ms": (
+                    statistics.stdev(delays) if len(delays) > 3 else None
+                ),
+            }
+        )
+    x_values = [float(trial[x_key]) for trial in trials]
+    y_values = [float(trial["delay_ms"]) for trial in trials]
+    return {
+        "axis": axis,
+        "x_key": x_key,
+        "x_label": x_label,
+        "model_variable": model_variable,
+        "slope_unit": slope_unit,
+        "fixed_value": fixed_value,
+        "fixed_label": fixed_label,
+        "title": title,
+        "export_stem": export_stem,
+        "light_barrier": light_barrier,
+        "trials": trials,
+        "groups": groups,
+        "regression": _linear_fit(x_values, y_values),
+        "suggested_delay_ms": statistics.fmean(
+            float(group["mean_delay_ms"]) for group in groups
+        ),
+        "x_min": min(x_values),
+        "x_max": max(x_values),
+    }
+
+
 def build_pressure_delay_comparison(
     directories: list[Path],
 ) -> dict[str, Any]:
@@ -360,21 +490,27 @@ def build_pressure_delay_comparison(
             document = json.loads(
                 (directory / "session.json").read_text(encoding="utf-8")
             )
-            pressure = document.get("plc_measurement_setup", {}).get(
-                "pressure_mbar"
-            )
+            measurement_setup = document.get("plc_measurement_setup", {})
+            pressure = measurement_setup.get("pressure_mbar")
+            pulse_duration = measurement_setup.get("pulse_duration_ms")
             delay = document.get("evaluation", {}).get("delay_ms")
             light_barrier = document.get("light_barrier")
             if pressure is None:
                 raise ValueError("pressure is missing")
+            if pulse_duration is None:
+                raise ValueError("impulse duration is missing")
             if delay is None:
                 raise ValueError("movement frame is not marked")
             if light_barrier is None:
                 raise ValueError("light barrier is missing")
             pressure_mbar = float(pressure)
+            pulse_duration_ms = float(pulse_duration)
             delay_ms = float(delay)
-            if not math.isfinite(pressure_mbar) or not math.isfinite(delay_ms):
-                raise ValueError("pressure or delay is not finite")
+            if not all(
+                math.isfinite(value)
+                for value in (pressure_mbar, pulse_duration_ms, delay_ms)
+            ):
+                raise ValueError("pressure, impulse duration or delay is not finite")
             trials.append(
                 {
                     "directory": str(directory),
@@ -382,12 +518,16 @@ def build_pressure_delay_comparison(
                     "light_barrier": int(light_barrier),
                     "pressure_mbar": pressure_mbar,
                     "pressure_bar": pressure_mbar / 1000.0,
+                    "pulse_duration_ms": pulse_duration_ms,
                     "delay_ms": delay_ms,
                 }
             )
         except Exception as exc:
             skipped.append(
-                {"directory": str(directory), "reason": str(exc) or type(exc).__name__}
+                {
+                    "directory": str(directory),
+                    "reason": str(exc) or type(exc).__name__,
+                }
             )
     if not trials:
         raise ValueError(
@@ -418,36 +558,102 @@ def build_pressure_delay_comparison(
             }
         )
 
-    regression = None
     x_values = [trial["pressure_bar"] for trial in trials]
     y_values = [trial["delay_ms"] for trial in trials]
-    x_mean = statistics.fmean(x_values)
-    denominator = sum((value - x_mean) ** 2 for value in x_values)
-    if len(trials) >= 2 and denominator > 0.0:
-        y_mean = statistics.fmean(y_values)
-        slope = sum(
-            (x_value - x_mean) * (y_value - y_mean)
-            for x_value, y_value in zip(x_values, y_values)
-        ) / denominator
-        intercept = y_mean - slope * x_mean
-        predictions = [slope * value + intercept for value in x_values]
-        residual_sum = sum(
-            (actual - predicted) ** 2
-            for actual, predicted in zip(y_values, predictions)
-        )
-        total_sum = sum((value - y_mean) ** 2 for value in y_values)
+    generic_regression = _linear_fit(x_values, y_values)
+    regression = None
+    if generic_regression is not None:
         regression = {
-            "slope_ms_per_bar": slope,
-            "intercept_ms": intercept,
-            "r_squared": 1.0 - residual_sum / total_sum if total_sum > 0.0 else 1.0,
+            "slope_ms_per_bar": generic_regression["slope"],
+            "intercept_ms": generic_regression["intercept_ms"],
+            "r_squared": generic_regression["r_squared"],
         }
+
+    pressure_plots = [
+        _build_axis_plot(
+            [
+                trial
+                for trial in trials
+                if trial["pulse_duration_ms"] == pulse_duration_ms
+            ],
+            light_barrier=barriers[0],
+            axis="pressure",
+            fixed_value=pulse_duration_ms,
+        )
+        for pulse_duration_ms in sorted(
+            {trial["pulse_duration_ms"] for trial in trials}
+        )
+    ]
+    pulse_duration_plots = [
+        _build_axis_plot(
+            [trial for trial in trials if trial["pressure_mbar"] == pressure_mbar],
+            light_barrier=barriers[0],
+            axis="pulse_duration",
+            fixed_value=pressure_mbar,
+        )
+        for pressure_mbar in sorted({trial["pressure_mbar"] for trial in trials})
+    ]
     return {
         "light_barrier": barriers[0],
         "trials": trials,
         "groups": groups,
         "regression": regression,
+        "pressure_plots": pressure_plots,
+        "pulse_duration_plots": pulse_duration_plots,
         "skipped": skipped,
     }
+
+
+def analyze_recordings_for_comparison(
+    directories: list[Path],
+    progress: Any | None = None,
+) -> dict[str, Any]:
+    """Analyze unmarked recordings independently before building a comparison."""
+    ready: list[Path] = []
+    skipped: list[dict[str, str]] = []
+    newly_analyzed = 0
+    reused_results = 0
+    unique_directories = list(
+        dict.fromkeys(Path(directory).resolve() for directory in directories)
+    )
+    for position, directory in enumerate(unique_directories, start=1):
+        if progress is not None:
+            progress(position, len(unique_directories), directory.name)
+        try:
+            document = json.loads(
+                (directory / "session.json").read_text(encoding="utf-8")
+            )
+            evaluation = document.get("evaluation", {})
+            if evaluation.get("delay_ms") is None:
+                document, frames = load_recording(directory)
+                result = analyze_recording_movement(directory, frames)
+                update_movement_evaluation(
+                    directory,
+                    int(result["frame_index"]),
+                    method="automatic_optical_flow",
+                    analysis_details=result,
+                )
+                newly_analyzed += 1
+            else:
+                reused_results += 1
+            ready.append(directory)
+        except Exception as exc:
+            skipped.append(
+                {"directory": str(directory), "reason": str(exc) or type(exc).__name__}
+            )
+    if not ready:
+        details = "; ".join(
+            f"{Path(item['directory']).name}: {item['reason']}" for item in skipped
+        )
+        raise ValueError(
+            "No selected recording could be analyzed"
+            + (f": {details}" if details else "")
+        )
+    comparison = build_pressure_delay_comparison(ready)
+    comparison["skipped"].extend(skipped)
+    comparison["newly_analyzed_count"] = newly_analyzed
+    comparison["reused_result_count"] = reused_results
+    return comparison
 
 
 class MovementAnalysisWorker(QThread):
@@ -471,6 +677,33 @@ class MovementAnalysisWorker(QThread):
             self.analysis_failed.emit(str(exc) or type(exc).__name__)
             return
         self.result_ready.emit(result)
+
+
+class ComparisonAnalysisWorker(QThread):
+    result_ready = pyqtSignal(object)
+    analysis_failed = pyqtSignal(str)
+    progress_changed = pyqtSignal(int, int, str)
+
+    def __init__(
+        self,
+        directories: list[Path],
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.directories = [Path(directory) for directory in directories]
+
+    def run(self) -> None:
+        try:
+            comparison = analyze_recordings_for_comparison(
+                self.directories,
+                lambda current, total, name: self.progress_changed.emit(
+                    current, total, name
+                ),
+            )
+        except Exception as exc:
+            self.analysis_failed.emit(str(exc) or type(exc).__name__)
+            return
+        self.result_ready.emit(comparison)
 
 
 class RecordingFolderSelectionDialog(QDialog):
@@ -532,7 +765,36 @@ class PressureDelayPlotWidget(QWidget):
     def __init__(self, comparison: dict[str, Any], parent: QWidget | None = None):
         super().__init__(parent)
         self.comparison = comparison
-        self.setMinimumSize(760, 480)
+        self.setFixedSize(800, 520)
+
+    def save_to_file(self, path: Path) -> None:
+        destination = Path(path)
+        suffix = destination.suffix.casefold()
+        if suffix == ".svg":
+            generator = QSvgGenerator()
+            generator.setFileName(str(destination))
+            generator.setSize(self.size())
+            generator.setViewBox(self.rect())
+            generator.setTitle(str(self.comparison["title"]))
+            generator.setDescription(
+                "Pressure-delay calibration comparison generated by BiBaZu"
+            )
+            painter = QPainter(generator)
+            self.render(painter)
+            painter.end()
+            if not destination.is_file():
+                raise OSError(f"Could not save SVG to {destination}")
+            return
+        if suffix == ".png":
+            image = QImage(self.size(), QImage.Format.Format_ARGB32)
+            image.fill(QColor("#ffffff"))
+            painter = QPainter(image)
+            self.render(painter)
+            painter.end()
+            if not image.save(str(destination), "PNG"):
+                raise OSError(f"Could not save PNG to {destination}")
+            return
+        raise ValueError("Plot filename must end in .svg or .png")
 
     def paintEvent(self, _event: object) -> None:
         painter = QPainter(self)
@@ -551,7 +813,8 @@ class PressureDelayPlotWidget(QWidget):
             max(1.0, self.width() - left - right),
             max(1.0, self.height() - top - bottom),
         )
-        x_values = [float(item["pressure_bar"]) for item in trials]
+        x_key = str(self.comparison["x_key"])
+        x_values = [float(item[x_key]) for item in trials]
         y_values = [float(item["delay_ms"]) for item in trials]
         for group in groups:
             deviation = group.get("standard_deviation_ms")
@@ -609,7 +872,7 @@ class PressureDelayPlotWidget(QWidget):
         painter.drawText(
             QRectF(plot.left(), self.height() - 42, plot.width(), 24),
             Qt.AlignmentFlag.AlignCenter,
-            "Pressure [bar]",
+            str(self.comparison["x_label"]),
         )
         painter.save()
         painter.translate(20, plot.center().y())
@@ -625,7 +888,7 @@ class PressureDelayPlotWidget(QWidget):
         painter.setBrush(QColor(107, 114, 128, 130))
         for trial in trials:
             point = QPointF(
-                map_x(float(trial["pressure_bar"])),
+                map_x(float(trial[x_key])),
                 map_y(float(trial["delay_ms"])),
             )
             painter.drawEllipse(point, 4.0, 4.0)
@@ -633,7 +896,7 @@ class PressureDelayPlotWidget(QWidget):
         painter.setPen(QPen(QColor("#dc2626"), 2.0))
         painter.setBrush(QColor("#f97316"))
         for group in groups:
-            x = map_x(float(group["pressure_bar"]))
+            x = map_x(float(group["x_value"]))
             mean = float(group["mean_delay_ms"])
             deviation = group.get("standard_deviation_ms")
             if deviation is not None:
@@ -644,9 +907,10 @@ class PressureDelayPlotWidget(QWidget):
                 painter.drawLine(QPointF(x - 7, lower), QPointF(x + 7, lower))
             painter.drawEllipse(QPointF(x, map_y(mean)), 5.5, 5.5)
 
-        model_text = "Linear model unavailable (two pressure levels required)"
+        model_variable = str(self.comparison["model_variable"])
+        model_text = f"Linear model unavailable (two {model_variable} levels required)"
         if regression is not None:
-            slope = float(regression["slope_ms_per_bar"])
+            slope = float(regression["slope"])
             intercept = float(regression["intercept_ms"])
             painter.setPen(QPen(QColor("#2563eb"), 2.0))
             painter.drawLine(
@@ -654,14 +918,15 @@ class PressureDelayPlotWidget(QWidget):
                 QPointF(map_x(x_max), map_y(slope * x_max + intercept)),
             )
             model_text = (
-                f"Linear model: delay = {slope:+.3f} ms/bar × pressure "
+                f"Linear model: delay = {slope:+.3f} "
+                f"{self.comparison['slope_unit']} × {model_variable} "
                 f"{intercept:+.3f} ms · R² = {float(regression['r_squared']):.3f}"
             )
         painter.setPen(QColor("#111827"))
         painter.drawText(
             QRectF(plot.left(), 8, plot.width(), 25),
             Qt.AlignmentFlag.AlignCenter,
-            f"Pressure-delay comparison · LB {self.comparison['light_barrier']}",
+            str(self.comparison["title"]),
         )
         painter.setPen(QColor("#2563eb"))
         painter.drawText(
@@ -671,18 +936,111 @@ class PressureDelayPlotWidget(QWidget):
         )
 
 
+class ComparisonPlotCard(QWidget):
+    def __init__(self, comparison: dict[str, Any], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.comparison = comparison
+        self.setFixedSize(1060, 548)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.plot = PressureDelayPlotWidget(comparison)
+        layout.addWidget(self.plot)
+
+        details = QWidget()
+        details.setFixedWidth(224)
+        detail_layout = QVBoxLayout(details)
+        heading = QLabel("Suggested fixed delay")
+        heading.setStyleSheet("font-weight: 600; font-size: 14px;")
+        detail_layout.addWidget(heading)
+        value = QLabel(f"{float(comparison['suggested_delay_ms']):.2f} ms")
+        value.setStyleSheet("font-weight: 700; font-size: 28px; color: #2563eb;")
+        detail_layout.addWidget(value)
+        detail_layout.addWidget(QLabel(str(comparison["fixed_label"])))
+
+        x_min = float(comparison["x_min"])
+        x_max = float(comparison["x_max"])
+        if comparison["axis"] == "pressure":
+            scope = f"Pressure range: {x_min:g}–{x_max:g} bar"
+        else:
+            scope = f"Impulse range: {x_min:g}–{x_max:g} ms"
+        scope_label = QLabel(scope)
+        scope_label.setWordWrap(True)
+        detail_layout.addWidget(scope_label)
+
+        counts = QLabel(
+            f"{len(comparison['trials'])} trials at "
+            f"{len(comparison['groups'])} setpoints"
+        )
+        counts.setWordWrap(True)
+        detail_layout.addWidget(counts)
+        method = QLabel(
+            "Recommendation: equal-weighted mean of the mean delay at each "
+            "x-axis setpoint."
+        )
+        method.setWordWrap(True)
+        method.setStyleSheet("color: #4b5563;")
+        detail_layout.addWidget(method)
+        detail_layout.addStretch(1)
+
+        save_svg = QPushButton("Save as SVG…")
+        save_svg.clicked.connect(lambda: self._save("svg"))
+        detail_layout.addWidget(save_svg)
+        save_png = QPushButton("Save as PNG…")
+        save_png.clicked.connect(lambda: self._save("png"))
+        detail_layout.addWidget(save_png)
+        self.save_status = QLabel("")
+        self.save_status.setWordWrap(True)
+        detail_layout.addWidget(self.save_status)
+        layout.addWidget(details)
+
+    def _save(self, extension: str) -> None:
+        first_directory = Path(self.comparison["trials"][0]["directory"])
+        default_path = first_directory.parent / (
+            f"{self.comparison['export_stem']}.{extension}"
+        )
+        file_filter = (
+            "Scalable Vector Graphics (*.svg)"
+            if extension == "svg"
+            else "PNG image (*.png)"
+        )
+        selected, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            f"Save plot as {extension.upper()}",
+            str(default_path),
+            file_filter,
+        )
+        if not selected:
+            return
+        destination = Path(selected)
+        if destination.suffix.casefold() != f".{extension}":
+            destination = destination.with_suffix(f".{extension}")
+        try:
+            self.plot.save_to_file(destination)
+        except Exception as exc:
+            QMessageBox.critical(self, "Save plot", str(exc))
+            return
+        self.save_status.setText(f"Saved: {destination.name}")
+        self.save_status.setToolTip(str(destination))
+
+
 class PressureDelayPlotDialog(QDialog):
     def __init__(self, comparison: dict[str, Any], parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Pressure-delay comparison")
-        self.resize(920, 650)
+        self.resize(1180, 680)
         layout = QVBoxLayout(self)
-        groups = comparison["groups"]
         skipped = comparison["skipped"]
+        newly_analyzed = int(comparison.get("newly_analyzed_count", 0))
+        reused = int(
+            comparison.get("reused_result_count", len(comparison["trials"]))
+        )
         summary = QLabel(
-            f"{len(comparison['trials'])} valid trials at {len(groups)} pressure "
-            f"levels · error bars show ±1 standard deviation for more than "
-            f"3 trials per pressure"
+            f"{len(comparison['trials'])} valid trials at "
+            f"{len(comparison['pressure_plots'])} impulse durations and "
+            f"{len(comparison['pulse_duration_plots'])} pressure levels · "
+            f"error bars show ±1 standard deviation for more than 3 trials at "
+            f"an x-axis value · {newly_analyzed} newly analyzed, "
+            f"{reused} saved results reused"
             + (f" · {len(skipped)} folders skipped" if skipped else "")
         )
         summary.setWordWrap(True)
@@ -691,12 +1049,43 @@ class PressureDelayPlotDialog(QDialog):
                 "\n".join(
                     f"{item['directory']}: {item['reason']}" for item in skipped
                 )
-            )
+        )
         layout.addWidget(summary)
-        layout.addWidget(PressureDelayPlotWidget(comparison), 1)
+        instruction = QLabel(
+            "Use the tabs to choose the x axis, then scroll horizontally through "
+            "the fixed-condition plots. Each plot can be saved independently."
+        )
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
+        tabs = QTabWidget()
+        tabs.addTab(
+            self._plot_gallery(comparison["pressure_plots"]),
+            f"Pressure on X ({len(comparison['pressure_plots'])})",
+        )
+        tabs.addTab(
+            self._plot_gallery(comparison["pulse_duration_plots"]),
+            f"Impulse duration on X ({len(comparison['pulse_duration_plots'])})",
+        )
+        layout.addWidget(tabs, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    @staticmethod
+    def _plot_gallery(plots: list[dict[str, Any]]) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        gallery = QWidget()
+        gallery_layout = QHBoxLayout(gallery)
+        gallery_layout.setContentsMargins(0, 0, 0, 0)
+        gallery_layout.setSpacing(12)
+        for plot in plots:
+            gallery_layout.addWidget(ComparisonPlotCard(plot))
+        gallery.adjustSize()
+        scroll.setWidget(gallery)
+        return scroll
 
 
 @dataclass(slots=True)
@@ -1187,14 +1576,24 @@ class RecordingSession(QObject):
         camera_info: dict[str, Any],
         parent: QObject | None = None,
         measurement_settings: dict[str, Any] | None = None,
+        session_name: str | None = None,
     ) -> None:
         super().__init__(parent)
         started = datetime.now(timezone.utc)
         self.measurement_settings = dict(measurement_settings or {})
-        base_id = started.astimezone().strftime(f"%Y%m%d_%H%M%S_LB{int(light_barrier)}")
+        local_started = started.astimezone()
+        name_parts = [f"LB{int(light_barrier)}"]
         pressure_mbar = self.measurement_settings.get("pressure_mbar")
         if pressure_mbar is not None:
-            base_id += f"_{int(round(float(pressure_mbar)))}mbar"
+            name_parts.append(f"{int(round(float(pressure_mbar)))}mbar")
+        pulse_duration_ms = self.measurement_settings.get("pulse_duration_ms")
+        if pulse_duration_ms is not None:
+            name_parts.append(f"{int(round(float(pulse_duration_ms)))}ms")
+        name_parts.extend(
+            [local_started.strftime("%H%M%S"), local_started.strftime("%d%m%Y")]
+        )
+        custom_name = validate_recording_folder_name(session_name or "")
+        base_id = custom_name or "_".join(name_parts)
         self.output_root = Path(output_root)
         self.session_id, self.directory = self._unique_directory(base_id)
         self.directory.mkdir(parents=True, exist_ok=False)
@@ -1564,11 +1963,50 @@ class PressureDelayTab(QWidget):
     status_message = pyqtSignal(str)
 
     def __init__(
-        self, parent: QWidget | None = None, ads_controller: Any | None = None
+        self,
+        parent: QWidget | None = None,
+        ads_controller: Any | None = None,
+        *,
+        fixed_light_barrier: int | None = None,
+        fixed_post_trigger_ms: int | None = None,
+        initial_post_trigger_ms: int | None = None,
+        initial_exposure_us: float | None = None,
+        record_on_trigger: bool = False,
+        review_only: bool = False,
     ) -> None:
         super().__init__(parent)
+        if (
+            fixed_light_barrier is not None
+            and not 1 <= int(fixed_light_barrier) <= 8
+        ):
+            raise ValueError("fixed_light_barrier must be 1..8")
+        if (
+            fixed_post_trigger_ms is not None
+            and not 10 <= int(fixed_post_trigger_ms) <= 5000
+        ):
+            raise ValueError("fixed_post_trigger_ms must be 10..5000")
+        if (
+            initial_post_trigger_ms is not None
+            and not 10 <= int(initial_post_trigger_ms) <= 5000
+        ):
+            raise ValueError("initial_post_trigger_ms must be 10..5000")
         self.settings = QSettings("LeibnizUniversitaetHannover", "BiBaZuConveyorSetup")
         self.ads = ads_controller
+        self.fixed_light_barrier = (
+            None if fixed_light_barrier is None else int(fixed_light_barrier)
+        )
+        self.fixed_post_trigger_ms = (
+            None if fixed_post_trigger_ms is None else int(fixed_post_trigger_ms)
+        )
+        self.initial_post_trigger_ms = (
+            None if initial_post_trigger_ms is None else int(initial_post_trigger_ms)
+        )
+        self.initial_exposure_us = (
+            None if initial_exposure_us is None else float(initial_exposure_us)
+        )
+        self.record_on_trigger = bool(record_on_trigger)
+        self.review_only = bool(review_only)
+        self._initial_exposure_pending = initial_exposure_us is not None
         self.camera = UsbHighSpeedCamera(self)
         self.camera_connected = False
         self.ads_connected = False
@@ -1579,9 +2017,13 @@ class PressureDelayTab(QWidget):
         self.loaded_directory: Path | None = None
         self.loaded_document: dict[str, Any] | None = None
         self.loaded_frames: list[dict[str, Any]] = []
+        self.review_display_active = False
         self.analysis_worker: MovementAnalysisWorker | None = None
         self.analysis_in_progress = False
         self.analysis_result: dict[str, Any] | None = None
+        self.comparison_worker: ComparisonAnalysisWorker | None = None
+        self.comparison_in_progress = False
+        self.pending_comparison: dict[str, Any] | None = None
         self._exposure_edit_dirty = False
         self._updating_exposure_input = False
         self.fast_response_active = False
@@ -1591,6 +2033,7 @@ class PressureDelayTab(QWidget):
         self._pulse_array_loaded: int | None = None
         self._build_ui()
         self._connect_signals()
+        self._selected_barrier_changed(self.barrier_input.currentIndex())
         self._update_controls()
 
     def _build_ui(self) -> None:
@@ -1610,7 +2053,9 @@ class PressureDelayTab(QWidget):
         self.exposure_input.setDecimals(1)
         self.exposure_input.setSuffix(" µs")
         self.exposure_input.setValue(
-            float(self.settings.value("pressure_delay/exposure_us", 4000.0))
+            self.initial_exposure_us
+            if self.initial_exposure_us is not None
+            else float(self.settings.value("pressure_delay/exposure_us", 4000.0))
         )
         self.apply_exposure_button = QPushButton("Apply Exposure")
         camera_layout.addWidget(QLabel("State"), 0, 0)
@@ -1636,16 +2081,26 @@ class PressureDelayTab(QWidget):
         self.barrier_input = QComboBox()
         for sensor in range(1, 9):
             self.barrier_input.addItem(f"Light barrier {sensor}", sensor)
+        if self.fixed_light_barrier is not None:
+            self.barrier_input.setCurrentIndex(self.fixed_light_barrier - 1)
+        self.barrier_input.setToolTip(
+            "The stop trigger can be changed between recordings. If fastest-"
+            "response settings are active, the previous PLC setup is restored first."
+        )
         self.post_trigger_input = QSpinBox()
         self.post_trigger_input.setRange(10, 5000)
         self.post_trigger_input.setSuffix(" ms")
-        self.post_trigger_input.setValue(
-            int(
+        if self.fixed_post_trigger_ms is not None:
+            post_trigger_ms = self.fixed_post_trigger_ms
+        elif self.initial_post_trigger_ms is not None:
+            post_trigger_ms = self.initial_post_trigger_ms
+        else:
+            post_trigger_ms = int(
                 self.settings.value(
                     "pressure_delay/post_trigger_ms", DEFAULT_POST_TRIGGER_MS
                 )
             )
-        )
+        self.post_trigger_input.setValue(post_trigger_ms)
         self.pressure_array_label = QLabel("Array 1 (LB 1/2)")
         self.pressure_input = QSpinBox()
         self.pressure_input.setRange(PRESSURE_MIN_MBAR, PRESSURE_MAX_MBAR)
@@ -1695,20 +2150,32 @@ class PressureDelayTab(QWidget):
         self.output_input = QLineEdit(
             str(self.settings.value("pressure_delay/output", str(default_output)))
         )
+        self.session_name_input = QLineEdit(
+            str(self.settings.value("pressure_delay/session_name", ""))
+        )
+        self.session_name_input.setMaxLength(120)
+        self.session_name_input.setPlaceholderText("Automatic name when empty")
+        self.session_name_input.setToolTip(
+            "Name of the new recording subfolder. Existing names receive a numeric suffix."
+        )
         output_row = QWidget()
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
         output_layout.addWidget(self.output_input, 1)
         self.browse_output_button = QPushButton("Browse")
         output_layout.addWidget(self.browse_output_button)
-        recording_layout.addRow("Stop trigger", self.barrier_input)
-        recording_layout.addRow("Post-trigger", self.post_trigger_input)
+        self.trigger_label = QLabel("Stop trigger")
+        recording_layout.addRow(self.trigger_label, self.barrier_input)
+        self.post_trigger_label = QLabel("Post-trigger")
+        recording_layout.addRow(self.post_trigger_label, self.post_trigger_input)
         recording_layout.addRow("Pressure array", self.pressure_array_label)
         recording_layout.addRow("Test pressure", pressure_row)
         recording_layout.addRow("Pulse duration", pulse_duration_row)
         recording_layout.addRow("Fast reaction", fast_response_row)
         recording_layout.addRow("PLC setup", self.plc_setup_state_label)
+        recording_layout.addRow("Recording folder name", self.session_name_input)
         recording_layout.addRow("Output", output_row)
+        recording_layout.setRowVisible(self.session_name_input, self.review_only)
         buttons = QWidget()
         button_layout = QHBoxLayout(buttons)
         button_layout.setContentsMargins(0, 0, 0, 0)
@@ -1757,6 +2224,26 @@ class PressureDelayTab(QWidget):
         content.setColumnStretch(1, 2)
         layout.addLayout(content)
 
+        if self.review_only:
+            self.trigger_label.setText("Start trigger")
+            for field in (
+                self.pressure_array_label,
+                pressure_row,
+                pulse_duration_row,
+                fast_response_row,
+                self.plc_setup_state_label,
+            ):
+                recording_layout.setRowVisible(field, False)
+            self.post_trigger_label.setText("Recording duration")
+            self.record_button.setText("Arm Recording for LB4")
+            self.record_button.setToolTip(
+                "Wait for light barrier 4, then save frames for the selected duration"
+            )
+            self.analyze_movement_button.setVisible(False)
+            self.compare_recordings_button.setVisible(False)
+            self.mark_movement_button.setVisible(False)
+            self.result_label.setVisible(False)
+
     def _connect_signals(self) -> None:
         self.connect_button.clicked.connect(self.connect_camera)
         self.disconnect_button.clicked.connect(self.camera.disconnect_camera)
@@ -1803,6 +2290,7 @@ class PressureDelayTab(QWidget):
     def connect_camera(self) -> None:
         if self.camera.running:
             return
+        self.review_display_active = False
         self.camera_state_label.setText("Discovering via bgapi2_usb.cti …")
         self.camera.connect_camera(DEFAULT_CAMERA_SERIAL)
         self._update_controls()
@@ -1835,7 +2323,20 @@ class PressureDelayTab(QWidget):
             f"{info.get('pixel_format', '?')} · {info.get('stream_fps', 0.0):.1f} FPS"
             f" · Line0 {trigger_status}"
         )
-        if not self._exposure_edit_dirty and not self.exposure_input.hasFocus():
+        if self._initial_exposure_pending:
+            self._updating_exposure_input = True
+            try:
+                self.exposure_input.setRange(
+                    float(info.get("exposure_min_us", 20.0)),
+                    float(info.get("exposure_max_us", 1_000_000.0)),
+                )
+                self.exposure_input.setValue(float(self.initial_exposure_us))
+            finally:
+                self._updating_exposure_input = False
+            self._initial_exposure_pending = False
+            self._exposure_edit_dirty = True
+            self.camera.set_exposure(self.exposure_input.value())
+        elif not self._exposure_edit_dirty and not self.exposure_input.hasFocus():
             self._updating_exposure_input = True
             try:
                 self.exposure_input.setRange(
@@ -1876,7 +2377,7 @@ class PressureDelayTab(QWidget):
 
     @pyqtSlot(object)
     def _show_live_frame(self, packet: object) -> None:
-        if not isinstance(packet, FramePacket):
+        if self.review_display_active or not isinstance(packet, FramePacket):
             return
         try:
             rgb = frame_to_rgb(packet.image, packet.pixel_format)
@@ -1921,6 +2422,14 @@ class PressureDelayTab(QWidget):
         )
         self._pressure_array_loaded = None
         self._pulse_array_loaded = None
+        if (
+            self.fast_response_saved_values
+            and self.ads_connected
+            and not self.fast_response_pending
+            and self.session is None
+        ):
+            self._restore_previous_plc_setup()
+            return
         self._sync_pressure_from_status()
         self._render_plc_setup_state()
         self._update_controls()
@@ -2145,6 +2654,7 @@ class PressureDelayTab(QWidget):
             self._pressure_array_loaded = None
             self._pulse_array_loaded = None
             self.status_message.emit("Previous PLC timing and pressure restored")
+            self._sync_pressure_from_status()
         elif context.startswith(PRESSURE_APPLY_CONTEXT_PREFIX):
             self.fast_response_pending = ""
             values = self._selected_array_status()
@@ -2252,6 +2762,8 @@ class PressureDelayTab(QWidget):
             event_host_ns,
             int(status.get("ads_roundtrip_ns", 0)),
         )
+        if self.record_on_trigger:
+            self.camera.set_recording(True)
         self.recording_state_label.setText(
             f"LB {sensor} triggered; recording "
             f"{self.session.post_trigger_ms} ms post-roll"
@@ -2267,6 +2779,8 @@ class PressureDelayTab(QWidget):
             int(event.get("event_id", LINE0_RISING_EVENT_ID)),
         )
         if accepted:
+            if self.record_on_trigger:
+                self.camera.set_recording(True)
             self.recording_state_label.setText(
                 f"LB {self.session.light_barrier} hardware edge captured; recording "
                 f"{self.session.post_trigger_ms} ms post-roll"
@@ -2303,6 +2817,7 @@ class PressureDelayTab(QWidget):
             )
             return
         output = Path(self.output_input.text()).expanduser()
+        session_name = self.session_name_input.text() if self.review_only else ""
         self.settings.setValue("pressure_delay/output", str(output))
         self.settings.setValue(
             "pressure_delay/post_trigger_ms", self.post_trigger_input.value()
@@ -2315,19 +2830,24 @@ class PressureDelayTab(QWidget):
                 self.camera_status,
                 self,
                 measurement_settings=self._measurement_settings_snapshot(),
+                session_name=session_name,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Recording error", str(exc))
             self.session = None
             return
+        self.settings.setValue("pressure_delay/session_name", session_name.strip())
+        self.review_display_active = False
         self.trigger_baseline_count = int(counts[sensor - 1])
         self.session.auto_stop_requested.connect(
             lambda: self.stop_recording("post_trigger_complete")
         )
         self.session.failed.connect(self._session_failed)
         self.session.finished.connect(self._session_finished)
-        self.camera.set_recording(True)
-        self.recording_state_label.setText(f"Recording; waiting for LB {sensor}")
+        if not self.record_on_trigger:
+            self.camera.set_recording(True)
+        state = "Armed" if self.record_on_trigger else "Recording"
+        self.recording_state_label.setText(f"{state}; waiting for LB {sensor}")
         self.frame_count_label.setText("0 frames")
         self._update_controls()
 
@@ -2370,6 +2890,7 @@ class PressureDelayTab(QWidget):
             (session is None or session.recording_complete)
             and self.loaded_document is not None
             and self.loaded_document.get("trigger", {}).get("detected")
+            and not self.record_on_trigger
         ):
             self._analyze_movement()
 
@@ -2384,6 +2905,8 @@ class PressureDelayTab(QWidget):
                 QMessageBox.critical(self, "Open recording", str(exc))
 
     def _compare_recordings(self) -> None:
+        if self.comparison_in_progress or self.analysis_in_progress:
+            return
         selector = RecordingFolderSelectionDialog(
             Path(self.output_input.text()), self
         )
@@ -2397,18 +2920,55 @@ class PressureDelayTab(QWidget):
                 "No recording folders containing session.json were selected.",
             )
             return
-        try:
-            comparison = build_pressure_delay_comparison(directories)
-        except Exception as exc:
-            QMessageBox.warning(self, "Compare recordings", str(exc))
-            return
-        PressureDelayPlotDialog(comparison, self).exec()
+        self.comparison_in_progress = True
+        self.pending_comparison = None
+        worker = ComparisonAnalysisWorker(directories, self)
+        worker.progress_changed.connect(self._comparison_progress)
+        worker.result_ready.connect(self._comparison_ready)
+        worker.analysis_failed.connect(self._comparison_failed)
+        worker.finished.connect(self._comparison_finished)
+        self.comparison_worker = worker
+        self.compare_recordings_button.setText("Analyzing recordings …")
+        worker.start()
+        self._update_controls()
+
+    @pyqtSlot(int, int, str)
+    def _comparison_progress(self, current: int, total: int, name: str) -> None:
+        self.compare_recordings_button.setText(f"Analyzing {current}/{total} …")
+        self.status_message.emit(
+            f"Analyzing recording {current}/{total}: {name}"
+        )
+
+    @pyqtSlot(object)
+    def _comparison_ready(self, comparison: object) -> None:
+        if isinstance(comparison, dict):
+            self.pending_comparison = dict(comparison)
+
+    @pyqtSlot(str)
+    def _comparison_failed(self, message: str) -> None:
+        self.pending_comparison = None
+        QMessageBox.warning(self, "Compare recordings", message)
+
+    @pyqtSlot()
+    def _comparison_finished(self) -> None:
+        worker = self.comparison_worker
+        self.comparison_worker = None
+        self.comparison_in_progress = False
+        self.compare_recordings_button.setText("Compare Recordings…")
+        if worker is not None:
+            worker.deleteLater()
+        comparison = self.pending_comparison
+        self.pending_comparison = None
+        self._update_controls()
+        if comparison is not None:
+            PressureDelayPlotDialog(comparison, self).exec()
 
     def load_recording(self, directory: Path) -> None:
         document, frames = load_recording(directory)
         self.loaded_directory = Path(directory)
         self.loaded_document = document
         self.loaded_frames = frames
+        self.review_display_active = bool(frames)
         self.analysis_result = None
         self.frame_slider.setRange(0, max(0, len(frames) - 1))
         evaluation = document.get("evaluation", {})
@@ -2520,6 +3080,7 @@ class PressureDelayTab(QWidget):
     def _show_review_frame(self, index: int) -> None:
         if not self.loaded_frames or self.loaded_directory is None:
             return
+        self.review_display_active = True
         index = max(0, min(int(index), len(self.loaded_frames) - 1))
         frame = self.loaded_frames[index]
         pixmap = QPixmap(str(self.loaded_directory / frame["filename"]))
@@ -2566,7 +3127,7 @@ class PressureDelayTab(QWidget):
 
     def _update_controls(self, finalizing: bool = False) -> None:
         recording = self.session is not None
-        analyzing = self.analysis_in_progress
+        analyzing = self.analysis_in_progress or self.comparison_in_progress
         ready = (
             self.camera_connected
             and self.ads_connected
@@ -2592,9 +3153,10 @@ class PressureDelayTab(QWidget):
         self.record_button.setEnabled(ready)
         self.stop_button.setEnabled(recording and not finalizing)
         self.barrier_input.setEnabled(
-            not recording
+            self.fixed_light_barrier is None
+            and not recording
             and not self.fast_response_pending
-            and not self.fast_response_saved_values
+            and (not self.fast_response_saved_values or self.ads_connected)
         )
         self.pressure_input.setEnabled(plc_ready)
         self.apply_pressure_button.setEnabled(plc_ready)
@@ -2608,7 +3170,10 @@ class PressureDelayTab(QWidget):
         self.restore_plc_setup_button.setEnabled(
             plc_ready and bool(self.fast_response_saved_values)
         )
-        self.post_trigger_input.setEnabled(not recording)
+        self.post_trigger_input.setEnabled(
+            self.fixed_post_trigger_ms is None and not recording
+        )
+        self.session_name_input.setEnabled(not recording)
         self.output_input.setEnabled(not recording)
         self.browse_output_button.setEnabled(not recording)
         self.open_button.setEnabled(not recording and not analyzing)
@@ -2622,12 +3187,16 @@ class PressureDelayTab(QWidget):
         current_has_time = loaded and self.loaded_frames[self.frame_slider.value()].get(
             "relative_to_light_barrier_ms"
         ) not in {"", None}
-        self.analyze_movement_button.setEnabled(current_has_time)
+        self.analyze_movement_button.setEnabled(
+            current_has_time and not self.record_on_trigger
+        )
         self.mark_movement_button.setEnabled(current_has_time)
 
     def shutdown(self) -> None:
         if self.analysis_worker is not None and self.analysis_worker.isRunning():
             self.analysis_worker.wait(5000)
+        if self.comparison_worker is not None and self.comparison_worker.isRunning():
+            self.comparison_worker.wait(30000)
         if self.session is not None:
             self.camera.set_recording(False)
             self.session.stop("application_close")
