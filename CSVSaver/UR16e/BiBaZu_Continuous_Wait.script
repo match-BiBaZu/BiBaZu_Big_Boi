@@ -6,7 +6,7 @@ def BiBaZu_Continuous_Wait():
   end
 
   local requested_angle = read_input_integer_register(42)
-  local valid = requested_angle >= 155 and requested_angle <= 210
+  local valid = requested_angle >= 0 and requested_angle <= 210
 
   if valid:
     global angle = requested_angle

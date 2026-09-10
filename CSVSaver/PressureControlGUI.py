@@ -3146,6 +3146,7 @@ class PressureControlWindow(QMainWindow):
         self.profile_directory = PROFILE_DIR.resolve()
         self.profile_path: Path | None = None
         self.profile_title: str | None = None
+        self._saved_profile_transition_key: tuple | None = None
         self.conveyor_calibration = {
             "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
             "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
@@ -3923,7 +3924,6 @@ class PressureControlWindow(QMainWindow):
                 self.statusBar().showMessage("No calibratable transition selected")
                 return
             self._apply_roadmap_transition(dialog.selected_transition)
-            self.profile_title = None
         except (OSError, KeyError, RuntimeError, TypeError, ValueError) as exc:
             QMessageBox.critical(self, "Roadmap Load Failed", str(exc))
 
@@ -3932,6 +3932,7 @@ class PressureControlWindow(QMainWindow):
     ) -> None:
         self.selected_roadmap_transition = selection
         transition = selection.transition
+        self.profile_title = transition.display_name
         angle = (
             ("no single target angle" if transition.is_multi_reorientation else "angle not saved")
             if transition.signed_angle_deg is None
@@ -4271,9 +4272,22 @@ class PressureControlWindow(QMainWindow):
                 velocity_4,
             ])
 
+    @staticmethod
+    def _profile_transition_key(selection: SelectedRoadmapTransition | None) -> tuple | None:
+        if selection is None:
+            return None
+        transition = selection.transition
+        return (
+            selection.part_name, transition.source_pose_id, transition.target_pose_id,
+            transition.transition_kind, transition.actuation, transition.via_pose_ids,
+            transition.component_edge_ids,
+        )
+
     def save_profile(self) -> None:
         self.profile_directory.mkdir(parents=True, exist_ok=True)
-        if self.profile_path is not None:
+        transition_key = self._profile_transition_key(self.selected_roadmap_transition)
+        if (self.profile_path is not None
+                and transition_key == self._saved_profile_transition_key):
             default_name = self.profile_path.name
         elif self.selected_roadmap_transition is not None:
             default_name = (
@@ -4344,6 +4358,7 @@ class PressureControlWindow(QMainWindow):
             Path(path).write_text(json.dumps(profile, indent=2), encoding="utf-8")
             self.profile_path = Path(path).expanduser().resolve()
             self.profile_title = profile["title"]
+            self._saved_profile_transition_key = transition_key
             self.statusBar().showMessage(f"Profile saved: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Save Failed", str(exc))
@@ -4370,7 +4385,7 @@ class PressureControlWindow(QMainWindow):
                 profile.get("ur_ry_angle_deg", UR_ANGLE_DEFAULT_DEG)
             )
             if not UR_ANGLE_MIN_DEG <= ur_angle_deg <= UR_ANGLE_MAX_DEG:
-                raise ValueError("UR Ry angle must be between 15.5 and 21.0 degrees")
+                raise ValueError("UR Ry angle must be between 0.0 and 21.0 degrees")
 
             conveyor_enabled = bool(profile.get("conveyor_enabled", False))
             conveyor_reverse = bool(profile.get("conveyor_reverse", False))
@@ -4461,7 +4476,11 @@ class PressureControlWindow(QMainWindow):
             self.write_all_values()
             self.profile_path = Path(path).expanduser().resolve()
             title = profile.get("title")
-            self.profile_title = title if isinstance(title, str) else None
+            self.profile_title = (
+                saved_selection.transition.display_name if saved_selection is not None
+                else title if isinstance(title, str) else None
+            )
+            self._saved_profile_transition_key = self._profile_transition_key(saved_selection)
             self.statusBar().showMessage(f"Profile loaded: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Load Failed", str(exc))

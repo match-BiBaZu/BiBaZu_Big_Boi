@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -221,6 +222,67 @@ class ProfilePoseContextTests(unittest.TestCase):
                     self.assertEqual(saved["title"], saved["roadmap_transition"]["title"])
                     self.assertEqual(window.profile_title, saved["title"])
                     self.assertEqual(saved["roadmap_transition"]["target_pose_id"], target)
+            finally:
+                window.close()
+
+    def test_new_transition_replaces_save_suggestion_but_keeps_custom_name_for_same_transition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "roadmap.json"
+            path.write_text(json.dumps(self.multi_flip_payload()), encoding="utf-8")
+            document = gui.load_roadmap_document(path)
+            first = self.select_multi_flip_path(document, 2)
+            second = self.select_multi_flip_path(document, 5)
+            original = root / "my_first_calibration.json"
+            original.write_text(json.dumps({
+                "version": 12, "arrays": [], "title": "Stale transition title",
+                "roadmap_transition": gui.roadmap_transition_metadata(first),
+            }), encoding="utf-8")
+            original_contents = original.read_bytes()
+            with patch.object(gui.AdsController, "start"):
+                window = gui.PressureControlWindow()
+            try:
+                with patch.object(QFileDialog, "getOpenFileName", return_value=(str(original), "")):
+                    window.load_profile()
+                self.assertEqual(window.profile_title, first.transition.display_name)
+                with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")) as dialog:
+                    window.save_profile()
+                self.assertEqual(Path(dialog.call_args.args[2]), original.resolve())
+
+                # Exercise the real roadmap-loading path, which used to clear the title.
+                with (patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")),
+                      patch.object(gui, "RoadmapTransitionDialog") as chooser):
+                    chooser.return_value.exec.return_value = gui.QDialog.DialogCode.Accepted
+                    chooser.return_value.selected_transition = second
+                    window.load_pose_roadmap()
+                self.assertEqual(window.profile_title, second.transition.display_name)
+                for _ in range(2):  # Cancelling must not revert the new suggestion.
+                    with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")) as dialog:
+                        window.save_profile()
+                    self.assertEqual(Path(dialog.call_args.args[2]), root.resolve() / f"{second.profile_name_stem}.json")
+                self.assertEqual(original.read_bytes(), original_contents)
+
+                renamed = root / "my_second_calibration.json"
+                with patch.object(QFileDialog, "getSaveFileName", return_value=(str(renamed), "")):
+                    window.save_profile()
+                saved = json.loads(renamed.read_text(encoding="utf-8"))
+                self.assertEqual(saved["title"], second.transition.display_name)
+                self.assertEqual(saved["roadmap_transition"]["target_pose_id"], 5)
+                window._apply_roadmap_transition(second)
+                with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")) as dialog:
+                    window.save_profile()
+                self.assertEqual(Path(dialog.call_args.args[2]), renamed.resolve())
+
+                # A new action or part also changes the calibration identity.
+                alternatives = (
+                    replace(second, transition=replace(second.transition, actuation="free_z")),
+                    replace(second, part_name="AnotherPart"),
+                )
+                for selection in alternatives:
+                    window._apply_roadmap_transition(selection)
+                    with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")) as dialog:
+                        window.save_profile()
+                    self.assertEqual(Path(dialog.call_args.args[2]), root.resolve() / f"{selection.profile_name_stem}.json")
             finally:
                 window.close()
 

@@ -1,13 +1,17 @@
 # Continuous UR angle program
 
-`BiBaZu_Continuous.urp` accepts every integer angle from `155` through `210`
+`BiBaZu_Continuous.urp` accepts every integer angle from `0` through `210`
 on RTDE input register 42. The integer is interpreted as tenths of a degree.
 
 The target orientation in base RPY coordinates is:
 
 - Roll: -45 degrees
-- Pitch / Ry: requested angle, 15.5 through 21.0 degrees
+- Pitch / Ry: requested angle, 0.0 through 21.0 degrees
 - Yaw: -90 degrees
+
+Zero Ry is supported by the pressure-profile GUI and saved profiles. Load the
+updated `BiBaZu_Continuous.urp` and its matching scripts on the robot before
+applying angles below 15.5 degrees; older programs reject those commands.
 
 ## Re-teaching the rotation position
 

@@ -262,13 +262,28 @@ class AdsThreadTests(unittest.TestCase):
         self.assertTrue(connection.paused)
         self.assertTrue(connection.disconnected)
 
-    def test_ur_angle_range_is_15_5_through_21_degrees(self):
+    def test_ur_angle_range_is_zero_through_21_degrees(self):
+        self.assertEqual(ur_angle_control.angle_to_tenths(0.0), 0)
+        self.assertEqual(ur_angle_control.angle_to_tenths(0.1), 1)
         self.assertEqual(ur_angle_control.angle_to_tenths(15.5), 155)
         self.assertEqual(ur_angle_control.angle_to_tenths(21.0), 210)
         with self.assertRaises(ValueError):
-            ur_angle_control.angle_to_tenths(15.4)
+            ur_angle_control.angle_to_tenths(-0.01)
         with self.assertRaises(ValueError):
             ur_angle_control.angle_to_tenths(21.1)
+
+    def test_zero_ur_angle_is_sent_and_acknowledged_as_a_command(self):
+        connection = FakeUrRtdeConnection([
+            SimpleNamespace(output_int_register_41=180, output_int_register_42=7,
+                            output_int_register_43=1),
+            SimpleNamespace(output_int_register_41=0, output_int_register_42=8,
+                            output_int_register_43=3),
+        ])
+        client = ur_angle_control.UrAngleClient(
+            connection_factory=lambda _host, _port: connection
+        )
+        self.assertEqual(client.apply_angle(0.0), {"angle_deg": 0.0, "command": 8})
+        self.assertEqual(connection.sent, [(0, 8)])
 
     def test_continuous_ur_program_has_one_teachable_pose_and_computed_rpy(self):
         program_path = Path(__file__).parent / "UR16e" / "BiBaZu_Continuous.urp"
@@ -281,12 +296,14 @@ class AdsThreadTests(unittest.TestCase):
         cached_scripts = "\n".join(
             node.text or "" for node in root.findall(".//cachedContents")
         )
-        self.assertIn("requested_angle >= 155", cached_scripts)
+        self.assertIn("requested_angle >= 0", cached_scripts)
         self.assertIn("requested_angle <= 210", cached_scripts)
         self.assertIn("d2r(-45.0)", cached_scripts)
         self.assertIn("d2r(angle / 10.0)", cached_scripts)
         self.assertIn("d2r(-90.0)", cached_scripts)
         self.assertIn("rpy2rotvec", cached_scripts)
+        wait_script = program_path.with_name("BiBaZu_Continuous_Wait.script").read_text()
+        self.assertIn(wait_script, cached_scripts)
 
     def test_six_nozzles_are_grouped_by_flip_axis(self):
         rows = [gui.ArrayRow(index) for index in range(1, 5)]
@@ -1129,6 +1146,25 @@ class ProfileCompatibilityTests(unittest.TestCase):
             self.assertEqual(profile["sensor_6_to_array_3_spacing_mm"], 45.0)
             self.assertEqual(profile["sensor_8_to_array_4_spacing_mm"], 48.0)
             self.assertEqual(len(profile["light_barrier_inverted"]), 8)
+
+    def test_zero_ur_angle_round_trips_without_moving_robot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "zero_tilt.json"
+            with patch.object(gui.AdsController, "start"):
+                window = gui.PressureControlWindow()
+            try:
+                with patch.object(window.ur_angle, "apply_angle") as move:
+                    window.ur_angle_input.setValue(0.0)
+                    with patch.object(QFileDialog, "getSaveFileName", return_value=(str(path), "")):
+                        window.save_profile()
+                    self.assertEqual(json.loads(path.read_text())["ur_ry_angle_deg"], 0.0)
+                    window.ur_angle_input.setValue(18.0)
+                    with patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")):
+                        window.load_profile()
+                    self.assertEqual(window.ur_angle_input.value(), 0.0)
+                    move.assert_not_called()
+            finally:
+                window.close()
 
     def test_version_1_profile_loads_uncalibrated(self):
         result = self.load_profile({"version": 1, "arrays": []})

@@ -134,6 +134,17 @@ def test_machine_parameter_comparison_and_path_profile_composition(tmp_path: Pat
     assert combined.ur_ry_angle_deg == 18.5
 
 
+def test_zero_tilt_profile_loads_and_composes_as_an_explicit_angle(tmp_path: Path) -> None:
+    profile = _profile_for_array(tmp_path, 1, 120.0, 0.0)
+    assert profile.ur_ry_angle_deg == 0.0
+    comparison = compare_machine_parameters((profile,))
+    assert comparison.common_ur_angle_deg == 0.0
+    combined = compose_pressure_profiles(
+        (profile,), conveyor_speed_mm_per_sec=120.0, ur_ry_angle_deg=0.0
+    )
+    assert combined.ur_ry_angle_deg == 0.0
+
+
 def test_conflicting_parameters_require_override_and_duplicate_array_is_rejected(
     tmp_path: Path,
 ) -> None:

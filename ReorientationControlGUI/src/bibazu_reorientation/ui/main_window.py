@@ -281,7 +281,7 @@ class MainWindow(QMainWindow):
         hardware_layout.addLayout(yolo_row)
         self.use_ur_angle = QCheckBox("Apply")
         self.ur_angle_input = QDoubleSpinBox()
-        self.ur_angle_input.setRange(15.5, 21.0)
+        self.ur_angle_input.setRange(0.0, 21.0)
         self.ur_angle_input.setDecimals(1)
         self.ur_angle_input.setSingleStep(0.1)
         self.ur_angle_input.setSuffix(" °")

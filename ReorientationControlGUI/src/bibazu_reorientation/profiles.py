@@ -64,9 +64,9 @@ def compose_pressure_profiles(
     if not math.isfinite(conveyor_speed_mm_per_sec) or not 0 < conveyor_speed_mm_per_sec <= 5000:
         raise ValueError("Conveyor speed must be between 0 and 5000 mm/s")
     if ur_ry_angle_deg is not None and (
-        not math.isfinite(ur_ry_angle_deg) or not 15.5 <= ur_ry_angle_deg <= 21.0
+        not math.isfinite(ur_ry_angle_deg) or not 0.0 <= ur_ry_angle_deg <= 21.0
     ):
-        raise ValueError("UR Ry angle must be between 15.5 and 21.0 degrees")
+        raise ValueError("UR Ry angle must be between 0.0 and 21.0 degrees")
     if any(profile.conveyor_reverse for profile in profiles):
         raise ValueError("Roadmap execution does not support reverse conveyor motion")
     if any(
@@ -319,7 +319,7 @@ def load_pressure_profile(
             valid=_boolean(calibration_raw.get("valid"), "calibration.valid", False),
         )
     ur_angle = payload.get("ur_ry_angle_deg")
-    ur_angle_value = None if ur_angle is None else _number(ur_angle, "ur_ry_angle_deg", 15.5, 21.0)
+    ur_angle_value = None if ur_angle is None else _number(ur_angle, "ur_ry_angle_deg", 0.0, 21.0)
     profile = PressureProfile(
         source_path=source,
         source_version=version,

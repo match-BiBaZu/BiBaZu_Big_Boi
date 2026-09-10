@@ -6,7 +6,7 @@ from vendor_ur_rtde import rtde
 
 UR_HOST = "10.10.10.10"
 UR_RTDE_PORT = 30004
-UR_ANGLE_MIN_DEG = 15.5
+UR_ANGLE_MIN_DEG = 0.0
 UR_ANGLE_MAX_DEG = 21.0
 UR_ANGLE_DEFAULT_DEG = 18.0
 UR_ANGLE_STEP_DEG = 0.1
@@ -14,10 +14,9 @@ UR_COMMAND_TIMEOUT_SECONDS = 30.0
 
 
 def angle_to_tenths(angle_deg: float) -> int:
-    angle_tenths = int(round(float(angle_deg) * 10.0))
-    if not 155 <= angle_tenths <= 210:
-        raise ValueError("UR Ry angle must be between 15.5 and 21.0 degrees")
-    return angle_tenths
+    if not UR_ANGLE_MIN_DEG <= float(angle_deg) <= UR_ANGLE_MAX_DEG:
+        raise ValueError("UR Ry angle must be between 0.0 and 21.0 degrees")
+    return int(round(float(angle_deg) * 10.0))
 
 
 class UrAngleClient:
