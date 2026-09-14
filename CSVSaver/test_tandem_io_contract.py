@@ -46,12 +46,14 @@ class TandemIoContractTests(unittest.TestCase):
             "Controlword": ("Outputs", "UINT", "#x7010", "#x01", "2"),
             "TargetVelocity": ("Outputs", "DINT", "#x7010", "#x06", "2"),
         }
-        for axis, terminal in ((1, 21), (2, 22)):
+        for axis, terminal in ((1, 7),):
             name = f"Term {terminal} (EL7201-0010)"
             box = next(b for b in self.project.findall(".//Box") if b.findtext("Name") == name)
             ethercat = box.find("EtherCAT")
             owner = next(o for o in self.project.findall(".//Mappings/OwnerA/OwnerB")
                          if o.get("Name", "").endswith("^" + name))
+            self.assertEqual(owner.get("Name"),
+                "TIID^Device 3 (EtherCAT)^Term 6 (EK1100)^Term 7 (EL7201-0010)")
             links = {l.get("VarA"): l.get("VarB") for l in owner.findall("Link")}
             self.assertEqual(len(links), len(specs))
             for suffix, (area, datatype, index, sub, sm) in specs.items():
@@ -91,6 +93,12 @@ class TandemIoContractTests(unittest.TestCase):
         task = ET.parse(PROJECT / "Untitled1/PlcTask.TcTTO").getroot()
         self.assertEqual(task.findtext(".//CycleTime"), "1000")
         self.assertIn("CycleSeconds := 0.001", call)
+        self.assertIn("MotorCount := 1", call)
+        self.assertIn("Commissioned := ConveyorServoCommissioned AND ConveyorDriveSettings.Valid", call)
+        self.assertNotIn("TestStart", self.declaration)
+        for link in self.project.findall(".//Mappings//Link"):
+            self.assertNotIn("MAIN.ConveyorServo2", link.get("VarA", ""))
+            self.assertNotIn("MAIN.Test", link.get("VarA", ""))
 
     def test_commissioned_machine_starts_idle_with_50_mm_roller_calibration(self):
         def initial(name):
@@ -107,6 +115,7 @@ class TandemIoContractTests(unittest.TestCase):
         self.assertEqual(initial("ConveyorServoDirection1"), "1")
         self.assertEqual(initial("ConveyorServoDirection2"), "1")
         self.assertEqual(float(initial("ConveyorServoMotor2Ratio")), 1.0)
+        self.assertEqual(float(initial("ConveyorServoMaxMotorRpm")), 5.0)
         self.assertAlmostEqual(float(initial("ConveyorServoCalibratedMmPerFullStep")),
                                math.pi * 50.0 / 200.0, places=8)
         for suffix in ("", "2"):

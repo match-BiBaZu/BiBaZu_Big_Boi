@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.25">
+  <POU Name="FB_CsvDriveSettings" Id="{B78E4D39-C161-4058-8558-224D69E4190A}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_CsvDriveSettings
+VAR_INPUT
+    Online : BOOL;
+END_VAR
+VAR_OUTPUT
+    Valid : BOOL;
+    ActualMode : USINT;
+    ManualBrakeRelease : BOOL;
+    ActualTorqueOffset : INT;
+    ReadError : BOOL;
+    AdsError : UDINT;
+END_VAR
+VAR
+    ReadMode : FB_EcCoeSdoRead;
+    ReadBrake : FB_EcCoeSdoRead;
+    ReadOffset : FB_EcCoeSdoRead;
+    Phase : UINT;
+    Trigger : BOOL;
+    Completed : BOOL;
+    Good : BOOL;
+    PollTimer : TON;
+    StaleTimer : TON;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[//Read-only CoE. Addresses belong to Device 3 Term 7 of the documented machine.
+//No mode, brake, limit, reset or other device parameter is written here.
+Completed := FALSE;
+PollTimer(IN := Phase = 0, PT := T#100MS);
+Trigger := (Phase = 0) AND PollTimer.Q AND Online;
+ReadMode(sNetId := '10.145.4.14.4.1', nSlaveAddr := 1002,
+    nIndex := 16#6010, nSubIndex := 3, pDstBuf := ADR(ActualMode),
+    cbBufLen := SIZEOF(ActualMode), bExecute := Trigger, tTimeout := T#200MS);
+ReadBrake(sNetId := '10.145.4.14.4.1', nSlaveAddr := 1002,
+    nIndex := 16#8012, nSubIndex := 1, pDstBuf := ADR(ManualBrakeRelease),
+    cbBufLen := SIZEOF(ManualBrakeRelease), bExecute := Trigger, tTimeout := T#200MS);
+ReadOffset(sNetId := '10.145.4.14.4.1', nSlaveAddr := 1002,
+    nIndex := 16#7010, nSubIndex := 10, pDstBuf := ADR(ActualTorqueOffset),
+    cbBufLen := SIZEOF(ActualTorqueOffset), bExecute := Trigger, tTimeout := T#200MS);
+IF Trigger THEN
+    Phase := 1;
+ELSIF (Phase = 1) AND NOT ReadMode.bBusy AND NOT ReadBrake.bBusy AND NOT ReadOffset.bBusy THEN
+    Completed := TRUE;
+    ReadError := ReadMode.bError OR ReadBrake.bError OR ReadOffset.bError
+        OR (ReadMode.cbRead <> 1) OR (ReadBrake.cbRead <> 1) OR (ReadOffset.cbRead <> 2);
+    AdsError := 0;
+    IF ReadMode.bError THEN AdsError := ReadMode.nErrId;
+    ELSIF ReadBrake.bError THEN AdsError := ReadBrake.nErrId;
+    ELSIF ReadOffset.bError THEN AdsError := ReadOffset.nErrId; END_IF;
+    Good := NOT ReadError AND (ActualMode = 9) AND NOT ManualBrakeRelease AND (ActualTorqueOffset = 0);
+    Phase := 0;
+END_IF;
+StaleTimer(IN := NOT Completed, PT := T#500MS);
+IF NOT Online OR StaleTimer.Q THEN Good := FALSE; END_IF;
+Valid := Good AND Online AND NOT StaleTimer.Q AND (ActualMode = 9)
+    AND NOT ManualBrakeRelease AND (ActualTorqueOffset = 0);
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>
