@@ -1,0 +1,674 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.25">
+  <POU Name="FB_TandemConveyor" Id="{75ec0043-67ec-42dd-a94a-c7e6ca749d49}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_TandemConveyor
+VAR_INPUT
+    Enable                  : BOOL;
+    Execute                 : BOOL;
+    EmergencyStop           : BOOL;
+    Reset                   : BOOL;
+    Inhibit                 : BOOL;
+    StartType               : UINT; //2 signed relative increments; 3 endless+; 4 endless-
+    TargetPosition          : UDINT; //signed DINT bit pattern, 64 increments/virtual full step
+    Velocity                : INT; //positive 1..10000, fraction of LegacySpeedRange
+    LegacySpeedRange         : LREAL := 2000.0; //virtual full steps/s at Velocity=10000
+
+    //Commissioning is independent of the GUI's writable calibration-valid flag.
+    //The drive must already be commissioned in CSV mode (MDP742 mode 9).
+    Commissioned            : BOOL := FALSE;
+    Direction1              : INT := 0; //must be explicitly commissioned as -1 or +1
+    Direction2              : INT := 0;
+    Motor2Ratio             : LREAL := 1.0; //motor2 revolutions per motor1 revolution
+    FeedbackCountsPerRev    : LREAL := 1048576.0; //verify actual configured PDO resolution
+    FeedbackCountsPerRev2   : LREAL := 1048576.0;
+    VelocityUnitsPerRevPerSec : LREAL := 0.0; //REQUIRED verified CSV raw velocity scaling
+    VelocityUnitsPerRevPerSec2 : LREAL := 0.0;
+    MaxMotorRpm             : LREAL := 300.0;
+    AccelerationRpmPerSec    : LREAL := 300.0;
+    PositionGain            : LREAL := 5.0; //1/s, bounded position correction around common trajectory
+    SyncToleranceFullSteps  : LREAL := 5.0;
+    FollowingToleranceFullSteps : LREAL := 20.0;
+    CycleSeconds            : LREAL := 0.001; //must match the calling PLC task
+
+    Position1               : UDINT;
+    Position2               : UDINT;
+    Statusword1             : UINT;
+    Statusword2             : UINT;
+    WcState1                : BOOL;
+    WcState2                : BOOL;
+    InfoState1              : UINT;
+    InfoState2              : UINT;
+    ActualVelocity1         : DINT; //same raw units as TargetVelocity
+    ActualVelocity2         : DINT;
+    FeedbackInvalid1        : BOOL; //FB status TxPDO State, when mapped
+    FeedbackInvalid2        : BOOL;
+END_VAR
+VAR_OUTPUT
+    Controlword1            : UINT;
+    Controlword2            : UINT;
+    TargetVelocity1         : DINT;
+    TargetVelocity2         : DINT;
+    LegacyPosition          : UDINT; //measured motor1, 200 virtual full steps/rev * 64 increments
+    Busy                    : BOOL;
+    InTarget                : BOOL;
+    Ready                   : BOOL;
+    Warning                 : BOOL;
+    Error                   : BOOL;
+    //Latched: 1 invalid configuration, 2 drive fault, 3 EtherCAT/feedback invalid,
+    //4 enable timeout, 5 synchronization, 6 following/operation lost,
+    //7 move/stop timeout, 8 configuration changed, 9 reset timeout, 10 invalid command.
+    FaultCode               : UINT;
+    //Compatibility summary only: bit0 ready, bit1 busy, bit3 fault, bit7 warning.
+    StmStatus               : WORD;
+    //0 disabled, 10 enabling, 20 ready, 30 moving, 40 decelerating, 80 resetting, 90 fault.
+    State                   : UINT;
+    SyncErrorFullSteps      : LREAL;
+END_VAR
+VAR
+    RawPosition             : ARRAY[1..2] OF UDINT;
+    PreviousPosition        : ARRAY[1..2] OF UDINT;
+    RawStatus               : ARRAY[1..2] OF UINT;
+    RawActualVelocity       : ARRAY[1..2] OF DINT;
+    DriveControl            : ARRAY[1..2] OF UINT;
+    DriveEnableStep         : ARRAY[1..2] OF UINT;
+    MeasuredPosition        : ARRAY[1..2] OF LREAL; //normalized common virtual full steps
+    MeasuredVelocity        : ARRAY[1..2] OF LREAL;
+    DriveCommand            : ARRAY[1..2] OF LREAL;
+    CfgDirection            : ARRAY[1..2] OF INT;
+    CfgRatio                : ARRAY[1..2] OF LREAL;
+    CfgFeedbackCounts       : ARRAY[1..2] OF LREAL;
+    CfgVelocityUnits        : ARRAY[1..2] OF LREAL;
+    CfgMaxRpm               : LREAL;
+    CfgAccelerationRpm      : LREAL;
+    CfgGain                 : LREAL;
+    CfgSyncTolerance        : LREAL;
+    CfgFollowingTolerance   : LREAL;
+    CfgCycle                : LREAL;
+    CfgLegacyRange          : LREAL;
+    ConfigLoaded            : BOOL;
+    ConfigValid             : BOOL;
+    ConfigUnchanged         : BOOL;
+    CaptureConfig           : BOOL;
+    HealthyInputs           : BOOL;
+    StartupComplete         : BOOL;
+    StandstillInitialized   : BOOL;
+    StandstillOrigin        : ARRAY[1..2] OF UDINT;
+    StandstillCounts        : ARRAY[1..2] OF LREAL;
+    WithinStandstillWindow  : BOOL;
+    EncoderStationary       : BOOL;
+    DriveFault              : BOOL;
+    AllEnabled              : BOOL;
+    WantDriveEnable         : BOOL;
+    FeedbackInitialized     : BOOL;
+    RebaseRequested         : BOOL;
+    RestartBlocked          : BOOL := TRUE;
+    ResetActive             : BOOL;
+    ResetPulse              : BOOL;
+    ResetEdge               : BOOL;
+    ExecuteEdge             : BOOL;
+    LastReset               : BOOL;
+    LastExecute             : BOOL;
+    PositionSettled         : BOOL;
+    SpeedSettled            : BOOL;
+    CompletedThisCycle      : BOOL;
+    FiniteMove              : BOOL;
+    LimitedSpeed            : BOOL;
+    FollowingExceeded       : BOOL;
+    StopTimerStart           : BOOL;
+    I                       : INT;
+    MaskedStatus            : UINT;
+    EncoderDelta            : LINT;
+    SignedTarget            : LINT;
+    LegacyIncrements        : LINT;
+    WrappedIncrements       : LINT;
+    MaxCommonSpeed          : LREAL;
+    CommonAcceleration      : LREAL;
+    CommandSpeed            : LREAL;
+    CommandDirection        : LREAL;
+    TrajectoryPosition      : LREAL;
+    TrajectoryVelocity      : LREAL;
+    TargetFullSteps         : LREAL;
+    DesiredVelocity         : LREAL;
+    PreviousTrajectoryVelocity : LREAL;
+    NextTrajectoryPosition  : LREAL;
+    Remaining               : LREAL;
+    BrakingSpeed            : LREAL;
+    VelocityIncrement       : LREAL;
+    PositionError           : LREAL;
+    Correction              : LREAL;
+    CorrectionLimit         : LREAL;
+    RawCommand              : LREAL;
+    DurationMs              : LREAL;
+    MoveTimeout             : TIME := T#10S;
+    StopTimeout             : TIME := T#10S;
+    EnableTimer             : TON;
+    SyncTimer               : TON;
+    FollowingTimer          : TON;
+    SettleTimer             : TON;
+    MoveTimer               : TON;
+    StopTimer               : TON;
+    ResetTimer              : TON;
+    StartupHealthyTimer     : TON;
+    StartupTimeoutTimer     : TON;
+    EncoderStandstillTimer  : TON;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[//Software coordination/monitoring only. This FB does not implement STO or a safety stop.
+//No movement is authorized by default. Configure drive motor/encoder/brake/current,
+//CSV mode, PDO mapping, raw scales, gearing/direction and independent machine safety first.
+//All configuration is frozen while commissioned; a change requires an idle explicit reset.
+
+Controlword1 := 0;
+Controlword2 := 0;
+TargetVelocity1 := 0;
+TargetVelocity2 := 0;
+Ready := FALSE;
+Busy := FALSE;
+ResetPulse := FALSE;
+CaptureConfig := FALSE;
+CompletedThisCycle := FALSE;
+StopTimerStart := FALSE;
+PositionSettled := FALSE;
+FollowingExceeded := FALSE;
+ResetEdge := Reset AND NOT LastReset;
+ExecuteEdge := Execute AND NOT LastExecute;
+LastReset := Reset;
+LastExecute := Execute;
+
+RawPosition[1] := Position1;
+RawPosition[2] := Position2;
+RawStatus[1] := Statusword1;
+RawStatus[2] := Statusword2;
+RawActualVelocity[1] := ActualVelocity1;
+RawActualVelocity[2] := ActualVelocity2;
+FOR I := 1 TO 2 DO
+    DriveControl[I] := 0;
+    DriveCommand[I] := 0.0;
+END_FOR;
+
+//Bounded comparisons also reject NaN and infinity before any conversion or division.
+ConfigValid := ((Direction1 = 1) OR (Direction1 = -1))
+    AND ((Direction2 = 1) OR (Direction2 = -1))
+    AND (Motor2Ratio >= 0.0001) AND (Motor2Ratio <= 10000.0)
+    AND (FeedbackCountsPerRev >= 1.0) AND (FeedbackCountsPerRev <= 4294967295.0)
+    AND (FeedbackCountsPerRev2 >= 1.0) AND (FeedbackCountsPerRev2 <= 4294967295.0)
+    AND (VelocityUnitsPerRevPerSec >= 0.000001) AND (VelocityUnitsPerRevPerSec <= 1000000000.0)
+    AND (VelocityUnitsPerRevPerSec2 >= 0.000001) AND (VelocityUnitsPerRevPerSec2 <= 1000000000.0)
+    AND (MaxMotorRpm >= 0.1) AND (MaxMotorRpm <= 10000.0)
+    AND (AccelerationRpmPerSec >= 0.1) AND (AccelerationRpmPerSec <= 100000.0)
+    AND (PositionGain >= 0.01) AND (PositionGain <= 1000.0)
+    AND (SyncToleranceFullSteps > 0.0) AND (SyncToleranceFullSteps <= 1000000.0)
+    AND (FollowingToleranceFullSteps > 0.0) AND (FollowingToleranceFullSteps <= 1000000.0)
+    AND (CycleSeconds >= 0.0001) AND (CycleSeconds <= 0.1)
+    AND (LegacySpeedRange >= 0.01) AND (LegacySpeedRange <= 10000000.0);
+IF ConfigValid THEN
+    ConfigValid := (MaxMotorRpm / 60.0 * VelocityUnitsPerRevPerSec <= 2147480000.0)
+        AND (MaxMotorRpm / 60.0 * VelocityUnitsPerRevPerSec2 <= 2147480000.0)
+        AND (MaxMotorRpm / AccelerationRpmPerSec <= 3600.0);
+END_IF;
+
+HealthyInputs := NOT WcState1 AND NOT WcState2
+    AND (InfoState1 = 8) AND (InfoState2 = 8)
+    AND NOT FeedbackInvalid1 AND NOT FeedbackInvalid2;
+DriveFault := ((Statusword1 AND UINT#16#0008) <> 0)
+    OR ((Statusword2 AND UINT#16#0008) <> 0);
+Warning := ((Statusword1 AND UINT#16#0080) <> 0)
+    OR ((Statusword2 AND UINT#16#0080) <> 0);
+
+//Allow initial EtherCAT startup with both output stages disabled. After the first
+//100 ms of valid data, any communication loss latches immediately, even while idle.
+StartupHealthyTimer(IN := Commissioned AND HealthyInputs, PT := T#100MS);
+IF StartupHealthyTimer.Q THEN
+    StartupComplete := TRUE;
+END_IF;
+StartupTimeoutTimer(IN := Commissioned AND NOT StartupComplete, PT := T#5S);
+IF StartupTimeoutTimer.Q AND (FaultCode = 0) THEN
+    FaultCode := 3;
+END_IF;
+
+//The terminal's instantaneous velocity estimate is noisy even with stationary
+//encoders. Qualify standstill from BOTH position traces instead: each must stay
+//within 0.05 motor full steps (0.09 degrees) of its fixed anchor for 100 ms.
+//Anchors do not slide every scan: sustained movement must restart the timer.
+WithinStandstillWindow := FALSE;
+IF Commissioned AND ConfigValid AND HealthyInputs THEN
+    IF NOT StandstillInitialized
+        OR (StandstillCounts[1] <> FeedbackCountsPerRev)
+        OR (StandstillCounts[2] <> FeedbackCountsPerRev2) THEN
+        StandstillCounts[1] := FeedbackCountsPerRev;
+        StandstillCounts[2] := FeedbackCountsPerRev2;
+        StandstillInitialized := TRUE;
+    ELSE
+        WithinStandstillWindow := TRUE;
+        FOR I := 1 TO 2 DO
+            EncoderDelta := UDINT_TO_LINT(RawPosition[I]) - UDINT_TO_LINT(StandstillOrigin[I]);
+            IF EncoderDelta > LINT#2147483647 THEN
+                EncoderDelta := EncoderDelta - LINT#4294967296;
+            ELSIF EncoderDelta < LINT#-2147483648 THEN
+                EncoderDelta := EncoderDelta + LINT#4294967296;
+            END_IF;
+            IF ABS(LINT_TO_LREAL(EncoderDelta)) > StandstillCounts[I] * 0.05 / 200.0 THEN
+                WithinStandstillWindow := FALSE;
+            END_IF;
+        END_FOR;
+    END_IF;
+    IF NOT WithinStandstillWindow THEN
+        FOR I := 1 TO 2 DO
+            StandstillOrigin[I] := RawPosition[I];
+        END_FOR;
+    END_IF;
+ELSE
+    StandstillInitialized := FALSE;
+END_IF;
+EncoderStandstillTimer(IN := WithinStandstillWindow, PT := T#100MS);
+EncoderStationary := EncoderStandstillTimer.Q;
+
+ConfigUnchanged := ConfigLoaded
+    AND (Direction1 = CfgDirection[1]) AND (Direction2 = CfgDirection[2])
+    AND (Motor2Ratio = CfgRatio[2]) AND (FeedbackCountsPerRev = CfgFeedbackCounts[1])
+    AND (FeedbackCountsPerRev2 = CfgFeedbackCounts[2])
+    AND (VelocityUnitsPerRevPerSec = CfgVelocityUnits[1])
+    AND (VelocityUnitsPerRevPerSec2 = CfgVelocityUnits[2])
+    AND (MaxMotorRpm = CfgMaxRpm) AND (AccelerationRpmPerSec = CfgAccelerationRpm)
+    AND (PositionGain = CfgGain) AND (SyncToleranceFullSteps = CfgSyncTolerance)
+    AND (FollowingToleranceFullSteps = CfgFollowingTolerance)
+    AND (CycleSeconds = CfgCycle) AND (LegacySpeedRange = CfgLegacyRange);
+
+IF Commissioned THEN
+    IF NOT ConfigValid AND (FaultCode = 0) THEN
+        FaultCode := 1;
+    ELSIF ConfigLoaded AND NOT ConfigUnchanged AND (FaultCode = 0) THEN
+        FaultCode := 8;
+    END_IF;
+    //A stale GUI enable at first commissioning must be diagnosed, not leave the
+    //caller waiting indefinitely for Ready. Reset cancels it before configuration capture.
+    IF NOT ConfigLoaded AND (Enable OR Execute) AND NOT ResetEdge AND (FaultCode = 0) THEN
+        FaultCode := 1;
+    END_IF;
+END_IF;
+
+//The first configuration may be adopted only with both commands off and stopped feedback.
+//Reset may adopt a new configuration, but never while either drive is moving.
+IF Commissioned AND ConfigValid AND HealthyInputs AND StartupComplete AND NOT Enable AND NOT Execute
+    AND NOT Inhibit AND NOT EmergencyStop THEN
+    IF EncoderStationary THEN
+        IF ResetEdge THEN
+            CaptureConfig := TRUE;
+            ResetPulse := TRUE;
+            ResetActive := TRUE;
+            RestartBlocked := TRUE;
+            FeedbackInitialized := FALSE;
+            RebaseRequested := FALSE;
+            State := 80;
+            InTarget := FALSE;
+        ELSIF NOT ConfigLoaded AND (FaultCode = 0) AND NOT DriveFault THEN
+            CaptureConfig := TRUE;
+            RebaseRequested := TRUE;
+        END_IF;
+    END_IF;
+END_IF;
+
+IF CaptureConfig THEN
+    CfgDirection[1] := Direction1;
+    CfgDirection[2] := Direction2;
+    CfgRatio[1] := 1.0;
+    CfgRatio[2] := Motor2Ratio;
+    CfgFeedbackCounts[1] := FeedbackCountsPerRev;
+    CfgFeedbackCounts[2] := FeedbackCountsPerRev2;
+    CfgVelocityUnits[1] := VelocityUnitsPerRevPerSec;
+    CfgVelocityUnits[2] := VelocityUnitsPerRevPerSec2;
+    CfgMaxRpm := MaxMotorRpm;
+    CfgAccelerationRpm := AccelerationRpmPerSec;
+    CfgGain := PositionGain;
+    CfgSyncTolerance := SyncToleranceFullSteps;
+    CfgFollowingTolerance := FollowingToleranceFullSteps;
+    CfgCycle := CycleSeconds;
+    CfgLegacyRange := LegacySpeedRange;
+    ConfigLoaded := TRUE;
+    ConfigUnchanged := TRUE;
+    TrajectoryVelocity := 0.0;
+    FOR I := 1 TO 2 DO
+        DriveEnableStep[I] := 0;
+    END_FOR;
+END_IF;
+
+SpeedSettled := FALSE;
+IF ConfigLoaded THEN
+    MaxCommonSpeed := CfgMaxRpm / 60.0 * 200.0;
+    CommonAcceleration := CfgAccelerationRpm / 60.0 * 200.0;
+    IF CfgRatio[2] > 1.0 THEN
+        MaxCommonSpeed := MaxCommonSpeed / CfgRatio[2];
+        CommonAcceleration := CommonAcceleration / CfgRatio[2];
+    END_IF;
+    FOR I := 1 TO 2 DO
+        MeasuredVelocity[I] := DINT_TO_LREAL(RawActualVelocity[I]) / CfgVelocityUnits[I]
+            * 200.0 * INT_TO_LREAL(CfgDirection[I]) / CfgRatio[I];
+    END_FOR;
+    SpeedSettled := EncoderStationary;
+END_IF;
+
+//Invalid cyclic data is latched and invalidates the origin. Recovery cannot silently
+//join new encoder values onto old samples. A stopped explicit reset must rebase it.
+IF Commissioned AND NOT HealthyInputs THEN
+    IF StartupComplete AND (FaultCode = 0) THEN
+        FaultCode := 3;
+    END_IF;
+    FeedbackInitialized := FALSE;
+    RebaseRequested := FALSE;
+    ResetActive := FALSE;
+END_IF;
+IF Commissioned AND HealthyInputs AND DriveFault AND NOT ResetActive AND (FaultCode = 0) THEN
+    FaultCode := 2;
+END_IF;
+
+ResetTimer(IN := ResetActive AND NOT ResetPulse, PT := T#3S);
+IF ResetActive AND NOT ResetPulse THEN
+    IF NOT Commissioned OR Inhibit OR EmergencyStop OR Enable OR Execute
+        OR NOT HealthyInputs OR NOT ConfigUnchanged THEN
+        ResetActive := FALSE;
+        IF FaultCode = 0 THEN
+            FaultCode := 9;
+        END_IF;
+    ELSIF NOT DriveFault AND SpeedSettled THEN
+        ResetActive := FALSE;
+        FaultCode := 0;
+        RebaseRequested := TRUE;
+        State := 0;
+    ELSIF ResetTimer.Q THEN
+        ResetActive := FALSE;
+        FaultCode := 9;
+    END_IF;
+END_IF;
+
+//Rebase preserves the last published legacy position; movement during invalid data is
+//intentionally not inferred. The two actual motor positions establish a fresh common origin.
+IF RebaseRequested AND HealthyInputs AND SpeedSettled AND NOT Enable AND NOT Execute
+    AND Commissioned AND NOT ResetActive AND (FaultCode = 0) THEN
+    FOR I := 1 TO 2 DO
+        PreviousPosition[I] := RawPosition[I];
+    END_FOR;
+    MeasuredPosition[2] := MeasuredPosition[1];
+    TrajectoryPosition := MeasuredPosition[1];
+    TrajectoryVelocity := 0.0;
+    FeedbackInitialized := TRUE;
+    RebaseRequested := FALSE;
+END_IF;
+
+IF FeedbackInitialized AND HealthyInputs AND ConfigLoaded THEN
+    FOR I := 1 TO 2 DO
+        //Explicit signed modular subtraction handles both UDINT wrap directions.
+        EncoderDelta := UDINT_TO_LINT(RawPosition[I]) - UDINT_TO_LINT(PreviousPosition[I]);
+        IF EncoderDelta > LINT#2147483647 THEN
+            EncoderDelta := EncoderDelta - LINT#4294967296;
+        ELSIF EncoderDelta < LINT#-2147483648 THEN
+            EncoderDelta := EncoderDelta + LINT#4294967296;
+        END_IF;
+        PreviousPosition[I] := RawPosition[I];
+        MeasuredPosition[I] := MeasuredPosition[I] + LINT_TO_LREAL(EncoderDelta)
+            / CfgFeedbackCounts[I] * 200.0 * INT_TO_LREAL(CfgDirection[I]) / CfgRatio[I];
+    END_FOR;
+    //The bound protects the subsequent real/integer conversion on very long uptime.
+    IF (ABS(MeasuredPosition[1]) <= 1000000000000.0)
+        AND (ABS(MeasuredPosition[2]) <= 1000000000000.0) THEN
+        LegacyIncrements := LREAL_TO_LINT(MeasuredPosition[1] * 64.0);
+        WrappedIncrements := LegacyIncrements MOD LINT#4294967296;
+        IF WrappedIncrements < 0 THEN
+            WrappedIncrements := WrappedIncrements + LINT#4294967296;
+        END_IF;
+        LegacyPosition := LINT_TO_UDINT(WrappedIncrements);
+    ELSIF FaultCode = 0 THEN
+        FaultCode := 6;
+    END_IF;
+END_IF;
+SyncErrorFullSteps := MeasuredPosition[1] - MeasuredPosition[2];
+
+//Any hard software inhibit demands an off-command interval before another enable.
+IF NOT Commissioned OR Inhibit OR EmergencyStop THEN
+    IF Enable OR Execute THEN
+        RestartBlocked := TRUE;
+    END_IF;
+    InTarget := FALSE;
+    TrajectoryVelocity := 0.0;
+    IF NOT ResetActive THEN
+        State := 0;
+    END_IF;
+END_IF;
+//An off interval may be observed while an inhibit is still asserted. Outputs remain
+//disabled by the independent inhibit, but the next deliberate command can re-enable.
+IF NOT Enable AND NOT Execute AND NOT ResetActive AND (FaultCode = 0) THEN
+    RestartBlocked := FALSE;
+END_IF;
+
+AllEnabled := FALSE;
+WantDriveEnable := FALSE;
+IF ConfigLoaded AND FeedbackInitialized AND HealthyInputs AND Commissioned
+    AND ConfigUnchanged AND NOT Inhibit AND NOT EmergencyStop AND NOT RestartBlocked
+    AND NOT ResetActive AND (FaultCode = 0) THEN
+
+    //An ordinary Execute/Enable fall uses the configured deceleration. The calling
+    //PLC may leave Enable on during this phase; both drives remain enabled until settled.
+    IF (State = 30) AND (NOT Execute OR NOT Enable) THEN
+        State := 40;
+        InTarget := FALSE;
+        StopTimerStart := TRUE;
+        DurationMs := (ABS(TrajectoryVelocity) / CommonAcceleration + 5.0) * 1000.0;
+        StopTimeout := UDINT_TO_TIME(LREAL_TO_UDINT(DurationMs));
+    END_IF;
+    WantDriveEnable := Enable OR (State = 40);
+    IF WantDriveEnable THEN
+        IF State = 0 THEN
+            State := 10;
+        END_IF;
+        FOR I := 1 TO 2 DO
+            //MDP742 EL7201: bit5 is reserved in this revision. Do not use a DS402
+            //0x006F/0x0027 mask; the relevant state pattern here is 0x004F/0x0007.
+            MaskedStatus := RawStatus[I] AND UINT#16#004F;
+            CASE DriveEnableStep[I] OF
+                0:
+                    DriveControl[I] := 0; //one disabled scan before the enable sequence
+                    DriveEnableStep[I] := 1;
+                1:
+                    DriveControl[I] := 6;
+                    IF MaskedStatus = 1 THEN
+                        DriveEnableStep[I] := 2;
+                    END_IF;
+                2:
+                    DriveControl[I] := 7;
+                    IF MaskedStatus = 3 THEN
+                        DriveEnableStep[I] := 3;
+                    END_IF;
+                3:
+                    DriveControl[I] := 15;
+                    IF MaskedStatus = 7 THEN
+                        DriveEnableStep[I] := 4;
+                    END_IF;
+                4:
+                    DriveControl[I] := 15;
+            ELSE
+                DriveEnableStep[I] := 0;
+            END_CASE;
+        END_FOR;
+        AllEnabled := (DriveEnableStep[1] = 4) AND (DriveEnableStep[2] = 4)
+            AND ((Statusword1 AND UINT#16#004F) = 7)
+            AND ((Statusword2 AND UINT#16#004F) = 7);
+        IF AllEnabled AND (State = 10) THEN
+            State := 20;
+        ELSIF NOT AllEnabled AND ((State = 20) OR (State = 30) OR (State = 40)) THEN
+            FaultCode := 6; //stop the partner immediately if one loses operation enabled
+        END_IF;
+    ELSE
+        State := 0;
+        FOR I := 1 TO 2 DO
+            DriveEnableStep[I] := 0;
+        END_FOR;
+    END_IF;
+
+    IF ExecuteEdge AND (FaultCode = 0) THEN
+        IF (State <> 20) OR NOT AllEnabled OR NOT Enable
+            OR (Velocity <= 0) OR (Velocity > 10000)
+            OR ((StartType <> 2) AND (StartType <> 3) AND (StartType <> 4)) THEN
+            FaultCode := 10;
+        ELSE
+            CommandSpeed := INT_TO_LREAL(Velocity) / 10000.0 * CfgLegacyRange;
+            LimitedSpeed := CommandSpeed > MaxCommonSpeed;
+            IF LimitedSpeed THEN
+                CommandSpeed := MaxCommonSpeed;
+            END_IF;
+            TrajectoryPosition := MeasuredPosition[1];
+            TrajectoryVelocity := 0.0;
+            FiniteMove := StartType = 2;
+            CommandDirection := 1.0;
+            IF StartType = 4 THEN
+                CommandDirection := -1.0;
+            END_IF;
+            IF FiniteMove THEN
+                SignedTarget := UDINT_TO_LINT(TargetPosition);
+                IF SignedTarget > LINT#2147483647 THEN
+                    SignedTarget := SignedTarget - LINT#4294967296;
+                END_IF;
+                TargetFullSteps := MeasuredPosition[1] + LINT_TO_LREAL(SignedTarget) / 64.0;
+                //Finite travel watchdog includes acceleration, settling, and a margin.
+                DurationMs := (ABS(TargetFullSteps - TrajectoryPosition) / CommandSpeed
+                    + 2.0 * CommandSpeed / CommonAcceleration + 10.0) * 1000.0;
+                IF DurationMs > 2000000000.0 THEN
+                    FaultCode := 10;
+                ELSE
+                    MoveTimeout := UDINT_TO_TIME(LREAL_TO_UDINT(DurationMs));
+                END_IF;
+            END_IF;
+            IF FaultCode = 0 THEN
+                State := 30;
+                InTarget := FALSE;
+            END_IF;
+        END_IF;
+    END_IF;
+
+    IF AllEnabled AND (FaultCode = 0) AND ((State = 30) OR (State = 40)) THEN
+        DesiredVelocity := 0.0;
+        Remaining := TargetFullSteps - TrajectoryPosition;
+        IF State = 30 THEN
+            IF FiniteMove THEN
+                BrakingSpeed := SQRT(2.0 * CommonAcceleration * ABS(Remaining));
+                DesiredVelocity := MIN(CommandSpeed, BrakingSpeed);
+                IF Remaining < 0.0 THEN
+                    DesiredVelocity := -DesiredVelocity;
+                END_IF;
+            ELSE
+                DesiredVelocity := CommandDirection * CommandSpeed;
+            END_IF;
+        END_IF;
+        VelocityIncrement := CommonAcceleration * CfgCycle;
+        PreviousTrajectoryVelocity := TrajectoryVelocity;
+        IF TrajectoryVelocity < DesiredVelocity THEN
+            TrajectoryVelocity := MIN(TrajectoryVelocity + VelocityIncrement, DesiredVelocity);
+        ELSIF TrajectoryVelocity > DesiredVelocity THEN
+            TrajectoryVelocity := MAX(TrajectoryVelocity - VelocityIncrement, DesiredVelocity);
+        END_IF;
+        NextTrajectoryPosition := TrajectoryPosition
+            + (PreviousTrajectoryVelocity + TrajectoryVelocity) * 0.5 * CfgCycle;
+        IF (State = 30) AND FiniteMove
+            AND ((Remaining = 0.0) OR ((TargetFullSteps - NextTrajectoryPosition) * Remaining <= 0.0)) THEN
+            TrajectoryPosition := TargetFullSteps;
+            TrajectoryVelocity := 0.0;
+        ELSE
+            TrajectoryPosition := NextTrajectoryPosition;
+        END_IF;
+
+        //Both position corrections track the same trajectory. Bounded corrections and
+        //the final common speed clamp respect each motor's configured RPM limit.
+        CorrectionLimit := MaxCommonSpeed * 0.25;
+        FOR I := 1 TO 2 DO
+            PositionError := TrajectoryPosition - MeasuredPosition[I];
+            IF ABS(PositionError) > CfgFollowingTolerance THEN
+                FollowingExceeded := TRUE;
+            END_IF;
+            Correction := LIMIT(-CorrectionLimit, CfgGain * PositionError, CorrectionLimit);
+            DriveCommand[I] := LIMIT(-MaxCommonSpeed, TrajectoryVelocity + Correction, MaxCommonSpeed);
+        END_FOR;
+        IF ABS(TrajectoryVelocity) <= 0.01 THEN
+            PositionSettled := (ABS(TrajectoryPosition - MeasuredPosition[1]) <= 0.25)
+                AND (ABS(TrajectoryPosition - MeasuredPosition[2]) <= 0.25);
+        END_IF;
+    END_IF;
+END_IF;
+
+EnableTimer(IN := WantDriveEnable AND NOT AllEnabled AND (FaultCode = 0), PT := T#5S);
+SyncTimer(IN := ((State = 30) OR (State = 40)) AND (FaultCode = 0)
+    AND (ABS(SyncErrorFullSteps) > CfgSyncTolerance), PT := T#250MS);
+FollowingTimer(IN := FollowingExceeded AND (FaultCode = 0), PT := T#250MS);
+SettleTimer(IN := ((State = 40) OR ((State = 30) AND FiniteMove))
+    AND PositionSettled AND SpeedSettled AND (FaultCode = 0), PT := T#100MS);
+MoveTimer(IN := (State = 30) AND FiniteMove AND (FaultCode = 0), PT := MoveTimeout);
+StopTimer(IN := (State = 40) AND NOT StopTimerStart AND (FaultCode = 0), PT := StopTimeout);
+
+IF FaultCode = 0 THEN
+    IF EnableTimer.Q THEN
+        FaultCode := 4;
+    ELSIF SyncTimer.Q THEN
+        FaultCode := 5;
+    ELSIF FollowingTimer.Q THEN
+        FaultCode := 6;
+    ELSIF MoveTimer.Q OR StopTimer.Q THEN
+        FaultCode := 7;
+    ELSIF SettleTimer.Q THEN
+        InTarget := (State = 30) AND FiniteMove;
+        State := 20;
+        TrajectoryVelocity := 0.0;
+        CompletedThisCycle := TRUE;
+        FOR I := 1 TO 2 DO
+            DriveCommand[I] := 0.0;
+        END_FOR;
+    END_IF;
+END_IF;
+
+//All outputs pass through this final override, including faults detected this scan.
+IF (FaultCode <> 0) OR ResetActive OR NOT Commissioned OR Inhibit OR EmergencyStop
+    OR RestartBlocked OR NOT ConfigLoaded OR NOT FeedbackInitialized OR NOT HealthyInputs THEN
+    TrajectoryVelocity := 0.0;
+    FOR I := 1 TO 2 DO
+        DriveEnableStep[I] := 0;
+        DriveControl[I] := 0;
+        DriveCommand[I] := 0.0;
+    END_FOR;
+    IF ResetActive THEN
+        State := 80;
+        IF ResetPulse THEN
+            DriveControl[1] := 128;
+            DriveControl[2] := 128;
+        END_IF;
+    ELSIF FaultCode <> 0 THEN
+        State := 90;
+        RestartBlocked := TRUE;
+        InTarget := FALSE;
+    ELSE
+        State := 0;
+    END_IF;
+ELSE
+    Busy := (State = 30) OR (State = 40);
+    Ready := AllEnabled AND ((State = 20) OR CompletedThisCycle);
+    IF AllEnabled AND Busy THEN
+        FOR I := 1 TO 2 DO
+            RawCommand := DriveCommand[I] / 200.0 * CfgRatio[I]
+                * INT_TO_LREAL(CfgDirection[I]) * CfgVelocityUnits[I];
+            IF I = 1 THEN
+                TargetVelocity1 := LREAL_TO_DINT(RawCommand);
+            ELSE
+                TargetVelocity2 := LREAL_TO_DINT(RawCommand);
+            END_IF;
+        END_FOR;
+    END_IF;
+END_IF;
+Controlword1 := DriveControl[1];
+Controlword2 := DriveControl[2];
+Error := FaultCode <> 0;
+Warning := Warning OR (LimitedSpeed AND Busy);
+StmStatus := 0;
+IF Ready THEN StmStatus := StmStatus OR WORD#16#0001; END_IF;
+IF Busy THEN StmStatus := StmStatus OR WORD#16#0002; END_IF;
+IF Error THEN StmStatus := StmStatus OR WORD#16#0008; END_IF;
+IF Warning THEN StmStatus := StmStatus OR WORD#16#0080; END_IF;
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

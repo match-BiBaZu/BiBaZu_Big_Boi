@@ -28,6 +28,9 @@
 		<Text TxtId="Cycle time o.k.: {0}">
 			<Text LcId="1031">Zykluszeit o.k.: {0}</Text>
 		</Text>
+		<Text TxtId="Cycletime has to be a multiple of 125 µs">
+			<Text LcId="1031">Zykluszeit muss ein vielfaches von 125 µs sein</Text>
+		</Text>
 		<Text TxtId="DC-Link overvoltage">
 			<Text LcId="1031">Überspannung DC-Zwischenkreis</Text>
 		</Text>
@@ -40,6 +43,9 @@
 		<Text TxtId="Detection of operation mode completed: 0x{0,X}, {1}">
 			<Text LcId="1031">Erkennung der Betriebsart beendet: 0x{0,X}, {1}</Text>
 		</Text>
+		<Text TxtId="Discrepancy in the PDO-Configuration">
+			<Text LcId="1031">Diskrepanz in der PDO-Konfiguration</Text>
+		</Text>
 		<Text TxtId="Drive is calibrated: {0}, {1}">
 			<Text LcId="1031">Antrieb ist kalibriert: {0}, {1}</Text>
 		</Text>
@@ -48,6 +54,12 @@
 		</Text>
 		<Text TxtId="EL7047 1Ch. Stepper motor output stage (50V, 5A)">
 			<Text LcId="1031">EL7047 1K. Schrittmotor-Endstufe (50V, 5A)</Text>
+		</Text>
+		<Text TxtId="EL7201-0010 1Ch. MDP742 Servo motor output stage with OCT (50V, 2.8A RMS)">
+			<Text LcId="1031">EL7201-0010 1K. MDP742 Servo-Motor-Endstufe mit OCT (50V, 2,8A RMS)</Text>
+		</Text>
+		<Text TxtId="Electronic name plate: CRC error">
+			<Text LcId="1031">Elektronisches Typenschild: CRC-Fehler</Text>
 		</Text>
 		<Text TxtId="Emergency stop activated: 0x{0,X}, {1}">
 			<Text LcId="1031">Emergency-Stop aktiviert: 0x{0,X}, {1}</Text>
@@ -63,6 +75,12 @@
 		</Text>
 		<Text TxtId="Error: 0x{0,X}, 0x{1,X}, 0x{2,X}">
 			<Text LcId="1031">Fehler: 0x{0,X}, 0x{1,X}, 0x{2,X}</Text>
+		</Text>
+		<Text TxtId="Feedback-Error">
+			<Text LcId="1031">Feedback-Fehler</Text>
+		</Text>
+		<Text TxtId="Feedback-Warning">
+			<Text LcId="1031">Feedback-Warnung</Text>
 		</Text>
 		<Text TxtId="I2T Amplifier overload">
 			<Text LcId="1031">I2T-Modell Verstärker Überlast</Text>
@@ -85,6 +103,12 @@
 		<Text TxtId="Initialization: 0x{0,X}, 0x{1,X}, 0x{2,X}">
 			<Text LcId="1031">Initialisierung: 0x{0,X}, 0x{1,X}, 0x{2,X}</Text>
 		</Text>
+		<Text TxtId="Internal hardware error">
+			<Text LcId="1031">Interner Hardwarefehler</Text>
+		</Text>
+		<Text TxtId="Interner Hardwarefehler">
+			<Text LcId="1031">Internal hardware error</Text>
+		</Text>
 		<Text TxtId="Invalid combination of Inputs and Outputs PDOs">
 			<Text LcId="1031">Ungültige Kombination von In- und Output PDOs</Text>
 		</Text>
@@ -100,20 +124,47 @@
 		<Text TxtId="Large cycle time: {0}">
 			<Text LcId="1031">Zykluszeit zu gross: {0}</Text>
 		</Text>
+		<Text TxtId="Limit: Amplifier I2T-model exceeds 100%">
+			<Text LcId="1031">Limit: Verstärker I2T-Modell übersteigt 100%</Text>
+		</Text>
+		<Text TxtId="Limit: Current">
+			<Text LcId="1031">Limit: Strom wird limitiert</Text>
+		</Text>
+		<Text TxtId="Limit: Motor I2T-model exceeds 100%">
+			<Text LcId="1031">Limit: Motor I2T-Modell übersteigt 100%</Text>
+		</Text>
+		<Text TxtId="Limit: Velocity limitation">
+			<Text LcId="1031">Limit: Drehzahl wird limitiert</Text>
+		</Text>
 		<Text TxtId="Limiting of calibration velocity: {0}, {1}">
 			<Text LcId="1031">Begrenzung der Kalibrier-Geschwindigkeit: {0}, {1}</Text>
 		</Text>
 		<Text TxtId="Maximum position lag exceeded ({0}): channel {1}">
 			<Text LcId="1031">Maximaler Schleppfehler überschritten ({0}): Kanal {1}</Text>
 		</Text>
+		<Text TxtId="Maximum rotating field velocity exceeded">
+			<Text LcId="1031">Maximale Drehfeldfrequenz überschritten</Text>
+		</Text>
 		<Text TxtId="Motor cable not connected">
 			<Text LcId="1031">Motorleitung nicht angeschlossen</Text>
+		</Text>
+		<Text TxtId="Motor error or commutation malfunction">
+			<Text LcId="1031">Motorfehler oder Fehler in der Kommutierung</Text>
+		</Text>
+		<Text TxtId="Motor-Overtemperature">
+			<Text LcId="1031">Motor-Übertemperatur</Text>
 		</Text>
 		<Text TxtId="No communication to field-side (Auxiliary voltage missing)">
 			<Text LcId="1031">Keine Kommunikation zur Feldseite ( Hilfsspannung fehlt)</Text>
 		</Text>
 		<Text TxtId="No error">
 			<Text LcId="1031">kein Fehler</Text>
+		</Text>
+		<Text TxtId="No variable linkage">
+			<Text LcId="1031">Keine Variablen verknüpft</Text>
+		</Text>
+		<Text TxtId="OCT communication error">
+			<Text LcId="1031">OCT Kommunikationsfehler</Text>
 		</Text>
 		<Text TxtId="Operation mode incompatible to PDO interface: 0x{0,X}, {1}">
 			<Text LcId="1031">Betriebsart inkompatibel zum PDO-Interface: 0x{0,X}, {1}</Text>
@@ -126,6 +177,9 @@
 		</Text>
 		<Text TxtId="PD-Watchdog">
 			<Text LcId="1031">PD-Watchdog</Text>
+		</Text>
+		<Text TxtId="Phase failure">
+			<Text LcId="1031">Phasenfehler</Text>
 		</Text>
 		<Text TxtId="Position set: {0}, {1}">
 			<Text LcId="1031">Position gesetzt: {0}, {1}</Text>
@@ -165,6 +219,9 @@
 		</Text>
 		<Text TxtId="Undervoltage power rail">
 			<Text LcId="1031">Unterspannung Powerkontakte</Text>
+		</Text>
+		<Text TxtId="Voltage on STO-Input missing">
+			<Text LcId="1031">Spannung am STO-Eingang fehlt</Text>
 		</Text>
 		<Text TxtId="Warning: 0x{0,X}, 0x{1,X}, 0x{2,X}">
 			<Text LcId="1031">Warnung: 0x{0,X}, 0x{1,X}, 0x{2,X}</Text>
@@ -399,6 +456,198 @@
 		<Event>
 			<Id>33856</Id>
 			<Message>Motor cable not connected</Message>
+		</Event>
+		<Event>
+			<Id>65535</Id>
+			<Message>Debug: 0x{0,X}, 0x{1,X}, 0x{2,X}</Message>
+		</Event>
+		<Property>
+			<Name>DisplayTxtId</Name>
+			<Value>true</Value>
+		</Property>
+	</Source>
+	<Source>
+		<GUID>{28111931-0002-0000-5230-211C0A001D00}</GUID>
+		<Name>EL7201-0010 1Ch. MDP742 Servo motor output stage with OCT (50V, 2.8A RMS)</Name>
+		<Event>
+			<Id>1</Id>
+			<Message>No error</Message>
+		</Event>
+		<Event>
+			<Id>2</Id>
+			<Message>Communication established</Message>
+		</Event>
+		<Event>
+			<Id>3</Id>
+			<Message>Initialization: 0x{0,X}, 0x{1,X}, 0x{2,X}</Message>
+		</Event>
+		<Event>
+			<Id>4096</Id>
+			<Message>Information: 0x{0,X}, 0x{1,X}, 0x{2,X}</Message>
+		</Event>
+		<Event>
+			<Id>4609</Id>
+			<Message>Communication re-established</Message>
+		</Event>
+		<Event>
+			<Id>16384</Id>
+			<Message>Warning: 0x{0,X}, 0x{1,X}, 0x{2,X}</Message>
+		</Event>
+		<Event>
+			<Id>16641</Id>
+			<Message>Terminal-Overtemperature</Message>
+		</Event>
+		<Event>
+			<Id>16642</Id>
+			<Message>Discrepancy in the PDO-Configuration</Message>
+		</Event>
+		<Event>
+			<Id>17153</Id>
+			<Message>Feedback-Warning</Message>
+		</Event>
+		<Event>
+			<Id>17425</Id>
+			<Message>DC-Link undervoltage</Message>
+		</Event>
+		<Event>
+			<Id>17426</Id>
+			<Message>DC-Link overvoltage</Message>
+		</Event>
+		<Event>
+			<Id>17427</Id>
+			<Message>I2T Amplifier overload</Message>
+		</Event>
+		<Event>
+			<Id>17428</Id>
+			<Message>I2T Motor overload</Message>
+		</Event>
+		<Event>
+			<Id>17429</Id>
+			<Message>Speed limitation active</Message>
+		</Event>
+		<Event>
+			<Id>17431</Id>
+			<Message>Motor-Overtemperature</Message>
+		</Event>
+		<Event>
+			<Id>17432</Id>
+			<Message>Limit: Current</Message>
+		</Event>
+		<Event>
+			<Id>17433</Id>
+			<Message>Limit: Amplifier I2T-model exceeds 100%</Message>
+		</Event>
+		<Event>
+			<Id>17434</Id>
+			<Message>Limit: Motor I2T-model exceeds 100%</Message>
+		</Event>
+		<Event>
+			<Id>17435</Id>
+			<Message>Limit: Velocity limitation</Message>
+		</Event>
+		<Event>
+			<Id>17436</Id>
+			<Message>Voltage on STO-Input missing</Message>
+		</Event>
+		<Event>
+			<Id>17437</Id>
+			<Message>Interner Hardwarefehler</Message>
+		</Event>
+		<Event>
+			<Id>32769</Id>
+			<Message>Error: 0x{0,X}, 0x{1,X}, 0x{2,X}</Message>
+		</Event>
+		<Event>
+			<Id>32770</Id>
+			<Message>Communication aborted</Message>
+		</Event>
+		<Event>
+			<Id>32771</Id>
+			<Message>Configuration error: 0x{0,X}, 0x{1,X}, 0x{2,X}</Message>
+		</Event>
+		<Event>
+			<Id>33026</Id>
+			<Message>Invalid combination of Inputs and Outputs PDOs</Message>
+		</Event>
+		<Event>
+			<Id>33027</Id>
+			<Message>No variable linkage</Message>
+		</Event>
+		<Event>
+			<Id>33028</Id>
+			<Message>Terminal-Overtemperature</Message>
+		</Event>
+		<Event>
+			<Id>33029</Id>
+			<Message>PD-Watchdog</Message>
+		</Event>
+		<Event>
+			<Id>33077</Id>
+			<Message>Cycletime has to be a multiple of 125 µs</Message>
+		</Event>
+		<Event>
+			<Id>33079</Id>
+			<Message>Electronic name plate: CRC error</Message>
+		</Event>
+		<Event>
+			<Id>33281</Id>
+			<Message>No communication to field-side (Auxiliary voltage missing)</Message>
+		</Event>
+		<Event>
+			<Id>33538</Id>
+			<Message>Feedback-Error</Message>
+		</Event>
+		<Event>
+			<Id>33540</Id>
+			<Message>OCT communication error</Message>
+		</Event>
+		<Event>
+			<Id>33795</Id>
+			<Message>ADC Error</Message>
+		</Event>
+		<Event>
+			<Id>33796</Id>
+			<Message>Overcurrent</Message>
+		</Event>
+		<Event>
+			<Id>33798</Id>
+			<Message>Undervoltage DC-Link</Message>
+		</Event>
+		<Event>
+			<Id>33799</Id>
+			<Message>Overvoltage DC-Link</Message>
+		</Event>
+		<Event>
+			<Id>33800</Id>
+			<Message>I2T-Model Amplifier overload</Message>
+		</Event>
+		<Event>
+			<Id>33801</Id>
+			<Message>I2T-Model motor overload</Message>
+		</Event>
+		<Event>
+			<Id>33803</Id>
+			<Message>Motor error or commutation malfunction</Message>
+		</Event>
+		<Event>
+			<Id>33804</Id>
+			<Message>Phase failure</Message>
+		</Event>
+		<Event>
+			<Id>33814</Id>
+			<Message>Motor-Overtemperature</Message>
+		</Event>
+		<Event>
+			<Id>33815</Id>
+			<Message>Maximum rotating field velocity exceeded</Message>
+		</Event>
+		<Event>
+			<Id>33820</Id>
+			<Message>STO while the axis was enabled</Message>
+		</Event>
+		<Event>
+			<Id>33821</Id>
+			<Message>Internal hardware error</Message>
 		</Event>
 		<Event>
 			<Id>65535</Id>

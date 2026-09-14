@@ -9,6 +9,11 @@ arrays into one immutable PLC queue record per part.
 All operator-facing labels, dialogs, status messages, and validation errors in the
 application are in English.
 
+The PLC source supports the two EL7201 servo motors through CoE and cyclic process
+data using the existing conveyor ADS variables. Before using the new belt, follow
+the [tandem conveyor commissioning guide](../CSVSaver/TANDEM_CONVEYOR.md); the new
+motor setup and belt calibration must be verified before motion is enabled.
+
 ## Installation and start
 
 Python 3.12 and the Baumer Camera Explorer/GenTL producer are required. Close

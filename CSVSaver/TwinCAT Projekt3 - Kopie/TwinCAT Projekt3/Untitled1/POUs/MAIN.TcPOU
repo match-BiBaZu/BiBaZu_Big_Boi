@@ -53,10 +53,10 @@ VAR
 	VelocityMeasurement4Valid: BOOL := FALSE;
 
 	//GUI control values written through ADS
-	GuiPressureMbar1		: INT  := 3000;
-	GuiPressureMbar2		: INT  := 3000;
-	GuiPressureMbar3		: INT  := 3000;
-	GuiPressureMbar4		: INT  := 3000;
+	GuiPressureMbar1		: INT  := 0; // GUI/profile supplies pressure after a PLC restart
+	GuiPressureMbar2		: INT  := 0;
+	GuiPressureMbar3		: INT  := 0;
+	GuiPressureMbar4		: INT  := 0;
 	GuiDelayMs1				: UINT := 0;
 	GuiDelayMs2				: UINT := 0;
 	GuiDelayMs3				: UINT := 0;
@@ -65,8 +65,8 @@ VAR
 	GuiPulseDurationMs2		: UINT := 100;
 	GuiPulseDurationMs3		: UINT := 100;
 	GuiPulseDurationMs4		: UINT := 100;
-	GuiArrayEnabled1		: BOOL := TRUE;
-	GuiArrayEnabled2		: BOOL := TRUE;
+	GuiArrayEnabled1		: BOOL := FALSE; // GUI must explicitly arm nozzle arrays after a PLC restart
+	GuiArrayEnabled2		: BOOL := FALSE;
 	GuiArrayEnabled3		: BOOL := FALSE;
 	GuiArrayEnabled4		: BOOL := FALSE;
 	GuiNozzleEnabled1		: BOOL := TRUE;
@@ -120,8 +120,32 @@ VAR
 	GuiCalibrationCaptureLeftMark	: BOOL := FALSE;
 	GuiCalibrationCaptureRightMark	: BOOL := FALSE;
 	GuiCalibrationStop			: BOOL := FALSE;
-	GuiConveyorMmPerFullStep	: REAL := 0.32960026;
-	GuiConveyorCalibrationValid	: BOOL := TRUE;
+	GuiConveyorMmPerFullStep	: REAL := 0.0;
+	GuiConveyorCalibrationValid	: BOOL := FALSE;
+	// Verified two AM8112 motors, direct drive, 50 mm rollers, same shaft direction.
+	// Start remains an explicit GUI command; see CSVSaver/TANDEM_CONVEYOR.md.
+	ConveyorServoCommissioned : BOOL := TRUE; // stationary setup and live CoE readback verified; GUI motion starts disabled
+	ConveyorServoDirection1 : INT := 1; // same shaft direction, confirmed for the two 50 mm rollers
+	ConveyorServoDirection2 : INT := 1;
+	ConveyorServoMotor2Ratio : LREAL := 1.0; // motor 2 rev / motor 1 rev, including roller diameter
+	ConveyorServoFeedbackCountsPerRev : LREAL := 1048576.0;
+	ConveyorServoFeedbackCountsPerRev2 : LREAL := 1048576.0;
+	ConveyorServoVelocityUnitsPerRevPerSec : LREAL := 268435.0; // live CoE 0x9010:14 readback
+	ConveyorServoVelocityUnitsPerRevPerSec2 : LREAL := 268435.0;
+	ConveyorServoMaxMotorRpm : LREAL := 300.0;
+	ConveyorServoAccelerationRpmPerSec : LREAL := 300.0;
+	ConveyorServoPositionGain : LREAL := 5.0;
+	ConveyorServoSyncToleranceFullSteps : LREAL := 5.0;
+	ConveyorServoFollowingToleranceFullSteps : LREAL := 20.0;
+	// Authoritative NEW belt calibration: 200 virtual full steps per motor 1 revolution.
+	// Legacy GUI profiles cannot overwrite this with the old stepper's scale.
+	ConveyorServoCalibratedMmPerFullStep : REAL := 0.7853981634; // pi * 50 mm / 200; refine with GUI marker calibration
+	ConveyorServoFaultCode : UINT := 0;
+	ConveyorServoState : UINT := 0;
+	ConveyorServoSyncErrorFullSteps : LREAL := 0.0;
+	ConveyorServoStopRequested : BOOL := FALSE;
+	ConveyorServoResetRequested : BOOL := FALSE;
+	TandemConveyor : FB_TandemConveyor;
 	GuiOffsetMm1			: REAL := 0.0;
 	GuiOffsetMm2			: REAL := 0.0;
 	GuiOffsetMm3			: REAL := 0.0;
@@ -326,9 +350,9 @@ VAR
 	Array4Active			: BOOL := FALSE;
 	ConveyorSpeedMmPerSec	: REAL := 0.0; //limited conveyor speed command in mm/s
 	ConveyorVelocityRatio	: REAL := 0.0;
-	ConveyorVelocityRaw		: INT := 0; //0..10000 command for EL7047 positioning interface
+	ConveyorVelocityRaw		: INT := 0; //0..10000 legacy velocity command, adapted to both servos
 	ConveyorFullStepsPerSec	: REAL := 0.0;
-	ConveyorSpeedRangeFullStepsPerSec	: REAL := 2000.0; //must match CoE 0x8012:05
+	ConveyorSpeedRangeFullStepsPerSec	: REAL := 2000.0; //legacy velocity scale, virtual full steps/s
 	ConveyorMotionState		: INT := 0;
 	ConveyorMotionMode		: INT := 0; //0 idle, 1 normal endless, 2 calibration move
 	ConveyorActiveVelocity	: INT := 0;
@@ -559,27 +583,44 @@ VAR
 	OpenValve23 AT %Q*		: BOOL := 0;
 	OpenValve24 AT %Q*		: BOOL := 0;
 
-	//EL7047 stepper terminal, predefined PDO assignment "Positioning interface"
-	StepperStmStatus AT %I*			: WORD := 0; //link to Term 14 STM Status/Status
-	StepperPosBusy AT %I*			: BOOL := FALSE; //link to POS Status/Status/Busy
-	StepperPosInTarget AT %I*		: BOOL := FALSE; //link to POS Status/Status/In-Target
-	StepperPosWarning AT %I*		: BOOL := FALSE; //link to POS Status/Status/Warning
-	StepperPosError AT %I*			: BOOL := FALSE; //link to POS Status/Status/Error
-	StepperPosReadyToExecute AT %I*	: BOOL := FALSE; //link to POS Status/Status/Ready to execute
-	StepperInternalPosition AT %I*	: UDINT := 0; //link to STM Internal position/Internal position
-	StepperWcState AT %I*			: BOOL := FALSE; //optional: link to Term 14 WcState
-	StepperInfoDataState AT %I*		: UINT := 0; //optional: link to Term 14 InfoData/State
-	StepperControlEnable AT %Q*		: BOOL := FALSE; //link to STM Control/Control/Enable
-	StepperControlReset AT %Q*		: BOOL := FALSE; //link to STM Control/Control/Reset
-	StepperControlReduceTorque AT %Q*	: BOOL := FALSE; //link to STM Control/Control/Reduce torque
-	StepperControlDigitalOutput1 AT %Q*	: BOOL := FALSE; //link to STM Control/Control/Digital output 1
-	StepperPosExecute AT %Q*		: BOOL := FALSE; //link to POS Control/Control/Execute
-	StepperPosEmergencyStop AT %Q*	: BOOL := FALSE; //link to POS Control/Control/Emergency stop
-	StepperPosTargetPosition AT %Q*	: UDINT := 0; //link to POS Control/Target position
-	StepperPosVelocity AT %Q*		: INT := 0; //link to POS Control/Velocity
-	StepperPosStartType AT %Q*		: UINT := 0; //link to POS Control/Start type
-	StepperPosAcceleration AT %Q*	: UINT := 1000; //link to POS Control/Acceleration
-	StepperPosDeceleration AT %Q*	: UINT := 1000; //link to POS Control/Deceleration
+	// Existing ADS contract, now backed by FB_TandemConveyor rather than EL7047 I/O.
+	StepperStmStatus : WORD := 0;
+	StepperPosBusy : BOOL := FALSE;
+	StepperPosInTarget : BOOL := FALSE;
+	StepperPosWarning : BOOL := FALSE;
+	StepperPosError : BOOL := FALSE;
+	StepperPosReadyToExecute : BOOL := FALSE;
+	StepperInternalPosition : UDINT := 0; // encoder feedback, 64 increments per virtual full step
+	StepperWcState : BOOL := TRUE;
+	StepperInfoDataState : UINT := 0;
+	StepperControlEnable : BOOL := FALSE;
+	StepperControlReset : BOOL := FALSE;
+	StepperControlReduceTorque : BOOL := FALSE;
+	StepperControlDigitalOutput1 : BOOL := FALSE;
+	StepperPosExecute : BOOL := FALSE;
+	StepperPosEmergencyStop : BOOL := FALSE;
+	StepperPosTargetPosition : UDINT := 0;
+	StepperPosVelocity : INT := 0;
+	StepperPosStartType : UINT := 0;
+	StepperPosAcceleration : UINT := 1000; // compatibility only; servo ramp configured above
+	StepperPosDeceleration : UINT := 1000;
+	// Two EL7201-0010 terminals; mapped to the same 1 ms task.
+	ConveyorServo1Position AT %I* : UDINT;
+	ConveyorServo1Statusword AT %I* : UINT;
+	ConveyorServo1ActualVelocity AT %I* : DINT;
+	ConveyorServo1FeedbackInvalid AT %I* : BOOL := TRUE;
+	ConveyorServo1WcState AT %I* : BOOL := TRUE;
+	ConveyorServo1InfoState AT %I* : UINT;
+	ConveyorServo1Controlword AT %Q* : UINT;
+	ConveyorServo1TargetVelocity AT %Q* : DINT;
+	ConveyorServo2Position AT %I* : UDINT;
+	ConveyorServo2Statusword AT %I* : UINT;
+	ConveyorServo2ActualVelocity AT %I* : DINT;
+	ConveyorServo2FeedbackInvalid AT %I* : BOOL := TRUE;
+	ConveyorServo2WcState AT %I* : BOOL := TRUE;
+	ConveyorServo2InfoState AT %I* : UINT;
+	ConveyorServo2Controlword AT %Q* : UINT;
+	ConveyorServo2TargetVelocity AT %Q* : DINT;
 	
 	//VTEM Motion Terminal Variables
 	FBValveControlV0		: FestoVTEMdc.FB_ValveControl; //Renaming function in program
@@ -640,7 +681,28 @@ VAR
 END_VAR
 ]]></Declaration>
     <Implementation>
-      <ST><![CDATA[NozzlePressure := TO_REAL(RawNozzlePressure) * 10.0 / 32767.0;
+      <ST><![CDATA[// Preserve commands before the legacy state machine consumes their one-shot flags.
+ConveyorServoStopRequested := GuiCalibrationStop;
+ConveyorServoResetRequested := GuiConveyorReset;
+// Profiles for the old belt must not silently replace the new belt's calibration.
+GuiConveyorMmPerFullStep := ConveyorServoCalibratedMmPerFullStep;
+GuiConveyorCalibrationValid := ConveyorServoCalibratedMmPerFullStep > 0.0;
+IF NOT ConveyorServoCommissioned OR NOT GuiConveyorCalibrationValid THEN
+	GuiConveyorEnabled := FALSE;
+END_IF
+// Surface current-cycle drive/communication faults before the batch safety checks.
+StepperWcState := ConveyorServo1WcState OR ConveyorServo2WcState;
+StepperInfoDataState := ConveyorServo1InfoState;
+IF ConveyorServo2InfoState <> UINT#8 THEN
+	StepperInfoDataState := ConveyorServo2InfoState;
+END_IF
+StepperPosError := TandemConveyor.Error OR (ConveyorServoCommissioned AND (
+	((ConveyorServo1Statusword AND UINT#8) <> 0)
+	OR ((ConveyorServo2Statusword AND UINT#8) <> 0)
+	OR StepperWcState OR (StepperInfoDataState <> UINT#8)
+	OR ConveyorServo1FeedbackInvalid OR ConveyorServo2FeedbackInvalid));
+
+NozzlePressure := TO_REAL(RawNozzlePressure) * 10.0 / 32767.0;
 NozzlePressure2 := TO_REAL(RawNozzlePressure2) * 10.0 / 32767.0;
 LogPressureTrigger := FALSE;
 LightBarrierEventClockMs := LightBarrierEventClockMs + 1;
@@ -1221,7 +1283,8 @@ END_IF
 
 // Capture either marker only while the terminal is stationary.
 IF GuiCalibrationCaptureLeftMark THEN
-	IF GuiConveyorCalibrationMode AND (ConveyorMotionState = 0) AND NOT StepperPosBusy THEN
+	IF GuiConveyorCalibrationMode AND (ConveyorMotionState = 0) AND NOT StepperPosBusy
+		AND StepperPosReadyToExecute AND NOT StepperPosError THEN
 		CalibrationLeftPosition := StepperInternalPosition;
 		CalibrationLeftMarkValid := TRUE;
 		CalibrationStatusCode := 0;
@@ -1232,7 +1295,8 @@ IF GuiCalibrationCaptureLeftMark THEN
 END_IF
 
 IF GuiCalibrationCaptureRightMark THEN
-	IF GuiConveyorCalibrationMode AND (ConveyorMotionState = 0) AND NOT StepperPosBusy THEN
+	IF GuiConveyorCalibrationMode AND (ConveyorMotionState = 0) AND NOT StepperPosBusy
+		AND StepperPosReadyToExecute AND NOT StepperPosError THEN
 		CalibrationRightPosition := StepperInternalPosition;
 		CalibrationRightMarkValid := TRUE;
 		CalibrationStatusCode := 0;
@@ -1243,10 +1307,15 @@ IF GuiCalibrationCaptureRightMark THEN
 END_IF
 
 // Recalculate whenever both positions or the physical marker spacing change.
-IF CalibrationLeftMarkValid AND CalibrationRightMarkValid THEN
-	// Interpret the internal counter as signed so a short negative move across zero does not look like 2^32 increments.
-	CalibrationPositionDelta := DINT_TO_LINT(UDINT_TO_DINT(CalibrationRightPosition))
-		- DINT_TO_LINT(UDINT_TO_DINT(CalibrationLeftPosition));
+IF GuiConveyorCalibrationMode AND CalibrationLeftMarkValid AND CalibrationRightMarkValid THEN
+	// Modular counter difference works across both the sign boundary and UDINT wrap.
+	CalibrationPositionDelta := UDINT_TO_LINT(CalibrationRightPosition)
+		- UDINT_TO_LINT(CalibrationLeftPosition);
+	IF CalibrationPositionDelta > LINT#2147483647 THEN
+		CalibrationPositionDelta := CalibrationPositionDelta - LINT#4294967296;
+	ELSIF CalibrationPositionDelta < LINT#-2147483648 THEN
+		CalibrationPositionDelta := CalibrationPositionDelta + LINT#4294967296;
+	END_IF
 	IF CalibrationPositionDelta < 0 THEN
 		CalibrationPositionDelta := -CalibrationPositionDelta;
 	END_IF
@@ -1254,6 +1323,7 @@ IF CalibrationLeftMarkValid AND CalibrationRightMarkValid THEN
 		CalibrationPositionDifferenceIncrements := LINT_TO_UDINT(CalibrationPositionDelta);
 		CalibrationFullStepDifference := TO_REAL(CalibrationPositionDifferenceIncrements) / 64.0;
 		GuiConveyorMmPerFullStep := GuiCalibrationMarkerDistanceMm / CalibrationFullStepDifference;
+		ConveyorServoCalibratedMmPerFullStep := GuiConveyorMmPerFullStep;
 		CalibrationStepsPerMm := 1.0 / GuiConveyorMmPerFullStep;
 		GuiConveyorCalibrationValid := TRUE;
 	ELSE
@@ -1269,7 +1339,7 @@ IF GuiConveyorCalibrationValid AND (GuiConveyorMmPerFullStep > 0.0) THEN
 	ConveyorVelocityRatio := ConveyorFullStepsPerSec / ConveyorSpeedRangeFullStepsPerSec;
 ELSE
 	ConveyorFullStepsPerSec := 0.0;
-	ConveyorVelocityRatio := ConveyorSpeedMmPerSec / GuiConveyorMaxSpeedMmPerSec;
+	ConveyorVelocityRatio := 0.0;
 END_IF
 IF ConveyorVelocityRatio < 0.0 THEN
 	ConveyorVelocityRatio := 0.0;
@@ -2057,8 +2127,13 @@ IF BarrierCalibrationActive THEN
 			IF BarrierCalibrationSecondStableCycles >= GuiBarrierCalibrationDebounceMs THEN
 				BarrierCalibrationSecondPosition := BarrierCalibrationSecondCandidatePosition;
 				BarrierCalibrationSecondCaptured := TRUE;
-				BarrierCalibrationPositionDelta := DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationSecondPosition))
-					- DINT_TO_LINT(UDINT_TO_DINT(BarrierCalibrationFirstPosition));
+				BarrierCalibrationPositionDelta := UDINT_TO_LINT(BarrierCalibrationSecondPosition)
+					- UDINT_TO_LINT(BarrierCalibrationFirstPosition);
+				IF BarrierCalibrationPositionDelta > LINT#2147483647 THEN
+					BarrierCalibrationPositionDelta := BarrierCalibrationPositionDelta - LINT#4294967296;
+				ELSIF BarrierCalibrationPositionDelta < LINT#-2147483648 THEN
+					BarrierCalibrationPositionDelta := BarrierCalibrationPositionDelta + LINT#4294967296;
+				END_IF
 				IF BarrierCalibrationPositionDelta < 0 THEN
 					BarrierCalibrationPositionDelta := -BarrierCalibrationPositionDelta;
 				END_IF
@@ -3016,7 +3091,94 @@ LastLightBarrier4 := LightBarrierStable4;
 LastLightBarrier5 := LightBarrierStable5;
 LastLightBarrier6 := LightBarrierStable6;
 LastLightBarrier7 := LightBarrierStable7;
-LastLightBarrier8 := LightBarrierStable8;]]></ST>
+LastLightBarrier8 := LightBarrierStable8;
+
+// Call once, last in the 1 ms cycle, so late batch completion/abort also reaches both drives.
+IF (ConveyorMotionMode = 1) AND NOT GuiConveyorEnabled THEN
+	StepperPosExecute := FALSE;
+END_IF
+IF ConveyorServoStopRequested THEN
+	GuiConveyorEnabled := FALSE;
+END_IF
+// The old positioning-interface "emergency stop" flag is also used by ordinary
+// GUI Stop/calibration exit. Request a controlled ramp and wait for measured standstill.
+IF StepperPosEmergencyStop OR ConveyorServoStopRequested THEN
+	StepperPosExecute := FALSE;
+END_IF
+IF ReorientationSafeLatch OR NOT ConveyorServoCommissioned THEN
+	StepperControlEnable := FALSE;
+	StepperPosExecute := FALSE;
+END_IF
+// A reset always cancels outstanding commands. It cannot restart either motor.
+IF ConveyorServoResetRequested THEN
+	GuiConveyorEnabled := FALSE;
+	GuiConveyorCalibrationMode := FALSE;
+	StepperControlEnable := FALSE;
+	StepperPosExecute := FALSE;
+	StepperPosEmergencyStop := FALSE;
+	ConveyorMotionState := 0;
+	ConveyorMotionMode := 0;
+	CalibrationBusy := FALSE;
+	CalibrationLeftMarkValid := FALSE;
+	CalibrationRightMarkValid := FALSE;
+END_IF
+
+TandemConveyor(
+	Enable := StepperControlEnable,
+	Execute := StepperPosExecute,
+	EmergencyStop := FALSE, // application cancellation ramps through Execute; faults override in FB
+	Reset := ConveyorServoResetRequested,
+	Inhibit := ReorientationSafeLatch,
+	StartType := StepperPosStartType,
+	TargetPosition := StepperPosTargetPosition,
+	Velocity := StepperPosVelocity,
+	LegacySpeedRange := REAL_TO_LREAL(ConveyorSpeedRangeFullStepsPerSec),
+	Commissioned := ConveyorServoCommissioned,
+	Direction1 := ConveyorServoDirection1,
+	Direction2 := ConveyorServoDirection2,
+	Motor2Ratio := ConveyorServoMotor2Ratio,
+	FeedbackCountsPerRev := ConveyorServoFeedbackCountsPerRev,
+	FeedbackCountsPerRev2 := ConveyorServoFeedbackCountsPerRev2,
+	VelocityUnitsPerRevPerSec := ConveyorServoVelocityUnitsPerRevPerSec,
+	VelocityUnitsPerRevPerSec2 := ConveyorServoVelocityUnitsPerRevPerSec2,
+	MaxMotorRpm := ConveyorServoMaxMotorRpm,
+	AccelerationRpmPerSec := ConveyorServoAccelerationRpmPerSec,
+	PositionGain := ConveyorServoPositionGain,
+	SyncToleranceFullSteps := ConveyorServoSyncToleranceFullSteps,
+	FollowingToleranceFullSteps := ConveyorServoFollowingToleranceFullSteps,
+	CycleSeconds := 0.001,
+	Position1 := ConveyorServo1Position,
+	Position2 := ConveyorServo2Position,
+	Statusword1 := ConveyorServo1Statusword,
+	Statusword2 := ConveyorServo2Statusword,
+	WcState1 := ConveyorServo1WcState,
+	WcState2 := ConveyorServo2WcState,
+	InfoState1 := ConveyorServo1InfoState,
+	InfoState2 := ConveyorServo2InfoState,
+	ActualVelocity1 := ConveyorServo1ActualVelocity,
+	ActualVelocity2 := ConveyorServo2ActualVelocity,
+	FeedbackInvalid1 := ConveyorServo1FeedbackInvalid,
+	FeedbackInvalid2 := ConveyorServo2FeedbackInvalid,
+	Controlword1 => ConveyorServo1Controlword,
+	Controlword2 => ConveyorServo2Controlword,
+	TargetVelocity1 => ConveyorServo1TargetVelocity,
+	TargetVelocity2 => ConveyorServo2TargetVelocity,
+	LegacyPosition => StepperInternalPosition,
+	Busy => StepperPosBusy,
+	InTarget => StepperPosInTarget,
+	Ready => StepperPosReadyToExecute,
+	Warning => StepperPosWarning,
+	Error => StepperPosError,
+	FaultCode => ConveyorServoFaultCode,
+	StmStatus => StepperStmStatus,
+	State => ConveyorServoState,
+	SyncErrorFullSteps => ConveyorServoSyncErrorFullSteps);
+CalibrationError := StepperPosError;
+IF StepperPosError THEN
+	GuiConveyorEnabled := FALSE;
+	GuiConveyorCalibrationMode := FALSE;
+	CalibrationStatusCode := 5;
+END_IF]]></ST>
     </Implementation>
   </POU>
 </TcPlcObject>

@@ -2125,7 +2125,7 @@ class ConveyorCalibrationDialog(QDialog):
         2: "Moving",
         3: "Move complete",
         4: "Command rejected",
-        5: "EL7047 error",
+        5: "Conveyor drive error",
     }
 
     def __init__(self, ads: AdsController, parent: QWidget | None = None) -> None:
@@ -2312,7 +2312,7 @@ class ConveyorCalibrationDialog(QDialog):
 
         state_text = self.STATUS_TEXT.get(status["status_code"], "Unknown state")
         if error:
-            state_text = "EL7047 error"
+            state_text = "Conveyor drive error"
         elif not ready:
             state_text = "Drive not ready - verify Positioning Interface PDOs"
         self.state_label.setText(state_text)
@@ -2481,7 +2481,7 @@ class ConveyorJogDialog(QDialog):
             status["status_code"], "Unknown state"
         )
         if error:
-            state_text = "EL7047 error"
+            state_text = "Conveyor drive error"
         elif not ready:
             state_text = "Drive not ready - verify Positioning Interface PDOs"
         self.state_label.setText(state_text)
