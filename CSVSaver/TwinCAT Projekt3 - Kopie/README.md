@@ -1,15 +1,20 @@
 # Two-motor conveyor with existing GUI
 
-**Latest test, 2026-09-15 at 17:14 UTC: Device 3 completed a 10 rpm unloaded
-move, with smooth shaft rotation confirmed by the user.** Over a ten-second
-plateau, average PLC target / drive actual / encoder-derived speed were
-9.966 / 9.887 / 9.934 rpm. The finite move covered 2.08517 revolutions including
-ramps, without faults or new drive diagnostics. Instantaneous actual velocity
-remained noisy. Device 4 stayed disabled. The two-motor selection and original
-5 rpm limit were restored afterward, with both drives disabled and motion
-inhibited in the current runtime. The 30/50 rpm stages were not run. Earlier
-paired tests failed; tandem and loaded readiness remain unverified. See the
-parent `TANDEM_CONVEYOR.md` for evidence and limits of this result.
+The existing PLC project now uses pure velocity commands without position
+correction. Direction, ratio, speed ramp and GUI commands remain supported;
+encoder feedback supplies travel reporting and speed monitoring only. Finite
+GUI jogs run a calculated speed profile without endpoint correction.
+
+Device 4 passed ten-second plateaus at 10 and 30 rpm with 1 rpm/s ramps and
+unchanged PI gains. Encoder-derived means were 10.0037 and 29.9945 rpm. Device 3
+remained disabled. Device 3's velocity-only start had previously failed with
+a speed-tracking stop. No PI tuning or tandem/loaded readiness is established.
+
+At about 18:05 UTC the 50 rpm stage was blocked before movement because Device
+4's manual brake override had been re-enabled externally. Both drives remain
+disabled and inhibited; SingleMotor=2, MotorCount=1, temporary limits 30 rpm and
+1 rpm/s. Confirmation that the motor is free of manual work is pending. See
+the parent `TANDEM_CONVEYOR.md` for current state and evidence.
 
 Open `TwinCAT Projekt3.sln` in this directory. This is the existing conveyor project;
 the earlier CSTCA diagnostic projects and their evidence remain archived outside it.
@@ -29,7 +34,9 @@ direction, with 50 mm rollers and no gearbox. Both must be ready to enable.
 The temporary `TestStart`, `TestAbort`, torque/commutation-angle outputs and
 `FB_Cstca*` blocks have been removed. The normal conveyor adapter explicitly
 supports one or two motors; MAIN supplies `ConveyorServoMotorCount`, default 2.
-A stopped reset can select 1 for Device 3 alone, with Device 4 outputs zero.
+A stopped reset can select MotorCount=1 and ConveyorServoSingleMotor=1 for
+Device 3 alone, or ConveyorServoSingleMotor=2 for Device 4 alone. The inactive
+motor always receives zero controlword and target velocity.
 The main program still checks both physical drives' health. All active-motor
 fault, feedback, stop and timeout monitoring remains enabled. Changing motor
 count in the FB requires stopped reconfiguration; no partner feedback is fabricated.

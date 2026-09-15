@@ -1,31 +1,55 @@
 # Conveyor control — Device 3 and Device 4
 
-**Latest live result (2026-09-15, 17:14 UTC): Device 3 completed an unloaded
-10 rpm test, and the user confirmed smooth shaft rotation.** With its motor
-separated from the roller, the finite move covered 2.08517 revolutions in
-14.64 seconds, including 5 rpm/s acceleration and deceleration ramps. Over a
-10.007-second plateau (520 samples), the average PLC target was **9.966 rpm**,
-the average drive-reported actual velocity was **9.887 rpm**, and encoder travel
-gave **9.934 rpm** (0.66% below the 10 rpm request). Instantaneous drive velocity
-remained noisy: 4.774–20.872 rpm, standard deviation 2.685 rpm. These readings
-alone do not establish corresponding physical speed excursions.
+**Latest successful tests, 18:00–18:03 UTC: Device 4 completed 10 and 30 rpm
+with the velocity-only PLC and 1 rpm/s ramps.** Each plateau lasted ten seconds.
+At 10 rpm, mean target / drive actual / encoder-derived speed were
+9.9999 / 9.9797 / 10.0037 rpm. At 30 rpm they were
+30.0001 / 30.0098 / 29.9945 rpm. The user confirmed uniform visible rotation
+after the repeated 10 rpm test. Their physical change before that successful
+repeat was not specified. Both runs used the original Kp=82 and Tn=15 ms;
+no changed PI gain was tested. Motor 3 stayed disabled. The instantaneous drive
+velocity remained noisy; at 30 rpm, speed derived over ~0.1-second encoder
+windows ranged 27.29–33.52 rpm, and over ~1-second windows 29.82–30.28 rpm.
+Evidence: `.tandem_validation/velocity_only_device4_20260915T175959Z.json`
+and `velocity_only_device4_20260915T180231Z.json` (CSV files alongside).
 
-There were no PLC/drive faults, feedback-invalid indications, or new diagnostic
-history entries. EtherCAT synchronization error counters remained zero. Device 4
-was disabled throughout all 778 logged samples. The earlier paired tests failed;
-tandem/loaded readiness remains unverified. The requested 30/50 rpm stages were
-not executed: automatic approval review blocked the original higher-speed sweep;
-the subsequent separately approved test used a hard 10 rpm cap.
+At approximately 18:05 UTC, the attempted configuration for 50 rpm was refused
+before any writes because Device 4's manual brake override had again become
+TRUE externally. The 50 rpm move did not start. Both drives remain disabled
+and inhibited; the temporary runtime settings are MotorCount=1, SingleMotor=2,
+30 rpm maximum and 1 rpm/s. Confirmation that the motor is free of manual work
+was requested before proceeding. Evidence: `device4_manual_brake_20260915T180500Z.json`.
 
-At 17:14:51 UTC, the two-motor setting and original **5 rpm** limit were restored,
-both drives were disabled, and `ConveyorServoCommissioned = FALSE` inhibited
-motion in the current runtime. This runtime inhibit is not electrical isolation
-or a changed boot default. Raw JSON/CSV evidence is stored outside the project:
-workspace `.tandem_validation/device3_rpm_comparison_20260915T171408Z.{json,csv}`;
-the restoration record is `motor_count_selection_20260915T171451Z.json` there.
-The roller initially appeared stationary, but the user subsequently reported a
-loose coupling, so roller motion did not establish motor-shaft motion. Do not
-treat the successful scan/build as successful motor commissioning.
+The velocity-only program is loaded in the existing project. Nineteen ST
+behavior tests and six I/O contract tests passed; TwinCAT compiled without
+errors and verified 16 motor links, two pressure links and 68 CoE startup
+entries. Deployment evidence: `.tandem_validation/velocity_only_load_20260915T174346Z`.
+
+Earlier velocity-only starts at 5 rpm/s failed separately on both motors with
+PLC speed-tracking fault 6. The first Device 4 trial at 1 rpm/s also stopped
+before reaching its target. A later user-requested repeat succeeded; the
+physical intervention before that repeat was not specified. Device 3 has not
+yet passed the velocity-only test. Higher-speed and tandem/loaded readiness
+remain unverified. Device 4's P gain was briefly set to 100 while disabled,
+then restored to 82 before a motion test; no PI gain change has been validated.
+Both drives retain Kp=82 and Tn=15 ms. Earlier details and snapshots are archived
+in `.tandem_validation/velocity_only_notes_20260915_1805.md`.
+
+**Velocity-only implementation:** the PLC sends one common ramped velocity,
+scaled for each motor's direction, ratio and CoE velocity factor. There is no
+position-error correction and no phase locking. `SyncErrorFullSteps` remains
+available as a diagnostic; it does not steer the motors or cause a fault.
+Speed monitoring uses a 100 ms low-pass of encoder-derived velocity. Its
+allowance is 2 rpm + 15% of commanded speed + the filter's acceleration lag;
+a sustained tracking or partner-speed mismatch for 250 ms stops the motors.
+Fault 5 now means partner-speed mismatch; fault 6 includes speed tracking or
+loss of operation-enabled. Communication, enable, stop and move timeouts remain.
+
+Finite GUI/calibration jogs keep their existing commands and busy/done interface,
+but finish a calculated speed profile and wait for standstill. They do not
+correct a residual distance error or hold a target position. Actual encoder
+travel remains the source for the legacy position and calibration readings.
+The initial speed cap remains 5 rpm; larger test limits are temporary.
 
 Use the existing project **`TwinCAT Projekt3 - Kopie/TwinCAT Projekt3.sln`**.
 It has been updated in place. The additional `Device3_Conveyor` copy has been
@@ -65,15 +89,16 @@ GUIs keep the same controller, ADS port 851, and symbol names:
 | Reverse | `MAIN.GuiConveyorReverse` |
 | Stop | Disable conveyor, or `MAIN.GuiCalibrationStop` |
 | Reset | `MAIN.GuiConveyorReset` |
-| Stopped motor-count configuration | `MAIN.ConveyorServoMotorCount`: default 2; 1 selects Device 3 only |
+| Stopped motor-count configuration | `MAIN.ConveyorServoMotorCount`: default 2; 1 selects a single motor |
+| Single-motor selection | `MAIN.ConveyorServoSingleMotor`: 1 = Device 3, 2 = Device 4; stopped reset required |
 | Calibration / finite jog | `MAIN.GuiConveyorCalibrationMode`, `GuiCalibrationMoveLeft/Right` |
 | Jog distance / speed | `MAIN.GuiCalibrationJogSteps`, `GuiCalibrationJogSpeedFullStepsPerSec` |
 | Ready / busy / fault | Existing `MAIN.StepperPos*` status symbols |
 
 `Stepper*` names are compatibility signals, not physical EL7047 commands.
 `MAIN.ConveyorServo1*` refers to Device 3; `MAIN.ConveyorServo2*` refers to Device 4.
-Both motors must be ready. A drive, communication, feedback or synchronization
-fault stops the pair. Position, stop and timeout monitoring remains enabled.
+Both motors must be ready in tandem mode. A drive, communication, feedback or
+sustained speed-mismatch fault stops the pair. Stop and timeout monitoring remains enabled.
 
 `TestStart`, `TestAbort`, test torque/commutation-angle outputs and `FB_Cstca*`
 blocks are removed from the active project. `ConveyorDriveSettings` and

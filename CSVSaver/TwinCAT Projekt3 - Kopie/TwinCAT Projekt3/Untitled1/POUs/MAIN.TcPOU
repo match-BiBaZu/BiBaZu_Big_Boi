@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.19">
   <POU Name="MAIN" Id="{e80dba2a-67f9-4c18-8302-7ea92125d6c4}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
@@ -135,9 +135,10 @@ VAR
 	ConveyorServoVelocityUnitsPerRevPerSec2 : LREAL := 268435.0;
 	ConveyorServoMaxMotorRpm : LREAL := 5.0;
 	ConveyorServoAccelerationRpmPerSec : LREAL := 5.0;
-	ConveyorServoPositionGain : LREAL := 5.0;
-	ConveyorServoSyncToleranceFullSteps : LREAL := 5.0;
-	ConveyorServoFollowingToleranceFullSteps : LREAL := 20.0;
+	ConveyorServoSingleMotor : UINT := 1; // Physical motor selected when MotorCount=1; stopped reset.
+	ConveyorServoSpeedToleranceRpm : LREAL := 2.0;
+	ConveyorServoSpeedTolerancePercent : LREAL := 15.0;
+	ConveyorServoVelocityOnly : BOOL := TRUE; // readback marker; FB has no position correction
 	// Authoritative NEW belt calibration: 200 virtual full steps per motor 1 revolution.
 	// Legacy GUI profiles cannot overwrite this with the old stepper's scale.
 	ConveyorServoCalibratedMmPerFullStep : REAL := 0.7853981634; // pi * 50 mm / 200; refine with GUI marker calibration
@@ -3153,9 +3154,9 @@ TandemConveyor(
 	VelocityUnitsPerRevPerSec2 := ConveyorServoVelocityUnitsPerRevPerSec2,
 	MaxMotorRpm := ConveyorServoMaxMotorRpm,
 	AccelerationRpmPerSec := ConveyorServoAccelerationRpmPerSec,
-	PositionGain := ConveyorServoPositionGain,
-	SyncToleranceFullSteps := ConveyorServoSyncToleranceFullSteps,
-	FollowingToleranceFullSteps := ConveyorServoFollowingToleranceFullSteps,
+	SingleMotor := ConveyorServoSingleMotor,
+	SpeedToleranceRpm := ConveyorServoSpeedToleranceRpm,
+	SpeedTolerancePercent := ConveyorServoSpeedTolerancePercent,
 	CycleSeconds := 0.001,
 	Position1 := ConveyorServo1Position,
 	Position2 := ConveyorServo2Position,

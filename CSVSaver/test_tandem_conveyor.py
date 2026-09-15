@@ -28,6 +28,7 @@ class DrivePlant:
         self.units = [1000000.0, 2000000.0]
         self.counts = [1048576.0, 2097152.0]
         self.stalled = [False, False]
+        self.speed_gain = [1.0, 1.0]
         self.hold_disabled = [False, False]
         self.overrides = {}
         self.sim.step(
@@ -54,7 +55,7 @@ class DrivePlant:
             if self.hold_disabled[index]:
                 status = 64
             if status == 7 and not self.stalled[index]:
-                desired = self.values[f"TargetVelocity{axis}"]
+                desired = self.values[f"TargetVelocity{axis}"] * self.speed_gain[index]
                 self.velocity[index] += (desired - self.velocity[index]) * 0.1
             else:
                 self.velocity[index] = 0.0
@@ -140,7 +141,49 @@ class TandemConveyorTests(unittest.TestCase):
                 self.assertAlmostEqual(measured, direction * 100, delta=0.25)
                 self.assertLess(abs(values["SyncErrorFullSteps"]), 0.25)
                 for axis in (1, 2):
-                    self.assertLess(abs(values["MeasuredVelocity"][axis]), 1.0)
+                    self.assertLess(abs(plant.velocity[axis-1] / plant.units[axis-1] * 200), 1.0)
+                self.assertTrue(values["EncoderStationary"])
+
+    def test_position_offset_and_small_speed_drift_never_correct_velocity(self):
+        plant = DrivePlant()
+        plant.position[1] += 30 * plant.counts[1] / 200
+        for _ in range(1200):
+            plant.step()
+        plant.speed_gain[1] = 0.98
+        plant.enable()
+        plant.step(Execute=True, StartType=3, Velocity=500)
+        for _ in range(4000):
+            v = plant.step()
+            self.assertFalse(v['Error'], v['FaultCode'])
+            # Different raw velocity scales still command the same physical speed.
+            self.assertAlmostEqual(v['TargetVelocity1']/plant.units[0],
+                                   v['TargetVelocity2']/plant.units[1], delta=0.000002)
+        self.assertGreater(abs(v['SyncErrorFullSteps']), 5)
+
+    def test_device4_only_never_enables_device3_and_stops_without_position_hold(self):
+        plant = DrivePlant()
+        plant.step(Commissioned=False, MotorCount=1, SingleMotor=2)
+        plant.step(Commissioned=True)
+        for _ in range(120):plant.step()
+        plant.step(Reset=True)
+        plant.step(Reset=False)
+        plant.run_until(lambda v: not v['ResetActive'] and v['FeedbackInitialized'])
+        before = plant.position[0]
+        plant.enable()
+        plant.step(Execute=True, StartType=2, TargetPosition=20*64, Velocity=500)
+        plant.speed_gain[1] = 0.97
+        for _ in range(5000):
+            v=plant.step()
+            self.assertEqual(v['Controlword1'],0)
+            self.assertEqual(v['TargetVelocity1'],0)
+            self.assertFalse(v['Error'],v['FaultCode'])
+            if v['InTarget']:break
+        self.assertTrue(v['InTarget'])
+        self.assertEqual(plant.position[0],before)
+        self.assertGreater(plant.position[1],0)
+        # No final correction to remove the deliberately induced distance error.
+        self.assertLess(v['LegacyPosition']/64,19.75)
+        self.assertEqual(v['TargetVelocity2'],0)
 
     def test_raw_udint_wrap_is_measured_without_position_jump(self):
         plant = DrivePlant(initial_position=(1 << 32) - 300)
@@ -332,7 +375,7 @@ class TandemConveyorTests(unittest.TestCase):
         self.assert_pair_zero(values)
 
     def test_live_configuration_changes_stop_and_require_explicit_reset(self):
-        for change in ({"MotorCount": 1}, {"Direction2": -1}, {"VelocityUnitsPerRevPerSec2": 1.0},
+        for change in ({"MotorCount": 1}, {"SingleMotor": 2}, {"SpeedToleranceRpm": 3.0}, {"Direction2": -1}, {"VelocityUnitsPerRevPerSec2": 1.0},
                        {"FeedbackCountsPerRev2": 42.0}, {"Motor2Ratio": float("nan")}):
             with self.subTest(change=change):
                 plant = DrivePlant()
