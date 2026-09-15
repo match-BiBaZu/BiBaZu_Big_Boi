@@ -1,24 +1,28 @@
 # Conveyor control — Device 3 and Device 4
 
-**Latest successful tests, 18:00–18:03 UTC: Device 4 completed 10 and 30 rpm
-with the velocity-only PLC and 1 rpm/s ramps.** Each plateau lasted ten seconds.
+**Latest successful tests, 18:00–18:11 UTC: Device 4 completed 10, 30 and 50 rpm
+with the velocity-only PLC.** The 10/30 rpm tests used 1 rpm/s ramps; the 50 rpm
+test used the user-requested 3 rpm/s ramp. Each plateau lasted ten seconds.
 At 10 rpm, mean target / drive actual / encoder-derived speed were
 9.9999 / 9.9797 / 10.0037 rpm. At 30 rpm they were
-30.0001 / 30.0098 / 29.9945 rpm. The user confirmed uniform visible rotation
+30.0001 / 30.0098 / 29.9945 rpm. At 50 rpm they were
+49.9799 / 50.0397 / 49.9843 rpm. The user confirmed uniform visible rotation
 after the repeated 10 rpm test. Their physical change before that successful
-repeat was not specified. Both runs used the original Kp=82 and Tn=15 ms;
+repeat was not specified. All three runs used the original Kp=82 and Tn=15 ms;
 no changed PI gain was tested. Motor 3 stayed disabled. The instantaneous drive
 velocity remained noisy; at 30 rpm, speed derived over ~0.1-second encoder
 windows ranged 27.29–33.52 rpm, and over ~1-second windows 29.82–30.28 rpm.
-Evidence: `.tandem_validation/velocity_only_device4_20260915T175959Z.json`
-and `velocity_only_device4_20260915T180231Z.json` (CSV files alongside).
+Evidence: `.tandem_validation/velocity_only_device4_20260915T175959Z.json`,
+`velocity_only_device4_20260915T180231Z.json`, and
+`velocity_only_device4_20260915T181036Z.json` (CSV files alongside).
 
-At approximately 18:05 UTC, the attempted configuration for 50 rpm was refused
-before any writes because Device 4's manual brake override had again become
-TRUE externally. The 50 rpm move did not start. Both drives remain disabled
-and inhibited; the temporary runtime settings are MotorCount=1, SingleMotor=2,
-30 rpm maximum and 1 rpm/s. Confirmation that the motor is free of manual work
-was requested before proceeding. Evidence: `device4_manual_brake_20260915T180500Z.json`.
+Post-test diagnostics showed no new drive-history entry, feedback-invalid flag,
+working-counter error or EtherCAT synchronization error. Device 3 stayed disabled
+through every sample. At 18:11:51 UTC the normal runtime settings were restored:
+MotorCount=2, SingleMotor=1, maximum 5 rpm and acceleration 5 rpm/s. Both drives
+were verified disabled and `ConveyorServoCommissioned=FALSE`; both brake overrides
+were FALSE. Restoration evidence:
+`.tandem_validation/motor_count_selection_20260915T181151Z.json`.
 
 The velocity-only program is loaded in the existing project. Nineteen ST
 behavior tests and six I/O contract tests passed; TwinCAT compiled without

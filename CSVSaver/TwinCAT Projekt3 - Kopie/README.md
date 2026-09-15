@@ -5,16 +5,14 @@ correction. Direction, ratio, speed ramp and GUI commands remain supported;
 encoder feedback supplies travel reporting and speed monitoring only. Finite
 GUI jogs run a calculated speed profile without endpoint correction.
 
-Device 4 passed ten-second plateaus at 10 and 30 rpm with 1 rpm/s ramps and
-unchanged PI gains. Encoder-derived means were 10.0037 and 29.9945 rpm. Device 3
-remained disabled. Device 3's velocity-only start had previously failed with
+Device 4 passed ten-second plateaus at 10, 30 and 50 rpm with unchanged PI gains.
+The first two used 1 rpm/s ramps; 50 rpm used 3 rpm/s. Encoder-derived means were
+10.0037, 29.9945 and 49.9843 rpm. Device 3 remained disabled. Device 3's velocity-only start had previously failed with
 a speed-tracking stop. No PI tuning or tandem/loaded readiness is established.
 
-At about 18:05 UTC the 50 rpm stage was blocked before movement because Device
-4's manual brake override had been re-enabled externally. Both drives remain
-disabled and inhibited; SingleMotor=2, MotorCount=1, temporary limits 30 rpm and
-1 rpm/s. Confirmation that the motor is free of manual work is pending. See
-the parent `TANDEM_CONVEYOR.md` for current state and evidence.
+After the final test both drives were disabled and inhibited, both brake overrides
+were FALSE, and the normal MotorCount=2, 5 rpm and 5 rpm/s runtime settings were
+restored. See the parent `TANDEM_CONVEYOR.md` for current state and evidence.
 
 Open `TwinCAT Projekt3.sln` in this directory. This is the existing conveyor project;
 the earlier CSTCA diagnostic projects and their evidence remain archived outside it.
