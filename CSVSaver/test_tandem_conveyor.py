@@ -332,7 +332,7 @@ class TandemConveyorTests(unittest.TestCase):
         self.assert_pair_zero(values)
 
     def test_live_configuration_changes_stop_and_require_explicit_reset(self):
-        for change in ({"Direction2": -1}, {"VelocityUnitsPerRevPerSec2": 1.0},
+        for change in ({"MotorCount": 1}, {"Direction2": -1}, {"VelocityUnitsPerRevPerSec2": 1.0},
                        {"FeedbackCountsPerRev2": 42.0}, {"Motor2Ratio": float("nan")}):
             with self.subTest(change=change):
                 plant = DrivePlant()
@@ -341,6 +341,35 @@ class TandemConveyorTests(unittest.TestCase):
                 values = plant.step(**change)
                 self.assertTrue(values["Error"])
                 self.assert_pair_zero(values)
+
+    def test_stopped_reset_selects_motor_one_and_restores_tandem(self):
+        plant = DrivePlant()
+        for count in (1, 2):
+            plant.step(Commissioned=False, Enable=False, Execute=False)
+            plant.step(MotorCount=count, Commissioned=True)
+            for _ in range(120):
+                values = plant.step()
+                self.assert_pair_zero(values)
+            self.assertEqual(values["FaultCode"], 8)
+            plant.step(Reset=True)
+            plant.step(Reset=False)
+            values = plant.run_until(lambda v: not v["ResetActive"] and v["FeedbackInitialized"])
+            self.assertFalse(values["Error"])
+            self.assertEqual(values["CfgMotorCount"], count)
+            self.assert_pair_zero(values)
+            if count == 1:
+                partner_position = plant.position[1]
+                plant.enable()
+                plant.step(Execute=True, StartType=2, TargetPosition=2 * 64, Velocity=80)
+                for _ in range(5000):
+                    values = plant.step()
+                    self.assertEqual(values["Controlword2"], 0)
+                    self.assertEqual(values["TargetVelocity2"], 0)
+                    if values["InTarget"] or values["Error"]:
+                        break
+                self.assertFalse(values["Error"])
+                self.assertTrue(values["InTarget"])
+                self.assertEqual(plant.position[1], partner_position)
 
 
 if __name__ == "__main__":

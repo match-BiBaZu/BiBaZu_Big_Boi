@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.19">
   <POU Name="MAIN" Id="{e80dba2a-67f9-4c18-8302-7ea92125d6c4}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
@@ -125,6 +125,7 @@ VAR
 	// Verified two AM8112 motors, direct drive, 50 mm rollers, same shaft direction.
 	// Start remains an explicit GUI command; see CSVSaver/TANDEM_CONVEYOR.md.
 	ConveyorServoCommissioned : BOOL := TRUE; // stationary setup and live CoE readback verified; GUI motion starts disabled
+	ConveyorServoMotorCount : UINT := 2; // 1 = Device 3 only; 2 = tandem. Requires stopped reset.
 	ConveyorServoDirection1 : INT := 1; // same shaft direction, confirmed for the two 50 mm rollers
 	ConveyorServoDirection2 : INT := 1;
 	ConveyorServoMotor2Ratio : LREAL := 1.0; // motor 2 rev / motor 1 rev, including roller diameter
@@ -147,6 +148,7 @@ VAR
 	ConveyorServoResetRequested : BOOL := FALSE;
 	TandemConveyor : FB_TandemConveyor;
 	ConveyorDriveSettings : FB_CsvDriveSettings;
+	ConveyorDriveSettings2 : FB_CsvDriveSettings;
 	GuiOffsetMm1			: REAL := 0.0;
 	GuiOffsetMm2			: REAL := 0.0;
 	GuiOffsetMm3			: REAL := 0.0;
@@ -614,14 +616,14 @@ VAR
 	ConveyorServo1InfoState AT %I* : UINT;
 	ConveyorServo1Controlword AT %Q* : UINT;
 	ConveyorServo1TargetVelocity AT %Q* : DINT;
-	ConveyorServo2Position : UDINT;
-	ConveyorServo2Statusword : UINT;
-	ConveyorServo2ActualVelocity : DINT;
-	ConveyorServo2FeedbackInvalid : BOOL := TRUE;
-	ConveyorServo2WcState : BOOL := TRUE;
-	ConveyorServo2InfoState : UINT;
-	ConveyorServo2Controlword : UINT;
-	ConveyorServo2TargetVelocity : DINT;
+	ConveyorServo2Position AT %I* : UDINT;
+	ConveyorServo2Statusword AT %I* : UINT;
+	ConveyorServo2ActualVelocity AT %I* : DINT;
+	ConveyorServo2FeedbackInvalid AT %I* : BOOL := TRUE;
+	ConveyorServo2WcState AT %I* : BOOL := TRUE;
+	ConveyorServo2InfoState AT %I* : UINT;
+	ConveyorServo2Controlword AT %Q* : UINT;
+	ConveyorServo2TargetVelocity AT %Q* : DINT;
 	
 	//VTEM Motion Terminal Variables
 	FBValveControlV0		: FestoVTEMdc.FB_ValveControl; //Renaming function in program
@@ -692,14 +694,22 @@ IF NOT ConveyorServoCommissioned OR NOT GuiConveyorCalibrationValid THEN
 	GuiConveyorEnabled := FALSE;
 END_IF
 // Surface current-cycle drive/communication faults before the batch safety checks.
-ConveyorDriveSettings(Online := (ConveyorServo1InfoState = 8) AND NOT ConveyorServo1WcState);
-StepperWcState := ConveyorServo1WcState;
+ConveyorDriveSettings(MasterNetId := '10.145.4.14.4.1', SlaveAddress := 1002,
+	Online := (ConveyorServo1InfoState = 8) AND NOT ConveyorServo1WcState);
+ConveyorDriveSettings2(MasterNetId := '10.145.4.14.5.1', SlaveAddress := 1002,
+	Online := (ConveyorServo2InfoState = 8) AND NOT ConveyorServo2WcState);
+StepperWcState := ConveyorServo1WcState OR ConveyorServo2WcState;
 StepperInfoDataState := ConveyorServo1InfoState;
+IF ConveyorServo2InfoState <> UINT#8 THEN
+	StepperInfoDataState := ConveyorServo2InfoState;
+END_IF
 
 StepperPosError := TandemConveyor.Error OR (ConveyorServoCommissioned AND (
 	((ConveyorServo1Statusword AND UINT#8) <> 0)
+	OR ((ConveyorServo2Statusword AND UINT#8) <> 0)
 	OR StepperWcState OR (StepperInfoDataState <> UINT#8)
-	OR ConveyorServo1FeedbackInvalid OR NOT ConveyorDriveSettings.Valid));
+	OR ConveyorServo1FeedbackInvalid OR ConveyorServo2FeedbackInvalid
+	OR NOT ConveyorDriveSettings.Valid OR NOT ConveyorDriveSettings2.Valid));
 
 NozzlePressure := TO_REAL(RawNozzlePressure) * 10.0 / 32767.0;
 NozzlePressure2 := TO_REAL(RawNozzlePressure2) * 10.0 / 32767.0;
@@ -3123,7 +3133,7 @@ IF ConveyorServoResetRequested THEN
 END_IF
 
 TandemConveyor(
-	MotorCount := 1, // Device 3 has one physical servo; unused motor 2 stays disabled.
+	MotorCount := ConveyorServoMotorCount, // Frozen by the FB; changing count requires stopped reset.
 	Enable := StepperControlEnable,
 	Execute := StepperPosExecute,
 	EmergencyStop := FALSE, // application cancellation ramps through Execute; faults override in FB
@@ -3133,7 +3143,7 @@ TandemConveyor(
 	TargetPosition := StepperPosTargetPosition,
 	Velocity := StepperPosVelocity,
 	LegacySpeedRange := REAL_TO_LREAL(ConveyorSpeedRangeFullStepsPerSec),
-	Commissioned := ConveyorServoCommissioned AND ConveyorDriveSettings.Valid,
+	Commissioned := ConveyorServoCommissioned AND ConveyorDriveSettings.Valid AND ConveyorDriveSettings2.Valid,
 	Direction1 := ConveyorServoDirection1,
 	Direction2 := ConveyorServoDirection2,
 	Motor2Ratio := ConveyorServoMotor2Ratio,

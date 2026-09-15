@@ -115,7 +115,7 @@
 		</System>
 		<Plc>
 			<Project GUID="{3607B6EC-BD99-4A0F-832D-D83A85F63667}" Name="Untitled1" PrjFilePath="Untitled1\Untitled1.plcproj" TmcFilePath="Untitled1\Untitled1.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" SymbolicMapping="true">
-				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{F55EF288-A834-A5D9-4E41-23D8CC2D066B}" TmcPath="Untitled1\Untitled1.tmc">
+				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{5ED08EEC-2B6F-16AF-8BD1-DEE119DC6BF9}" TmcPath="Untitled1\Untitled1.tmc">
 					<Name>Untitled1 Instance</Name>
 					<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 					<Vars VarGrpType="2" AreaNo="1">
@@ -227,6 +227,14 @@
 							<Type>DINT</Type>
 						</Var>
 						<Var>
+							<Name>MAIN.ConveyorServo2Controlword</Name>
+							<Type>UINT</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.ConveyorServo2TargetVelocity</Name>
+							<Type>DINT</Type>
+						</Var>
+						<Var>
 							<Name>MAIN.Valve0_OUT</Name>
 							<Comment><![CDATA[Output for VTEM Valves starts at QB0 and increases by 6 for every sequential insel]]></Comment>
 							<Type GUID="{E0088335-DE2C-5D66-A8AA-F4305DB1ED0C}">ARRAY [0..2] OF WORD</Type>
@@ -294,24 +302,48 @@
 							<Type>BOOL</Type>
 						</Var>
 						<Var>
-							<Name>MAIN.ConveyorServo1Position</Name>
-							<Comment><![CDATA[ Two EL7201-0010 terminals; mapped to the same 1 ms task.]]></Comment>
-							<Type>UDINT</Type>
-						</Var>
-						<Var>
 							<Name>MAIN.ConveyorServo1Statusword</Name>
 							<Type>UINT</Type>
 						</Var>
 						<Var>
-							<Name>MAIN.ConveyorServo1WcState</Name>
-							<Type>BOOL</Type>
+							<Name>MAIN.ConveyorServo1Position</Name>
+							<Comment><![CDATA[ Two EL7201-0010 terminals; mapped to the same 1 ms task.]]></Comment>
+							<Type>UDINT</Type>
 						</Var>
 						<Var>
 							<Name>MAIN.ConveyorServo1ActualVelocity</Name>
 							<Type>DINT</Type>
 						</Var>
 						<Var>
+							<Name>MAIN.ConveyorServo1WcState</Name>
+							<Type>BOOL</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.ConveyorServo2FeedbackInvalid</Name>
+							<Type>BOOL</Type>
+						</Var>
+						<Var>
 							<Name>MAIN.ConveyorServo1InfoState</Name>
+							<Type>UINT</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.ConveyorServo2Statusword</Name>
+							<Type>UINT</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.ConveyorServo2Position</Name>
+							<Type>UDINT</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.ConveyorServo2ActualVelocity</Name>
+							<Type>DINT</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.ConveyorServo2WcState</Name>
+							<Type>BOOL</Type>
+						</Var>
+						<Var>
+							<Name>MAIN.ConveyorServo2InfoState</Name>
 							<Type>UINT</Type>
 						</Var>
 						<Var>
@@ -2121,6 +2153,276 @@ Bit 8 - 15 : reserved]]></Comment>
 				</Box>
 				<EtherCAT DcSyncMode="3"/>
 			</Device>
+			<Device Id="4" DevType="111" DevFlags="#x0003" AmsPort="28676" AmsNetId="10.145.4.14.5.1" RemoteName="Device 4 (EtherCAT)" InfoImageId="8">
+				<Name>Device 4 (EtherCAT)</Name>
+				<AddressInfo>
+					<Pnp>
+						<DeviceDesc>Ethernet 12 (TwinCAT-Intel PCI Ethernet Adapter (Gi</DeviceDesc>
+						<DeviceName>\DEVICE\{92463E68-037E-47FB-BB82-90C821683985}</DeviceName>
+						<DeviceData>000105570cd5</DeviceData>
+					</Pnp>
+				</AddressInfo>
+				<Image Id="7" AddrType="9" ImageType="3">
+					<Name>Image</Name>
+				</Image>
+				<Box Id="9" BoxType="9099">
+					<Name>Term 9 (EK1100)</Name>
+					<ImageId>1000</ImageId>
+					<EtherCAT SlaveType="1" PdiType="#x0d00" CycleMBoxPollingTime="0" VendorId="#x00000002" ProductCode="#x044c2c52" RevisionNo="#x00120000" PortPhys="305" MaxSlotCount="256" MaxSlotGroupCount="1" SlotPdoIncrement="1" SlotIndexIncrement="16" Type="EK1100 EtherCAT Coupler (2A E-Bus)" Desc="EK1100" PortABoxInfo="#x00ffffff"/>
+					<Box Id="10" BoxType="9099" BoxFlags="#x00000020">
+						<Name>Term 10 (EL7201-0010)</Name>
+						<ImageId>1004</ImageId>
+						<EtherCAT SlaveType="2" PdiType="#x0405" MboxDataLinkLayer="true" StateMBoxPolling="true" CfgModeSafeOp="true" CycleMBoxPollingTime="0" CoeType="39" FoeType="1" VendorId="#x00000002" ProductCode="#x1c213052" RevisionNo="#x001d000a" InfoDataAddr="true" InfoDataSoeDS401="true" InfoDataDcTimes="true" TimeoutMailbox2="2000" CheckRevisionNoType="3" PortPhys="51" MaxSlotCount="256" MaxSlotGroupCount="1" SlotPdoIncrement="1" SlotIndexIncrement="16" Type="EL7201-0010 1Ch. MDP742 Servo motor output stage with OCT (50V, 2.8A RMS)" Desc="EL7201-0010" PortABoxInfo="#x01000009">
+							<SyncMan>001080002600010001000000400080008000001026010000</SyncMan>
+							<SyncMan>801080002200010002000000400080008000801022010000</SyncMan>
+							<SyncMan>001106002400010003000000000000000600001124010000</SyncMan>
+							<SyncMan>80110c002000010004000000000000000c00801120010000</SyncMan>
+							<Fmmu>0000000000000000001100020100000001000000000000000000000000000000</Fmmu>
+							<Fmmu>0000000000000000801100010100000002000000000000000000000000000000</Fmmu>
+							<Fmmu>00000000000000000d0800010100000003000000000000000000000000000000</Fmmu>
+							<BootStrapData>0010f400f410f400</BootStrapData>
+							<DcData>000700000000000030750000e80300000100ffff000000000000000000000000</DcData>
+							<DcMode>4443000000000000000000000000000044432d53796e6368726f6e0000000000000000000000000000000000000000000000000030750000e8030000ffff00070100000000000000000000000000000000000000000000000000000000000000</DcMode>
+							<MBoxUserCmdData>004003000c0000000000000003000000000000000000000000000000000000002081f001040000000a001d0000</MBoxUserCmdData>
+							<MBoxUserCmdData>004003000a00000000000000030010000000000000000000000000000000000020f3100502000000010000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020008001010000000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020008012010000001400</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020008013010000000c00</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020088001010000000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020088002010000000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020088003010000000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002010801202000000050000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a00000000000000000000000000000000000000000000000000000020108013020000005e0000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020108014040000009600000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020108015040000005200000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c0000000000000000000000000000000000000000000000000000002010801904000000c05d000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c0000000000000000000000000000000000000000000000000000002010801a04000000901a000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c0000000000000000000000000000000000000000000000000000002010801b0400000060ea000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020108031040000000000040000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020108054040000000000000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020118011040000001027000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020118012040000009411000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020118013010000000300</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a00000000000000000000000000000000000000000000000000000020118015020000000e0100</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020118016040000005100000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c00000000000000000000000000000000000000000000000000000020118018040000004b00000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002011801902000000080000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000c0000000000000000000000000000000000000000000000000000002011801b040000003e13000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020118029010000005000</MBoxUserCmdData>
+							<MBoxUserCmdData>02000300090000000000000000000000000000000000000000000000000000002011802a010000006900</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002011802b02000000e80300</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002011802c02000000dc0500</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002011802d02000000a30100</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020128001010000000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002012801102000000080000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a00000000000000000000000000000000000000000000000000000020128012020000000e0000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002012801302000000f40100</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000a0000000000000000000000000000000000000000000000000000002012801402000000000000</MBoxUserCmdData>
+							<MBoxUserCmdData>020003000900000000000000000000000000000000000000000000000000000020107003010000000900</MBoxUserCmdData>
+							<Pdo Name="FB Position" Index="#x1a00" Flags="#x0010" SyncMan="3">
+								<Entry Name="Position" Index="#x6000" Sub="#x11">
+									<Type>UDINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Statusword" Index="#x1a01" Flags="#x0010" SyncMan="3">
+								<Entry Name="Statusword" Index="#x6010" Sub="#x01">
+									<Type>UINT</Type>
+									<Comment><![CDATA[Bit 0 : Ready to switch on
+Bit 1 : Switched on
+Bit 2 : Operation enabled
+Bit 3 : Fault
+Bit 4 : reserved
+Bit 5 : reserved
+Bit 6 : Switch on disabled
+Bit 7 : Warning
+Bit 8 + 9 : reserved
+Bit 10 : TxPDOToggle
+Bit 11 : Internal limit active
+Bit 12 : Drive follows the command value
+Bit 13 : Input cycle counter
+Bit 14 - 15 : reserved]]></Comment>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Velocity actual value" Index="#x1a02" Flags="#x0010" SyncMan="3">
+								<Entry Name="Velocity actual value" Index="#x6010" Sub="#x07">
+									<Type>DINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Torque actual value" Index="#x1a03" Flags="#x0010">
+								<Entry Name="Torque actual value" Index="#x6010" Sub="#x08">
+									<Type>INT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Info data 1" Index="#x1a04" Flags="#x0010">
+								<Entry Name="Info data 1" Index="#x6010" Sub="#x12">
+									<Type>UINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Info data 2" Index="#x1a05" Flags="#x0010">
+								<Entry Name="Info data 2" Index="#x6010" Sub="#x13">
+									<Type>UINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Following error actual value" Index="#x1a06" Flags="#x0010">
+								<Entry Name="Following error actual value" Index="#x6010" Sub="#x06">
+									<Type>DINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="FB Touch probe status" Index="#x1a07" Flags="#x0010">
+								<Entry Name="Touch probe status__TP1 Enable" Index="#x6001" Sub="#x01">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__TP1 Pos value stored" Index="#x6001" Sub="#x02">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__TP1 Neg value stored" Index="#x6001" Sub="#x03">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__">
+									<Type GUID="{18071995-0000-0000-0000-002000000004}">ARRAY [0..3] OF BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__TP1 Input" Index="#x6001" Sub="#x08">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__TP2 Enable" Index="#x6001" Sub="#x09">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__TP2 Pos value stored" Index="#x6001" Sub="#x0a">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__TP2 Neg value stored" Index="#x6001" Sub="#x0b">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__">
+									<Type GUID="{18071995-0000-0000-0000-002000000004}">ARRAY [0..3] OF BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe status__TP2 Input" Index="#x6001" Sub="#x10">
+									<Type>BIT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="FB Touch probe 1 pos position" Index="#x1a08" Flags="#x0010">
+								<Entry Name="TP1 Pos position" Index="#x6001" Sub="#x11">
+									<Type>UDINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="FB Touch probe 1 neg position" Index="#x1a09" Flags="#x0010">
+								<Entry Name="TP1 Neg position" Index="#x6001" Sub="#x12">
+									<Type>UDINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="FB Touch probe 2 pos position" Index="#x1a0a" Flags="#x0010">
+								<Entry Name="TP2 Pos position" Index="#x6001" Sub="#x13">
+									<Type>UDINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="FB Touch probe 2 neg position" Index="#x1a0b" Flags="#x0010">
+								<Entry Name="TP2 Neg position" Index="#x6001" Sub="#x14">
+									<Type>UDINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="FB Status" Index="#x1a0c" Flags="#x0010" SyncMan="3">
+								<Entry Name="Status__">
+									<Type GUID="{18071995-0000-0000-0000-00200000000D}">ARRAY [0..12] OF BIT</Type>
+								</Entry>
+								<Entry Name="Status__TxPDO State" Index="#x6000" Sub="#x0e">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Status__Input Cycle Counter" Index="#x6000" Sub="#x0f">
+									<Type>BIT2</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Controlword" Index="#x1600" InOut="1" Flags="#x0010" SyncMan="2">
+								<Entry Name="Controlword" Index="#x7010" Sub="#x01">
+									<Type>UINT</Type>
+									<Comment><![CDATA[Bit 0 : Switch on
+Bit 1 : Enable voltage
+Bit 2 : reserved
+Bit 3 : Enable operation
+Bit 4 - 6 : reserved
+Bit 7 : Fault reset
+Bit 8 - 15 : reserved]]></Comment>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Target velocity" Index="#x1601" InOut="1" Flags="#x0010" SyncMan="2">
+								<Entry Name="Target velocity" Index="#x7010" Sub="#x06">
+									<Type>DINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Target torque" Index="#x1602" InOut="1" Flags="#x0010">
+								<Entry Name="Target torque" Index="#x7010" Sub="#x09">
+									<Type>INT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Commutation angle" Index="#x1603" InOut="1" Flags="#x0010">
+								<Entry Name="Commutation angle" Index="#x7010" Sub="#x0e">
+									<Type>UINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Torque limitation" Index="#x1604" InOut="1" Flags="#x0010">
+								<Entry Name="Torque limitation" Index="#x7010" Sub="#x0b">
+									<Type>UINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Torque offset" Index="#x1605" InOut="1" Flags="#x0010">
+								<Entry Name="Torque offset" Index="#x7010" Sub="#x0a">
+									<Type>INT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="DRV Target position" Index="#x1606" InOut="1" Flags="#x0010">
+								<Entry Name="Target position" Index="#x7010" Sub="#x05">
+									<Type>UDINT</Type>
+								</Entry>
+							</Pdo>
+							<Pdo Name="FB Touch probe control" Index="#x1607" InOut="1" Flags="#x0010">
+								<Entry Name="Touch probe function__TP1 Enable" Index="#x7001" Sub="#x01">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP1 Continous" Index="#x7001" Sub="#x02">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP1 Trigger mode" Index="#x7001" Sub="#x03">
+									<Type>BIT2</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP1 Enable pos edge" Index="#x7001" Sub="#x05">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP1 Enable neg edge" Index="#x7001" Sub="#x06">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__">
+									<Type GUID="{18071995-0000-0000-0000-002000000002}">ARRAY [0..1] OF BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP2 Enable" Index="#x7001" Sub="#x09">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP2 Continous" Index="#x7001" Sub="#x0a">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP2 Trigger mode" Index="#x7001" Sub="#x0b">
+									<Type>BIT2</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP2 Enable pos edge" Index="#x7001" Sub="#x0d">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__TP2 Enable neg edge" Index="#x7001" Sub="#x0e">
+									<Type>BIT</Type>
+								</Entry>
+								<Entry Name="Touch probe function__">
+									<Type GUID="{18071995-0000-0000-0000-002000000002}">ARRAY [0..1] OF BIT</Type>
+								</Entry>
+							</Pdo>
+							<CoeProfile ProfileNo="33624969" DisplayName="Servo interface"/>
+							<CoeProfile ProfileNo="48632713" DisplayName="Servo interface"/>
+						</EtherCAT>
+					</Box>
+					<Box Id="16" BoxType="9099">
+						<Name>Term 3 (EL9011)</Name>
+						<ImageId>1005</ImageId>
+						<EtherCAT CycleMBoxPollingTime="0" VendorId="#x00000002" ProductCode="#x23333050" InfoDataState="false" MaxSlotCount="256" MaxSlotGroupCount="1" SlotPdoIncrement="1" SlotIndexIncrement="16" Type="EL9011 End Terminal" Desc="EL9011" PortABoxInfo="#x0100000a"/>
+					</Box>
+				</Box>
+				<EtherCAT DcSyncMode="2"/>
+			</Device>
 		</Io>
 	</Project>
 	<Mappings>
@@ -2128,6 +2430,8 @@ Bit 8 - 15 : reserved]]></Comment>
 		<MappingInfo Identifier="{00000000-2001-0850-0020-500830000403}" Id="#x02030020"/>
 		<MappingInfo Identifier="{00000000-2001-0850-0020-500850000403}" Id="#x02030030"/>
 		<MappingInfo Identifier="{00000000-2001-0850-0020-500861000403}" Id="#x02030040"/>
+		<MappingInfo Identifier="{00000000-2001-0850-0020-500870000403}" Id="#x02030050"/>
+		<MappingInfo Identifier="{00000000-2001-0850-0020-500881000403}" Id="#x02030060"/>
 		<OwnerA Name="TIPC^Untitled1^Untitled1 Instance">
 			<OwnerB Name="TIID^Device 1 (EtherCAT)^Term 1 (EK1100)^Term 11 (EL2004)">
 				<Link VarA="PlcTask Outputs^MAIN.OpenValve21" VarB="Channel 1^Output"/>
@@ -2210,6 +2514,16 @@ Bit 8 - 15 : reserved]]></Comment>
 				<Link VarA="PlcTask Inputs^MAIN.ConveyorServo1WcState" VarB="WcState^WcState"/>
 				<Link VarA="PlcTask Outputs^MAIN.ConveyorServo1Controlword" VarB="DRV Controlword^Controlword"/>
 				<Link VarA="PlcTask Outputs^MAIN.ConveyorServo1TargetVelocity" VarB="DRV Target velocity^Target velocity"/>
+			</OwnerB>
+			<OwnerB Name="TIID^Device 4 (EtherCAT)^Term 9 (EK1100)^Term 10 (EL7201-0010)">
+				<Link VarA="PlcTask Inputs^MAIN.ConveyorServo2ActualVelocity" VarB="DRV Velocity actual value^Velocity actual value"/>
+				<Link VarA="PlcTask Inputs^MAIN.ConveyorServo2FeedbackInvalid" VarB="FB Status^Status^TxPDO State"/>
+				<Link VarA="PlcTask Inputs^MAIN.ConveyorServo2InfoState" VarB="InfoData^State"/>
+				<Link VarA="PlcTask Inputs^MAIN.ConveyorServo2Position" VarB="FB Position^Position"/>
+				<Link VarA="PlcTask Inputs^MAIN.ConveyorServo2Statusword" VarB="DRV Statusword^Statusword"/>
+				<Link VarA="PlcTask Inputs^MAIN.ConveyorServo2WcState" VarB="WcState^WcState"/>
+				<Link VarA="PlcTask Outputs^MAIN.ConveyorServo2Controlword" VarB="DRV Controlword^Controlword"/>
+				<Link VarA="PlcTask Outputs^MAIN.ConveyorServo2TargetVelocity" VarB="DRV Target velocity^Target velocity"/>
 			</OwnerB>
 		</OwnerA>
 	</Mappings>

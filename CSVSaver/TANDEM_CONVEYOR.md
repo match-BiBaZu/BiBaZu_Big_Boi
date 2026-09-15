@@ -1,4 +1,31 @@
-# Conveyor control — current Device 3 configuration
+# Conveyor control — Device 3 and Device 4
+
+**Latest live result (2026-09-15, 17:14 UTC): Device 3 completed an unloaded
+10 rpm test, and the user confirmed smooth shaft rotation.** With its motor
+separated from the roller, the finite move covered 2.08517 revolutions in
+14.64 seconds, including 5 rpm/s acceleration and deceleration ramps. Over a
+10.007-second plateau (520 samples), the average PLC target was **9.966 rpm**,
+the average drive-reported actual velocity was **9.887 rpm**, and encoder travel
+gave **9.934 rpm** (0.66% below the 10 rpm request). Instantaneous drive velocity
+remained noisy: 4.774–20.872 rpm, standard deviation 2.685 rpm. These readings
+alone do not establish corresponding physical speed excursions.
+
+There were no PLC/drive faults, feedback-invalid indications, or new diagnostic
+history entries. EtherCAT synchronization error counters remained zero. Device 4
+was disabled throughout all 778 logged samples. The earlier paired tests failed;
+tandem/loaded readiness remains unverified. The requested 30/50 rpm stages were
+not executed: automatic approval review blocked the original higher-speed sweep;
+the subsequent separately approved test used a hard 10 rpm cap.
+
+At 17:14:51 UTC, the two-motor setting and original **5 rpm** limit were restored,
+both drives were disabled, and `ConveyorServoCommissioned = FALSE` inhibited
+motion in the current runtime. This runtime inhibit is not electrical isolation
+or a changed boot default. Raw JSON/CSV evidence is stored outside the project:
+workspace `.tandem_validation/device3_rpm_comparison_20260915T171408Z.{json,csv}`;
+the restoration record is `motor_count_selection_20260915T171451Z.json` there.
+The roller initially appeared stationary, but the user subsequently reported a
+loose coupling, so roller motion did not establish motor-shaft motion. Do not
+treat the successful scan/build as successful motor commissioning.
 
 Use the existing project **`TwinCAT Projekt3 - Kopie/TwinCAT Projekt3.sln`**.
 It has been updated in place. The additional `Device3_Conveyor` copy has been
@@ -10,11 +37,12 @@ archived under workspace `.tandem_validation`.
 | Setting | Current value |
 | --- | --- |
 | Controller | `10.145.4.14.1.1` |
-| Motor terminal | Device 3 > Term 6 (EK1100) > Term 7 (EL7201-0010) |
-| EtherCAT master / slave address | `10.145.4.14.4.1` / `1002` |
-| Motor serial | `00306149` — formerly Term 22 |
+| Motor 1 terminal | Device 3 > Term 6 (EK1100) > Term 7 (EL7201-0010) |
+| Motor 2 terminal | Device 4 > Term 9 (EK1100) > Term 10 (EL7201-0010) |
+| Motor 1 master / slave / serial | `10.145.4.14.4.1` / `1002` / `00306149` — formerly Term 22 |
+| Motor 2 master / slave / serial | `10.145.4.14.5.1` / `1002` / `00186867` — formerly Term 21 |
 | Operating mode | **CSV, 9**, no NC axis |
-| Physical motor count | **1**, using logical motor-1 variables |
+| Physical motor count | **2**, sharing the conveyor trajectory |
 | Roller / gearbox / direction | 50 mm / none / +1 |
 | Encoder counts per revolution | 1048576 mapped counts |
 | Velocity factor | 268435 raw units per revolution/second |
@@ -37,27 +65,35 @@ GUIs keep the same controller, ADS port 851, and symbol names:
 | Reverse | `MAIN.GuiConveyorReverse` |
 | Stop | Disable conveyor, or `MAIN.GuiCalibrationStop` |
 | Reset | `MAIN.GuiConveyorReset` |
+| Stopped motor-count configuration | `MAIN.ConveyorServoMotorCount`: default 2; 1 selects Device 3 only |
 | Calibration / finite jog | `MAIN.GuiConveyorCalibrationMode`, `GuiCalibrationMoveLeft/Right` |
 | Jog distance / speed | `MAIN.GuiCalibrationJogSteps`, `GuiCalibrationJogSpeedFullStepsPerSec` |
 | Ready / busy / fault | Existing `MAIN.StepperPos*` status symbols |
 
 `Stepper*` names are compatibility signals, not physical EL7047 commands.
-`MAIN.ConveyorServo1*` now refers to Device 3. Motor-2 symbols remain available
-to ADS clients but have no hardware links and do not block readiness. No partner
-feedback is fabricated. Active-motor fault, communication, position, stop and
-timeout monitoring remains enabled.
+`MAIN.ConveyorServo1*` refers to Device 3; `MAIN.ConveyorServo2*` refers to Device 4.
+Both motors must be ready. A drive, communication, feedback or synchronization
+fault stops the pair. Position, stop and timeout monitoring remains enabled.
 
 `TestStart`, `TestAbort`, test torque/commutation-angle outputs and `FB_Cstca*`
-blocks are removed from the active project. `ConveyorDriveSettings` checks actual
-mode 9, automatic brake control and zero torque offset through CoE. The conveyor
-cannot enable unless those live checks are valid.
+blocks are removed from the active project. `ConveyorDriveSettings` and
+`ConveyorDriveSettings2` independently check actual mode 9, automatic brake control
+and zero torque offset through CoE on their respective masters. The conveyor
+cannot enable unless both sets of live checks are valid.
+
+The motor-count setting feeds the FB's existing single/tandem support. A changed
+count is rejected during operation and requires a stopped reset before adoption.
+Both physical I/O mappings and the main program's drive health checks remain in
+place. In count-1 operation Device 4's controlword and target remain zero. Restore
+count 2 using a stopped reset before tandem operation; changing the ADS value
+alone cannot silently remove a running partner from supervision.
 
 ## Mapping and startup
 
 Output PDOs **1600, 1601** carry controlword and target velocity (6 bytes).
 Input PDOs **1A00, 1A01, 1A02, 1A0C** occupy 12 bytes. Eight links connect
 position, statusword, actual velocity, feedback validity, working-counter state,
-EtherCAT state, controlword and target velocity to `MAIN.ConveyorServo1*`.
+EtherCAT state, controlword and target velocity for each motor: **16 links total**.
 
 Device 1, Device 2 and non-conveyor mappings are preserved from the saved scan.
 Normal application logic controls those I/O again; the earlier test program's
@@ -67,10 +103,158 @@ request movement.
 
 The matching I/O configuration and PLC must be loaded together. Writing mode 9
 alone cannot correct a torque-mode PDO layout. After loading, check
-`ConveyorDriveSettings.Valid`, Device 3 OP, and zero motor commands before using
+both `ConveyorDriveSettings.Valid` and `ConveyorDriveSettings2.Valid`, Devices 3/4
+OP, and zero motor commands before using
 the GUI. [Beckhoff CSV without NC](https://infosys.beckhoff.com/content/1033/el72x1-001x/1859316107.html)
 
-## Verification and hardware history
+## Device 4 integration, 2026-09-15
+
+The existing project was updated in place from the user's Device 4 scan. Readback
+identified motor `00186867`, CSV mode 9, zero controlword/target, automatic brake
+control and approximately 23.68 V. Its 34 persisted parameters matched the earlier
+commissioning record exactly; no motor tuning values were changed.
+
+TwinCAT compiled with zero errors after establishing Device 4's task association.
+All **16 motor links**, **68 startup entries**, and both pressure-input mappings
+were verified. All **58 non-conveyor links** and the Device 1/2 terminal topology
+were preserved. The actual-ST behavior suite passed 16 tests; the updated I/O and
+GUI contract suite passed 6 tests, including independent CoE and fault monitoring.
+
+Build evidence: workspace `.tandem_validation/device4_repaired_build_logs/`.
+
+The PLC and matching I/O were loaded and activated. At 13:48:15 UTC both motors
+were OP, stationary, with valid feedback and CoE checks, zero output commands,
+and no drive/PLC faults. All 68 startup values and both PDO assignments were
+verified against live readback.
+
+At 13:48:36 UTC one finite GUI calibration jog requested **18 degrees at about
+2 rpm** on both motors. The monitor aborted on encoder separation exceeding
+6000 counts (2.06 degrees); the PLC subsequently latched synchronization fault 5.
+Both motors' controlwords/targets returned to zero, automatic brake control was
+retained, and both encoders became stationary. Temporary GUI jog settings were
+restored. No repeat enable or reset was attempted.
+
+Final encoder differences corresponded to **2.455 degrees for Device 3** and
+**33.589 degrees for Device 4**. These are reported positions, **not verified
+physical travel**: the user initially reported that the rollers were uncoupled
+and motor 2 stayed still, then clarified that the coupling was loose and motion
+could not actually be seen. A stationary roller therefore does not prove that
+the motor shaft or encoder stayed still. The requested finite move did not
+complete successfully.
+
+Read-only checks at 13:50:32 UTC found the Device 4 CoE position and mapped PLC
+position both **4044663144**. Thus the discrepancy is also present in the drive's
+reported data, rather than being confined to GUI display or PLC mapping. Both
+drives had statusword 96, valid feedback flags, approximately 23.7 V DC, empty
+diagnostic histories, and no missed synchronization events, exceeded cycles,
+short shifts or EtherCAT sync-error flags. Those observations do not establish
+correct physical feedback or commutation. Confirm which coupling was loose and
+that it is secured before considering a repeat test. The failed trajectory alone
+does not establish an encoder defect.
+
+Evidence in workspace `.tandem_validation`:
+`device4_load_20260915T134614Z/after.json`,
+`device4_gui_jog_20260915T134836Z.json`, and
+`device4_after_jog_diagnostics.json`. Diagnostics remain outside the production
+project; the existing solution is the sole maintained conveyor project.
+
+### Reduced test after securing the coupling
+
+The user confirmed the mechanical shaft/roller coupling was secured. At
+13:54:45 UTC a single reduced GUI jog requested **3.6 degrees at about 1 rpm**,
+after resetting fault 5 with both stages disabled. Direct CoE reads confirmed
+CSV mode 9 and the velocity commands arriving at each drive. Both read back
+10156 during the same constant-command portion and later 5592 during trajectory
+correction. This confirms command delivery, not correct physical response.
+
+The monitor stopped the test when the reported positions separated by more than
+1 degree. At that point, relative encoder positions were approximately -0.003
+degrees (Device 3) and +1.203 degrees (Device 4). Normal stopping did not disable
+the drives within the test utility's three-second cleanup window; the PLC's
+longer stop watchdog subsequently latched fault 7. The commissioning inhibit
+was then asserted, both stages were verified disabled, and the original GUI jog
+settings were restored. The test utility now asserts that inhibit immediately
+on an aborted diagnostic, without relying on ordinary trajectory settling.
+
+Final read-only verification at **13:57:17 UTC** found both controlwords and
+targets zero, both statuswords 96, GUI enable/calibration off, and the current
+runtime commissioning flag FALSE. Over twelve samples, raw encoder spans were
+8 and 12 counts, within the existing 262-count standstill window. The PLC's
+`EncoderStationary` flag itself is inactive while commissioning is inhibited.
+Paired operation has not been successfully commissioned; no encoder defect is
+proven by these tests. Further motion is paused at the user's request.
+
+Evidence: `.tandem_validation/device4_gui_jog_20260915T135445Z.json`,
+`device4_final_disabled.json`, and `device4_final_verified.json`.
+
+### Resumed readiness test after reassembly, 16:42 UTC
+
+The user confirmed everything was connected and the rollers remained uncoupled
+because no belt was fitted. Both motors passed the idle checks, including their
+identities, live CoE settings, all 68 startup values and both PDO assignments.
+
+One paired finite GUI jog requested **3.6 degrees at about 1 rpm**. The test
+aborted after approximately 2.1 seconds of the jog when relative encoder travel
+separated by over 1 degree. Final reported travel was **+0.965 degrees on Device
+3** and **-0.067 degrees on Device 4**. Neither completed the requested move.
+Direct CoE reads confirmed mode 9 and the commanded velocities at both drives;
+the peak commanded speed, including trajectory correction, was 2.27 rpm.
+The user heard both brake clicks and observed little or no physical movement.
+Clicks do not establish full mechanical brake release, and no specific wiring,
+encoder or tuning defect has been established.
+
+On abort the diagnostic immediately asserted the commissioning inhibit. Both
+controlwords and targets were verified zero and both statuswords returned to 96.
+GUI settings were restored, and a separate 12-sample read-only check at 16:43:52
+UTC confirmed raw encoder spans of just 8 and 12 counts. No new PLC fault was
+latched because the external monitor cancelled before the PLC fault thresholds.
+The encoder scaling remains 1048576 mapped counts per revolution; the recorded
+velocity factor is 268435 per revolution/second, consistent with the documented
+[CSV interface](https://infosys.beckhoff.com/content/1033/el72x1-001x/1859316107.html).
+
+Readiness is **not established**. Next diagnosis must distinguish incomplete
+brake release/mechanical resistance from motor-phase, feedback or drive-control
+problems; repeating the same paired jog has not resolved the cause.
+
+Evidence: workspace `.tandem_validation/device4_resumed_settings.json`,
+`device4_gui_jog_20260915T164239Z.json`, and
+`device4_resumed_final_verified_20260915.json`.
+
+### Device 3 alone, motor removed from roller, 17:02 UTC
+
+The user requested the same command on Device 3 only and confirmed that the motor
+was separated from the roller and free to rotate. The existing project was
+updated in place to expose `ConveyorServoMotorCount`, default 2. No extra project
+was created. A fresh offline build passed with zero errors, all 16 mappings and
+68 startup entries verified. The 17 general behavior tests, five single-motor
+checks and six I/O contract tests passed, including stopped selection/restoration
+and prevention of a live motor-count change.
+
+After loading and verifying idle outputs, a stopped reset selected count 1. At
+**17:02:14 UTC**, the GUI calibration interface requested **3.6 degrees at about
+1 rpm**. The move completed normally in **1.14 seconds**, with **10496 counts /
+3.603515625 degrees** reported travel. Peak velocity command including trajectory
+correction was approximately **1.57 rpm**, within the unchanged 5 rpm limit.
+No drive, feedback, communication or adapter fault was observed.
+
+Across all 131 recorded samples, Device 4 had controlword/target zero and no
+operation-enabled status; its encoder span was only 20 counts. Cleanup verified
+Device 3 disabled with zero target and statusword 96, and restored the temporary
+GUI jog settings. At 17:03:11 UTC the two-motor setting was restored through a
+stopped reset, followed by the commissioning inhibit. Both final controlwords and
+targets were zero, both statuswords 96, and the PLC fault code was zero.
+
+This establishes one successful small unloaded move on Device 3. Removing the
+roller and selecting single-motor operation changed two conditions; this result
+does not by itself isolate the earlier failure to a specific mechanical or
+tandem-control cause, or establish Device 4/loaded readiness.
+
+Evidence: workspace `.tandem_validation/motor_count_verified_build/`,
+`motor_count_load_20260915T165941Z/`,
+`device3_isolated_jog_20260915T170214Z.json`, and
+`motor_count_selection_20260915T170311Z.json`.
+
+## Earlier single-motor verification and hardware history
 
 The updated source compiled with **zero TwinCAT errors**. All **eight motor
 links**, **two pressure-input links**, and **34 startup entries** were verified.
@@ -84,7 +268,7 @@ had faulted at enable. This supports the wiring change helping, but was not a
 loaded CSV test. Full history is archived in
 `.tandem_validation/earlier_cstca_docs/TANDEM_CONVEYOR_before_device3.md`.
 
-## Loaded and live movement verified, 2026-09-14
+## Earlier single-motor movement, 2026-09-14
 
 The existing project was uploaded and its matching CSV I/O activated. After the
 controller restart, readback at **15:09:11 UTC** confirmed PLC RUN, actual mode 9,

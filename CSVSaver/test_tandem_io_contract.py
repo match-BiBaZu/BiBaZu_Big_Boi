@@ -46,14 +46,14 @@ class TandemIoContractTests(unittest.TestCase):
             "Controlword": ("Outputs", "UINT", "#x7010", "#x01", "2"),
             "TargetVelocity": ("Outputs", "DINT", "#x7010", "#x06", "2"),
         }
-        for axis, terminal in ((1, 7),):
+        for axis, terminal, device, coupler in ((1, 7, 3, 6), (2, 10, 4, 9)):
             name = f"Term {terminal} (EL7201-0010)"
             box = next(b for b in self.project.findall(".//Box") if b.findtext("Name") == name)
             ethercat = box.find("EtherCAT")
             owner = next(o for o in self.project.findall(".//Mappings/OwnerA/OwnerB")
                          if o.get("Name", "").endswith("^" + name))
             self.assertEqual(owner.get("Name"),
-                "TIID^Device 3 (EtherCAT)^Term 6 (EK1100)^Term 7 (EL7201-0010)")
+                f"TIID^Device {device} (EtherCAT)^Term {coupler} (EK1100)^Term {terminal} (EL7201-0010)")
             links = {l.get("VarA"): l.get("VarB") for l in owner.findall("Link")}
             self.assertEqual(len(links), len(specs))
             for suffix, (area, datatype, index, sub, sm) in specs.items():
@@ -93,12 +93,24 @@ class TandemIoContractTests(unittest.TestCase):
         task = ET.parse(PROJECT / "Untitled1/PlcTask.TcTTO").getroot()
         self.assertEqual(task.findtext(".//CycleTime"), "1000")
         self.assertIn("CycleSeconds := 0.001", call)
-        self.assertIn("MotorCount := 1", call)
-        self.assertIn("Commissioned := ConveyorServoCommissioned AND ConveyorDriveSettings.Valid", call)
+        self.assertIn("MotorCount := ConveyorServoMotorCount", call)
+        self.assertRegex(self.declaration, r"ConveyorServoMotorCount\s*:\s*UINT\s*:=\s*2;")
+        self.assertIn("Commissioned := ConveyorServoCommissioned AND ConveyorDriveSettings.Valid AND ConveyorDriveSettings2.Valid", call)
         self.assertNotIn("TestStart", self.declaration)
         for link in self.project.findall(".//Mappings//Link"):
-            self.assertNotIn("MAIN.ConveyorServo2", link.get("VarA", ""))
             self.assertNotIn("MAIN.Test", link.get("VarA", ""))
+
+    def test_each_drive_has_independent_coe_and_fault_monitoring(self):
+        body = self.main.findtext("./POU/Implementation/ST")
+        for axis, instance, netid in ((1, "ConveyorDriveSettings", "10.145.4.14.4.1"),
+                                      (2, "ConveyorDriveSettings2", "10.145.4.14.5.1")):
+            self.assertRegex(body, rf"{instance}\(MasterNetId := '{re.escape(netid)}', SlaveAddress := 1002,\s*Online := \(ConveyorServo{axis}InfoState = 8\) AND NOT ConveyorServo{axis}WcState\)")
+        fault_check = body.split("StepperPosError := TandemConveyor.Error", 1)[1].split(";", 1)[0]
+        for axis in (1, 2):
+            self.assertIn(f"ConveyorServo{axis}Statusword", fault_check)
+            self.assertIn(f"ConveyorServo{axis}FeedbackInvalid", fault_check)
+        self.assertIn("StepperWcState := ConveyorServo1WcState OR ConveyorServo2WcState;", body)
+        self.assertIn("IF ConveyorServo2InfoState <> UINT#8 THEN", body)
 
     def test_commissioned_machine_starts_idle_with_50_mm_roller_calibration(self):
         def initial(name):

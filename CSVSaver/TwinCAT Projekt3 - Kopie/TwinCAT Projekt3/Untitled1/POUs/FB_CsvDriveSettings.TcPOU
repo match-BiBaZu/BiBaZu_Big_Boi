@@ -4,6 +4,8 @@
     <Declaration><![CDATA[FUNCTION_BLOCK FB_CsvDriveSettings
 VAR_INPUT
     Online : BOOL;
+    MasterNetId : T_AmsNetId;
+    SlaveAddress : UINT;
 END_VAR
 VAR_OUTPUT
     Valid : BOOL;
@@ -25,18 +27,18 @@ VAR
     StaleTimer : TON;
 END_VAR
 ]]></Declaration>
-    <Implementation><ST><![CDATA[//Read-only CoE. Addresses belong to Device 3 Term 7 of the documented machine.
+    <Implementation><ST><![CDATA[//Read-only CoE for one explicitly addressed physical drive. Each motor has its own instance.
 //No mode, brake, limit, reset or other device parameter is written here.
 Completed := FALSE;
 PollTimer(IN := Phase = 0, PT := T#100MS);
 Trigger := (Phase = 0) AND PollTimer.Q AND Online;
-ReadMode(sNetId := '10.145.4.14.4.1', nSlaveAddr := 1002,
+ReadMode(sNetId := MasterNetId, nSlaveAddr := SlaveAddress,
     nIndex := 16#6010, nSubIndex := 3, pDstBuf := ADR(ActualMode),
     cbBufLen := SIZEOF(ActualMode), bExecute := Trigger, tTimeout := T#200MS);
-ReadBrake(sNetId := '10.145.4.14.4.1', nSlaveAddr := 1002,
+ReadBrake(sNetId := MasterNetId, nSlaveAddr := SlaveAddress,
     nIndex := 16#8012, nSubIndex := 1, pDstBuf := ADR(ManualBrakeRelease),
     cbBufLen := SIZEOF(ManualBrakeRelease), bExecute := Trigger, tTimeout := T#200MS);
-ReadOffset(sNetId := '10.145.4.14.4.1', nSlaveAddr := 1002,
+ReadOffset(sNetId := MasterNetId, nSlaveAddr := SlaveAddress,
     nIndex := 16#7010, nSubIndex := 10, pDstBuf := ADR(ActualTorqueOffset),
     cbBufLen := SIZEOF(ActualTorqueOffset), bExecute := Trigger, tTimeout := T#200MS);
 IF Trigger THEN
