@@ -19,15 +19,16 @@ the earlier CSTCA diagnostic projects and their evidence remain archived outside
 
 Target controller: `10.145.4.14.1.1`. Motor: **Device 3 > Term 6 (EK1100) >
 Term 7 (EL7201-0010)**, master `10.145.4.14.4.1`, slave address **1002**,
-AM8112 serial **00306149**. Motor 2 is **Device 4 > Term 9 (EK1100) >
+AM8112 serial **00186867**. Motor 2 is **Device 4 > Term 9 (EK1100) >
 Term 10 (EL7201-0010)**, master `10.145.4.14.5.1`, slave address **1002**,
-AM8112 serial **00186867**. Both use **CSV mode 9** with no NC axis.
+AM8112 serial **00306149**. Both use **CSV mode 9** with no NC axis.
 
 The restored MAIN implements the existing conveyor GUI, calibration and batch
 interfaces. Enable, speed in mm/s, reverse, stop, reset and finite calibration moves
 use the same ADS symbols as before. Device 3 is logical motor 1; Device 4 is
 logical motor 2. Both motors follow the same trajectory in the same shaft
-direction, with 50 mm rollers and no gearbox. Both must be ready to enable.
+direction, each through an identical 32:1 reduction gearbox to a 50 mm roller.
+Both must be ready to enable.
 
 The temporary `TestStart`, `TestAbort`, torque/commutation-angle outputs and
 `FB_Cstca*` blocks have been removed. The normal conveyor adapter explicitly
@@ -41,10 +42,10 @@ count in the FB requires stopped reconfiguration; no partner feedback is fabrica
 
 ## Initial limits and mapping
 
-- The source disables the former **5 rpm (13.09 mm/s)** commissioning cap:
-  `ConveyorServoMaxMotorRpm=0`. Acceleration remains **5 rpm/s**. GUI maximum
-  speed and command representation bounds remain active. Load this updated PLC
-  before using the updated GUI, which writes zero during stopped configuration.
+- The source disables the former 5 rpm commissioning cap:
+  `ConveyorServoMaxMotorRpm=0`. Acceleration remains **5 rpm/s** and adjustable
+  in `Calibrate Conveyor`. The hard belt-speed limit is **100 mm/s**, equal to
+  1222.31 motor rpm with the nominal 50 mm roller and 32:1 reduction.
 - Direction -1 for both motors; 1048576 mapped encoder counts/revolution; 268435 velocity units
   per revolution/second; nominal DC supply 24000 mV.
 - Automatic holding-brake control. PLC CoE checks require actual mode 9,

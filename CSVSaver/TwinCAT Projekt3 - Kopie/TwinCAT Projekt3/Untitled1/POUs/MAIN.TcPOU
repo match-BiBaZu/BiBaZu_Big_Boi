@@ -110,7 +110,7 @@ VAR
 	GuiConveyorReverse		: BOOL := FALSE;
 	GuiConveyorReset		: BOOL := FALSE;
 	GuiConveyorSpeedMmPerSec	: REAL := 0.0;
-	GuiConveyorMaxSpeedMmPerSec	: REAL := 1000.0;
+	GuiConveyorMaxSpeedMmPerSec	: REAL := 100.0;
 	GuiConveyorCalibrationMode	: BOOL := FALSE;
 	GuiCalibrationMarkerDistanceMm	: REAL := 315.0;
 	GuiCalibrationJogSteps		: UDINT := 100;
@@ -122,7 +122,7 @@ VAR
 	GuiCalibrationStop			: BOOL := FALSE;
 	GuiConveyorMmPerFullStep	: REAL := 0.0;
 	GuiConveyorCalibrationValid	: BOOL := FALSE;
-	// Verified two AM8112 motors, direct drive, 50 mm rollers, same shaft direction.
+	// Verified two AM8112 motors, identical 32:1 gearboxes, 50 mm rollers, same shaft direction.
 	// Start remains an explicit GUI command; see CSVSaver/TANDEM_CONVEYOR.md.
 	ConveyorServoCommissioned : BOOL := TRUE; // stationary setup and live CoE readback verified; GUI motion starts disabled
 	ConveyorServoMotorCount : UINT := 2; // 1 = Device 3 only; 2 = tandem. Requires stopped reset.
@@ -137,9 +137,9 @@ VAR
 	ConveyorServoAccelerationRpmPerSec : LREAL := 5.0;
 	ConveyorServoSingleMotor : UINT := 1; // Physical motor selected when MotorCount=1; stopped reset.
 	ConveyorServoVelocityOnly : BOOL := TRUE; // raw shared CSV target; no PLC speed/position correction
-	// Authoritative NEW belt calibration: 200 virtual full steps per motor 1 revolution.
+	// Authoritative belt calibration: 200 virtual full steps per motor revolution, 32 motor revolutions per roller revolution.
 	// Legacy GUI profiles cannot overwrite this with the old stepper's scale.
-	ConveyorServoCalibratedMmPerFullStep : REAL := 0.7853981634; // pi * 50 mm / 200; refine with GUI marker calibration
+	ConveyorServoCalibratedMmPerFullStep : REAL := 0.0245436926; // pi * 50 mm / (200 * 32); refine with GUI marker calibration
 	ConveyorServoFaultCode : UINT := 0;
 	ConveyorServoState : UINT := 0;
 	ConveyorServoSyncErrorFullSteps : LREAL := 0.0;
@@ -354,7 +354,7 @@ VAR
 	ConveyorVelocityRatio	: REAL := 0.0;
 	ConveyorVelocityRaw		: INT := 0; //0..10000 legacy velocity command, adapted to both servos
 	ConveyorFullStepsPerSec	: REAL := 0.0;
-	ConveyorSpeedRangeFullStepsPerSec	: REAL := 2000.0; //legacy velocity scale, virtual full steps/s
+	ConveyorSpeedRangeFullStepsPerSec	: REAL := 4074.366543; //100 mm/s at 50 mm roller, 32:1 gearbox
 	ConveyorMotionState		: INT := 0;
 	ConveyorMotionMode		: INT := 0; //0 idle, 1 normal endless, 2 calibration move
 	ConveyorActiveVelocity	: INT := 0;
@@ -973,14 +973,14 @@ Array4Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND 
 
 IF GuiConveyorSpeedMmPerSec < 0.0 THEN
 	GuiConveyorSpeedMmPerSec := 0.0;
-ELSIF GuiConveyorSpeedMmPerSec > 5000.0 THEN
-	GuiConveyorSpeedMmPerSec := 5000.0;
+ELSIF GuiConveyorSpeedMmPerSec > 100.0 THEN
+	GuiConveyorSpeedMmPerSec := 100.0;
 END_IF
 
 IF GuiConveyorMaxSpeedMmPerSec < 1.0 THEN
 	GuiConveyorMaxSpeedMmPerSec := 1.0;
-ELSIF GuiConveyorMaxSpeedMmPerSec > 5000.0 THEN
-	GuiConveyorMaxSpeedMmPerSec := 5000.0;
+ELSIF GuiConveyorMaxSpeedMmPerSec > 100.0 THEN
+	GuiConveyorMaxSpeedMmPerSec := 100.0;
 END_IF
 
 ConveyorSpeedMmPerSec := GuiConveyorSpeedMmPerSec;

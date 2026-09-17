@@ -55,10 +55,10 @@ Finite GUI/calibration jogs keep their existing commands and busy/done interface
 but finish a calculated speed profile and wait for standstill. They do not
 correct a residual distance error or hold a target position. Actual encoder
 travel remains the source for the legacy position and calibration readings.
-The source now disables the former 5 rpm commissioning cap with
-`ConveyorServoMaxMotorRpm=0`. Load the updated PLC before using the updated GUI;
-older PLC blocks reject zero as invalid configuration. No live deployment or
-higher-speed hardware validation is implied by this source change.
+The source disables the former 5 rpm commissioning cap with
+`ConveyorServoMaxMotorRpm=0`. The current mechanical conversion uses identical
+32:1 reduction gearboxes and 50 mm rollers. The PLC and GUI cap belt commands
+at 100 mm/s, corresponding nominally to 1222.31 motor rpm.
 
 Use the existing project **`TwinCAT Projekt3 - Kopie/TwinCAT Projekt3.sln`**.
 It has been updated in place. The additional `Device3_Conveyor` copy has been
@@ -72,22 +72,23 @@ archived under workspace `.tandem_validation`.
 | Controller | `10.145.4.14.1.1` |
 | Motor 1 terminal | Device 3 > Term 6 (EK1100) > Term 7 (EL7201-0010) |
 | Motor 2 terminal | Device 4 > Term 9 (EK1100) > Term 10 (EL7201-0010) |
-| Motor 1 master / slave / serial | `10.145.4.14.4.1` / `1002` / `00306149` — formerly Term 22 |
-| Motor 2 master / slave / serial | `10.145.4.14.5.1` / `1002` / `00186867` — formerly Term 21 |
+| Motor 1 master / slave / serial | `10.145.4.14.4.1` / `1002` / `00186867` — formerly Term 22 |
+| Motor 2 master / slave / serial | `10.145.4.14.5.1` / `1002` / `00306149` — formerly Term 21 |
 | Operating mode | **CSV, 9**, no NC axis |
 | Physical motor count | **2**, sharing the conveyor trajectory |
-| Roller / gearbox / direction | 50 mm / none / **-1 for both motors** |
+| Roller / gearbox / direction | 50 mm / **32:1 reduction on both motors** / **-1 for both motors** |
 | Encoder counts per revolution | 1048576 mapped counts |
 | Velocity factor | 268435 raw units per revolution/second |
 | Nominal supply | 24000 mV |
 | Initial motor RPM cap / acceleration | **disabled (0) / 5 rpm/s** |
 
-The former five rpm cap caused a plateau at **13.09 mm/s** at the roller.
-Zero disables that extra cap; positive values still configure an RPM cap.
-The GUI maximum belt speed, legacy command range, DINT output range and
-one-hour deceleration bound remain enforced. Speed/acceleration configuration is
-frozen after initialization; changes require a stopped reset. The GUI's stopped
-tandem configuration sequence now writes zero to clear the commissioning cap.
+Zero disables the extra motor-RPM cap; positive values still configure one.
+The hard GUI/PLC belt limit is **100 mm/s**. The shared command range is
+4074.366543 virtual full steps/s, equal to 1222.31 motor rpm and 100 mm/s at the
+nominal 50 mm / 32:1 geometry. DINT output bounds and the deceleration bound
+remain enforced. Speed/acceleration configuration is frozen after initialization;
+changes require a stopped reset. The GUI's stopped tandem configuration sequence
+writes zero to keep the obsolete commissioning RPM cap disabled.
 
 ## Existing GUI controls
 
@@ -118,8 +119,8 @@ Conveyor performs a stopped configuration/reset sequence, verifies the
 velocity-only PLC marker, fixes MotorCount to 2, keeps both directions at -1 and
 the motor ratio at 1.0, then enables both motors together. Clearing Conveyor
 requests the shared stop immediately; a stop during preparation also cancels
-the pending start. The nominal belt conversion is based on direct drive and a
-50 mm roller: `pi * 50 / 200 = 0.785398 mm` per legacy virtual full step.
+the pending start. The nominal belt conversion includes the 32:1 reduction and
+50 mm roller: `pi * 50 / (200 * 32) = 0.0245437 mm` per virtual full step.
 Pressure profiles can no longer restore the old stepper calibration.
 
 `Calibrate Conveyor` includes **Target acceleration** in rpm/s and shows the

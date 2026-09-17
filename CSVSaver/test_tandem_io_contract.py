@@ -148,7 +148,10 @@ class TandemIoContractTests(unittest.TestCase):
         self.assertEqual(float(initial("ConveyorServoMotor2Ratio")), 1.0)
         self.assertEqual(float(initial("ConveyorServoMaxMotorRpm")), 0.0)
         self.assertAlmostEqual(float(initial("ConveyorServoCalibratedMmPerFullStep")),
-                               math.pi * 50.0 / 200.0, places=8)
+                               math.pi * 50.0 / (200.0 * 32.0), places=8)
+        self.assertAlmostEqual(float(initial("ConveyorSpeedRangeFullStepsPerSec")),
+                               100.0 * 200.0 * 32.0 / (math.pi * 50.0), places=5)
+        self.assertEqual(float(initial("GuiConveyorMaxSpeedMmPerSec")), 100.0)
         for suffix in ("", "2"):
             self.assertEqual(float(initial("ConveyorServoFeedbackCountsPerRev" + suffix)), 1048576.0)
             self.assertEqual(float(initial("ConveyorServoVelocityUnitsPerRevPerSec" + suffix)), 268435.0)

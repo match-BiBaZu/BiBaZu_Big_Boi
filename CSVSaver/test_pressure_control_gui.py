@@ -443,7 +443,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertTrue(controller.calibration_cache["valid"])
         self.assertAlmostEqual(
             controller.calibration_cache["mm_per_full_step"],
-            gui.math.pi * 50.0 / 200.0,
+            gui.math.pi * 50.0 / (200.0 * 32.0),
         )
         self.assertEqual(controller.force_response_delays_ms, [8.7] * 4)
         self.assertEqual(
@@ -476,22 +476,26 @@ class AdsThreadTests(unittest.TestCase):
         self.assertTrue(snapshots[0]["calibration"]["valid"])
         self.assertAlmostEqual(
             snapshots[0]["calibration"]["mm_per_full_step"],
-            gui.math.pi * 50.0 / 200.0,
+            gui.math.pi * 50.0 / (200.0 * 32.0),
         )
         self.assertEqual(writes[0][1], "default_conveyor_calibration")
         self.assertTrue(writes[0][0]["MAIN.GuiConveyorCalibrationValid"])
         controller.shutdown()
 
-    def test_fifty_mm_roller_conversion_matches_direct_drive_geometry(self):
+    def test_fifty_mm_roller_conversion_includes_32_to_1_gearbox(self):
         circumference = gui.math.pi * 50.0
 
-        self.assertAlmostEqual(gui.CONVEYOR_MM_PER_FULL_STEP_DEFAULT, circumference / 200.0)
+        self.assertEqual(gui.CONVEYOR_GEAR_REDUCTION, 32.0)
         self.assertAlmostEqual(
-            gui.motor_rpm_to_belt_speed_mm_per_sec(60.0), circumference
+            gui.CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
+            circumference / (200.0 * 32.0),
+        )
+        self.assertAlmostEqual(
+            gui.motor_rpm_to_belt_speed_mm_per_sec(60.0), circumference / 32.0
         )
         self.assertAlmostEqual(
             gui.motor_acceleration_to_belt_mm_per_sec2(3.0),
-            circumference / 20.0,
+            circumference / (20.0 * 32.0),
         )
 
     def test_tandem_start_configures_both_motors_then_enables_once(self):
@@ -1259,9 +1263,9 @@ class ProfileCompatibilityTests(unittest.TestCase):
         result = self.load_profile({"version": 1, "arrays": []})
         self.assertTrue(result["valid"])
         self.assertAlmostEqual(
-            result["mm_per_full_step"], gui.math.pi * 50.0 / 200.0
+            result["mm_per_full_step"], gui.math.pi * 50.0 / (200.0 * 32.0)
         )
-        self.assertEqual(result["conveyor_max_speed"], 1000.0)
+        self.assertEqual(result["conveyor_max_speed"], 100.0)
         self.assertTrue(result["conveyor_max_hidden"])
         self.assertEqual(
             result["sensor_spacings"],
@@ -1335,7 +1339,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 "conveyor_max_speed_mm_per_sec": 2345.0,
             }
         )
-        self.assertEqual(result["conveyor_max_speed"], 1000.0)
+        self.assertEqual(result["conveyor_max_speed"], 100.0)
 
     def test_old_profile_cannot_restore_stepper_calibration(self):
         result = self.load_profile(
@@ -1351,7 +1355,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(result["valid"])
         self.assertAlmostEqual(
-            result["mm_per_full_step"], gui.math.pi * 50.0 / 200.0
+            result["mm_per_full_step"], gui.math.pi * 50.0 / (200.0 * 32.0)
         )
         self.assertEqual(result["force_response_delays_ms"], [8.7] * 4)
         self.assertEqual(
@@ -2254,14 +2258,14 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.ads.write_requested.connect(
             lambda values, context: writes.append((values, context))
         )
-        window.consistency_conveyor_speed.setValue(123.4)
+        window.consistency_conveyor_speed.setValue(80.0)
 
         window._start_consistency_conveyor()
         window._stop_consistency_conveyor()
 
         start_values, start_context = writes[0]
         self.assertEqual(start_context, "velocity_check_start")
-        self.assertEqual(start_values["MAIN.GuiConveyorSpeedMmPerSec"], 123.4)
+        self.assertEqual(start_values["MAIN.GuiConveyorSpeedMmPerSec"], 80.0)
         self.assertTrue(start_values["MAIN.GuiConveyorEnabled"])
         self.assertTrue(start_values["MAIN.GuiVelocityCheckMode"])
         self.assertEqual(writes[1][1], "setup_stop")

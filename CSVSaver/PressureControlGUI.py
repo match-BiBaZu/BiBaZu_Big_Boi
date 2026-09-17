@@ -150,10 +150,10 @@ LIGHT_BARRIER_DEBOUNCE_DEFAULT_MS = 20
 LIGHT_BARRIER_INVERT_DEFAULTS = (True,) * LIGHT_BARRIER_COUNT
 LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS = (False,) * LIGHT_BARRIER_COUNT
 CONVEYOR_SPEED_MIN_MM_PER_SEC = 0.0
-CONVEYOR_SPEED_MAX_MM_PER_SEC = 5000.0
+CONVEYOR_SPEED_MAX_MM_PER_SEC = 100.0
 CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC = 1.0
-CONVEYOR_MAX_SPEED_MAX_MM_PER_SEC = 5000.0
-CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC = 1000.0
+CONVEYOR_MAX_SPEED_MAX_MM_PER_SEC = 100.0
+CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC = 100.0
 ESTIMATE_POLL_INTERVAL_MS = 750
 ESTIMATE_DISPLAY_EPSILON = 0.05
 CALIBRATION_POLL_INTERVAL_MS = 100
@@ -167,9 +167,12 @@ FORCE_RESPONSE_DELAY_DEFAULTS_MS = (8.7,) * ARRAY_COUNT
 FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS = (8.7,) * ARRAY_COUNT
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
 CONVEYOR_ROLLER_DIAMETER_MM = 50.0
+CONVEYOR_GEAR_REDUCTION = 32.0
 CONVEYOR_VIRTUAL_FULL_STEPS_PER_REV = 200.0
 CONVEYOR_MM_PER_FULL_STEP_DEFAULT = (
-    math.pi * CONVEYOR_ROLLER_DIAMETER_MM / CONVEYOR_VIRTUAL_FULL_STEPS_PER_REV
+    math.pi
+    * CONVEYOR_ROLLER_DIAMETER_MM
+    / (CONVEYOR_VIRTUAL_FULL_STEPS_PER_REV * CONVEYOR_GEAR_REDUCTION)
 )
 CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC = 5.0
 CONVEYOR_ACCELERATION_MIN_RPM_PER_SEC = 0.1
@@ -194,7 +197,12 @@ def calculate_conveyor_jog(
 
 
 def motor_rpm_to_belt_speed_mm_per_sec(rpm: float) -> float:
-    return float(rpm) * math.pi * CONVEYOR_ROLLER_DIAMETER_MM / 60.0
+    return (
+        float(rpm)
+        * math.pi
+        * CONVEYOR_ROLLER_DIAMETER_MM
+        / (60.0 * CONVEYOR_GEAR_REDUCTION)
+    )
 
 
 def motor_acceleration_to_belt_mm_per_sec2(rpm_per_sec: float) -> float:
@@ -2401,7 +2409,7 @@ class ConveyorCalibrationDialog(QDialog):
         form.addRow("Target acceleration", self.target_acceleration)
 
         self.belt_acceleration_label = QLabel()
-        form.addRow("Belt acceleration (50 mm roller)", self.belt_acceleration_label)
+        form.addRow("Belt acceleration (50 mm roller, 32:1)", self.belt_acceleration_label)
 
         self.apply_acceleration_button = QPushButton("Apply Tandem Settings")
         self.apply_acceleration_button.setToolTip(
@@ -4690,7 +4698,7 @@ class PressureControlWindow(QMainWindow):
             conveyor_max_speed = CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC
             # Conveyor geometry belongs to the machine, not to a pressure
             # profile. In particular, old EL7047 profiles must not replace the
-            # 50 mm direct-drive roller scale used by the tandem servos.
+            # 50 mm roller and 32:1 gearbox scale used by the tandem servos.
             # All light barrier settings and force response values are global.
             # Profile loads must leave the current machine settings unchanged.
             controls_to_block = [

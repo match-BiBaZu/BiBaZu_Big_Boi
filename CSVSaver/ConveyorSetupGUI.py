@@ -56,6 +56,7 @@ from PressureControlGUI import (
     LIGHT_BARRIER_COUNT,
     LIGHT_BARRIER_INVERT_DEFAULTS,
     LIGHT_BARRIER_PAIRS,
+    CONVEYOR_SPEED_MAX_MM_PER_SEC,
     SENSOR_SPACING_DEFAULTS_MM,
     SENSOR_SPACING_DISPLAY_PAIRS,
     SENSOR_SPACING_SYMBOLS,
@@ -659,7 +660,7 @@ class VelocityPlausibilityDialog(QDialog):
         self.sensor_pair.addItem("Light barriers 3-4", 1)
         self.sensor_pair.addItem("Light barriers 5-6", 2)
         self.target_speed_input = QDoubleSpinBox()
-        self.target_speed_input.setRange(0.1, 500.0)
+        self.target_speed_input.setRange(0.1, CONVEYOR_SPEED_MAX_MM_PER_SEC)
         self.target_speed_input.setDecimals(2)
         self.target_speed_input.setSuffix(" mm/s")
         self.target_speed_input.setValue(10.0)
@@ -1140,7 +1141,9 @@ class ConveyorSetupWindow(QMainWindow):
             "Export all table rows: eight PLC timestamps [ms], then seven speeds [mm/s]"
         )
         self.consistency_conveyor_speed = QDoubleSpinBox()
-        self.consistency_conveyor_speed.setRange(0.1, 1000.0)
+        self.consistency_conveyor_speed.setRange(
+            0.1, CONVEYOR_SPEED_MAX_MM_PER_SEC
+        )
         self.consistency_conveyor_speed.setDecimals(2)
         self.consistency_conveyor_speed.setSingleStep(10.0)
         self.consistency_conveyor_speed.setSuffix(" mm/s")
