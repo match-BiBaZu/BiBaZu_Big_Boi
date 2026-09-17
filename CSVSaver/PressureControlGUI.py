@@ -1,8 +1,10 @@
 import csv
 import json
+import math
 import statistics
 import tempfile
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -164,7 +166,14 @@ FORCE_DELAY_MIN_RISE_DEFAULT = 0.05
 FORCE_RESPONSE_DELAY_DEFAULTS_MS = (8.7,) * ARRAY_COUNT
 FORCE_SINGLE_NOZZLE_RESPONSE_DELAY_DEFAULTS_MS = (8.7,) * ARRAY_COUNT
 CALIBRATION_MARKER_DISTANCE_DEFAULT_MM = 315.0
-CONVEYOR_MM_PER_FULL_STEP_DEFAULT = 0.32960026
+CONVEYOR_ROLLER_DIAMETER_MM = 50.0
+CONVEYOR_VIRTUAL_FULL_STEPS_PER_REV = 200.0
+CONVEYOR_MM_PER_FULL_STEP_DEFAULT = (
+    math.pi * CONVEYOR_ROLLER_DIAMETER_MM / CONVEYOR_VIRTUAL_FULL_STEPS_PER_REV
+)
+CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC = 5.0
+CONVEYOR_ACCELERATION_MIN_RPM_PER_SEC = 0.1
+CONVEYOR_ACCELERATION_MAX_RPM_PER_SEC = 300.0
 CALIBRATION_JOG_STEPS_DEFAULT = 100
 CALIBRATION_JOG_SPEED_DEFAULT = 10.0
 CONVEYOR_JOG_DISTANCE_DEFAULT_MM = 1.0
@@ -182,6 +191,14 @@ def calculate_conveyor_jog(
     actual_distance_mm = full_steps * mm_per_full_step
     full_steps_per_sec = max(1.0, min(500.0, speed_mm_per_sec / mm_per_full_step))
     return full_steps, actual_distance_mm, full_steps_per_sec
+
+
+def motor_rpm_to_belt_speed_mm_per_sec(rpm: float) -> float:
+    return float(rpm) * math.pi * CONVEYOR_ROLLER_DIAMETER_MM / 60.0
+
+
+def motor_acceleration_to_belt_mm_per_sec2(rpm_per_sec: float) -> float:
+    return motor_rpm_to_belt_speed_mm_per_sec(rpm_per_sec)
 
 
 def calculate_force_delay_statistics(delays_ms: list[float]) -> dict[str, float]:
@@ -547,6 +564,15 @@ class AdsWorker(QObject):
     operation_failed = pyqtSignal(str, str)
     shutdown_finished = pyqtSignal()
 
+    TANDEM_CONFIG_VALUES = {
+        "MAIN.ConveyorServoCommissioned": True,
+        "MAIN.ConveyorServoMotorCount": 2,
+        "MAIN.ConveyorServoSingleMotor": 1,
+        "MAIN.ConveyorServoDirection1": 1,
+        "MAIN.ConveyorServoDirection2": 1,
+        "MAIN.ConveyorServoMotor2Ratio": 1.0,
+    }
+
     SAFE_STOP_VALUES = {
         "MAIN.GuiCalibrationStop": True,
         "MAIN.GuiConveyorCalibrationMode": False,
@@ -554,6 +580,119 @@ class AdsWorker(QObject):
         "MAIN.GuiConveyorEnabled": False,
         "MAIN.GuiForceDelayMeasurementEnabled": False,
     }
+
+    def _wait_for_tandem_state(
+        self, predicate, timeout_seconds: float, failure_message: str
+    ) -> dict:
+        names = [
+            "MAIN.StepperPosBusy",
+            "MAIN.StepperPosError",
+            "MAIN.StepperPosReadyToExecute",
+            "MAIN.ConveyorServoCommissioned",
+            "MAIN.ConveyorServoFaultCode",
+            "MAIN.ConveyorServoState",
+            "MAIN.ConveyorServo1TargetVelocity",
+            "MAIN.ConveyorServo2TargetVelocity",
+        ]
+        deadline = time.monotonic() + timeout_seconds
+        last_values = {}
+        while time.monotonic() < deadline:
+            if self.tandem_cancel_event.is_set():
+                raise RuntimeError("Tandem conveyor start cancelled")
+            last_values = self.read_values(names)
+            if predicate(last_values):
+                return last_values
+            time.sleep(0.05)
+        raise RuntimeError(f"{failure_message}: {last_values}")
+
+    @pyqtSlot(float, bool)
+    def configure_tandem(self, acceleration_rpm_per_sec: float, start_after: bool) -> None:
+        context = "tandem_start" if start_after else "tandem_configuration"
+        if not self.client.is_connected:
+            self.operation_failed.emit(context, "ADS offline")
+            return
+        acceleration = float(acceleration_rpm_per_sec)
+        if not (
+            CONVEYOR_ACCELERATION_MIN_RPM_PER_SEC
+            <= acceleration
+            <= CONVEYOR_ACCELERATION_MAX_RPM_PER_SEC
+        ):
+            self.operation_failed.emit(context, "Invalid conveyor acceleration")
+            return
+        try:
+            velocity_only = bool(
+                self.plc().read_by_name(
+                    "MAIN.ConveyorServoVelocityOnly", pyads.PLCTYPE_BOOL
+                )
+            )
+            if not velocity_only:
+                raise RuntimeError(
+                    "PLC conveyor block is not the velocity-only tandem version"
+                )
+
+            self.write_values_impl(dict(self.SAFE_STOP_VALUES))
+            self._wait_for_tandem_state(
+                lambda values: (
+                    not bool(values["MAIN.StepperPosBusy"])
+                    and int(values["MAIN.ConveyorServo1TargetVelocity"]) == 0
+                    and int(values["MAIN.ConveyorServo2TargetVelocity"]) == 0
+                ),
+                8.0,
+                "Conveyor did not reach standstill for configuration",
+            )
+
+            config_values = {
+                **self.TANDEM_CONFIG_VALUES,
+                "MAIN.ConveyorServoAccelerationRpmPerSec": acceleration,
+            }
+            self.write_values_impl(config_values)
+            # Commissioning, valid PDO feedback and the stationary encoder window
+            # each need 100 ms in the PLC before a stopped reset may capture the
+            # new frozen configuration.
+            time.sleep(0.25)
+            self.write_values_impl({"MAIN.GuiConveyorReset": True})
+            time.sleep(0.05)
+            status = self._wait_for_tandem_state(
+                lambda values: (
+                    int(values["MAIN.ConveyorServoFaultCode"]) == 0
+                    and bool(values["MAIN.ConveyorServoCommissioned"])
+                    and not bool(values["MAIN.StepperPosError"])
+                    and int(values["MAIN.ConveyorServoState"]) == 0
+                    and not bool(values["MAIN.StepperPosBusy"])
+                ),
+                8.0,
+                "Tandem conveyor did not become ready after reset",
+            )
+            if start_after:
+                if self.tandem_cancel_event.is_set():
+                    raise RuntimeError("Tandem conveyor start cancelled")
+                self.write_values_impl({"MAIN.GuiConveyorEnabled": True})
+                status = self._wait_for_tandem_state(
+                    lambda values: (
+                        bool(values["MAIN.StepperPosReadyToExecute"])
+                        or int(values["MAIN.ConveyorServoFaultCode"]) != 0
+                    ),
+                    8.0,
+                    "Both conveyor drives did not enable",
+                )
+                if int(status["MAIN.ConveyorServoFaultCode"]) != 0:
+                    raise RuntimeError(
+                        "Tandem conveyor fault while enabling: "
+                        f'{int(status["MAIN.ConveyorServoFaultCode"])}'
+                    )
+            completed_values = dict(config_values)
+            completed_values["MAIN.GuiConveyorReset"] = False
+            completed_values["MAIN.GuiConveyorEnabled"] = bool(start_after)
+            completed_values["MAIN.ConveyorServoFaultCode"] = int(
+                status["MAIN.ConveyorServoFaultCode"]
+            )
+            self.write_finished.emit(context, completed_values)
+        except Exception as exc:
+            try:
+                self.write_values_impl(dict(self.SAFE_STOP_VALUES))
+            except Exception:
+                pass
+            self.operation_failed.emit(context, format_ads_error(exc))
 
     def __init__(self) -> None:
         super().__init__()
@@ -566,6 +705,7 @@ class AdsWorker(QObject):
         self.barrier_history_available = None
         self.filtered_barrier_history_available = None
         self.shutting_down = False
+        self.tandem_cancel_event = threading.Event()
 
     @pyqtSlot()
     def start(self) -> None:
@@ -774,6 +914,11 @@ class AdsWorker(QObject):
             "MAIN.GuiCalibrationJogSpeedFullStepsPerSec",
             "MAIN.GuiConveyorMmPerFullStep",
             "MAIN.GuiConveyorCalibrationValid",
+            "MAIN.ConveyorServoAccelerationRpmPerSec",
+            "MAIN.ConveyorServoMotorCount",
+            "MAIN.ConveyorServoVelocityOnly",
+            "MAIN.ConveyorServoCommissioned",
+            "MAIN.ConveyorServoMaxMotorRpm",
             *[
                 f"MAIN.GuiForceResponseDelayMs{index}"
                 for index in range(1, ARRAY_COUNT + 1)
@@ -844,6 +989,15 @@ class AdsWorker(QObject):
                 ),
                 "mm_per_full_step": float(values["MAIN.GuiConveyorMmPerFullStep"]),
                 "valid": bool(values["MAIN.GuiConveyorCalibrationValid"]),
+            },
+            "tandem": {
+                "acceleration_rpm_per_sec": float(
+                    values["MAIN.ConveyorServoAccelerationRpmPerSec"]
+                ),
+                "motor_count": int(values["MAIN.ConveyorServoMotorCount"]),
+                "velocity_only": bool(values["MAIN.ConveyorServoVelocityOnly"]),
+                "commissioned": bool(values["MAIN.ConveyorServoCommissioned"]),
+                "max_motor_rpm": float(values["MAIN.ConveyorServoMaxMotorRpm"]),
             },
             "force_response_delays_ms": [
                 float(values[f"MAIN.GuiForceResponseDelayMs{index}"])
@@ -1331,6 +1485,7 @@ class AdsController(QObject):
     operation_failed = pyqtSignal(str, str)
 
     write_requested = pyqtSignal(object, str)
+    tandem_configuration_requested = pyqtSignal(float, bool)
     calibration_mode_requested = pyqtSignal(bool)
     setup_polling_requested = pyqtSignal(bool)
     force_delay_polling_requested = pyqtSignal(bool)
@@ -1348,6 +1503,7 @@ class AdsController(QObject):
             "jog_speed_full_steps_per_sec": CALIBRATION_JOG_SPEED_DEFAULT,
             "mm_per_full_step": CONVEYOR_MM_PER_FULL_STEP_DEFAULT,
             "valid": True,
+            "acceleration_rpm_per_sec": CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC,
         }
         self.force_response_delays_ms = list(FORCE_RESPONSE_DELAY_DEFAULTS_MS)
         self.force_single_nozzle_response_delays_ms = list(
@@ -1364,6 +1520,7 @@ class AdsController(QObject):
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.start)
         self.write_requested.connect(self.worker.write_values)
+        self.tandem_configuration_requested.connect(self.worker.configure_tandem)
         self.calibration_mode_requested.connect(self.worker.set_calibration_mode)
         self.setup_polling_requested.connect(self.worker.set_setup_polling)
         self.force_delay_polling_requested.connect(
@@ -1405,6 +1562,20 @@ class AdsController(QObject):
     @pyqtSlot(object)
     def on_initial_snapshot(self, snapshot: dict) -> None:
         calibration = dict(snapshot["calibration"])
+        tandem = dict(snapshot.get("tandem", {}))
+        acceleration = float(
+            tandem.get(
+                "acceleration_rpm_per_sec",
+                CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC,
+            )
+        )
+        if not (
+            CONVEYOR_ACCELERATION_MIN_RPM_PER_SEC
+            <= acceleration
+            <= CONVEYOR_ACCELERATION_MAX_RPM_PER_SEC
+        ):
+            acceleration = CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC
+        calibration["acceleration_rpm_per_sec"] = acceleration
         if (
             not bool(calibration["valid"])
             or float(calibration["mm_per_full_step"]) <= 0.0
@@ -1476,6 +1647,7 @@ class AdsController(QObject):
             "MAIN.GuiCalibrationJogSpeedFullStepsPerSec": "jog_speed_full_steps_per_sec",
             "MAIN.GuiConveyorMmPerFullStep": "mm_per_full_step",
             "MAIN.GuiConveyorCalibrationValid": "valid",
+            "MAIN.ConveyorServoAccelerationRpmPerSec": "acceleration_rpm_per_sec",
         }
         for symbol, cache_key in calibration_symbols.items():
             if symbol in values:
@@ -1560,6 +1732,24 @@ class AdsController(QObject):
 
     def stop_calibration_move(self) -> None:
         self.write_now({"MAIN.GuiCalibrationStop": True}, "calibration_stop")
+
+    def configure_tandem(
+        self, acceleration_rpm_per_sec: float, start_after: bool = False
+    ) -> None:
+        if not self.connected:
+            self.operation_failed.emit("tandem_configuration", "ADS offline")
+            return
+        for symbol in (*AdsWorker.SAFE_STOP_VALUES, "MAIN.GuiConveyorReset"):
+            self.pending_writes.pop(symbol, None)
+        self.flush_writes()
+        self.worker.tandem_cancel_event.clear()
+        self.tandem_configuration_requested.emit(
+            float(acceleration_rpm_per_sec), bool(start_after)
+        )
+
+    def stop_tandem(self) -> None:
+        self.worker.tandem_cancel_event.set()
+        self.write_now({"MAIN.GuiConveyorEnabled": False}, "Conveyor enable")
 
     def set_setup_polling(self, enabled: bool) -> None:
         self.setup_polling_requested.emit(enabled)
@@ -2132,6 +2322,7 @@ class ConveyorCalibrationDialog(QDialog):
         super().__init__(parent)
         self.ads = ads
         self._calibration_mode_requested = False
+        self._tandem_configuration_pending = False
         self.setWindowTitle("Conveyor Calibration")
         self.setModal(True)
         self.setMinimumWidth(520)
@@ -2143,11 +2334,22 @@ class ConveyorCalibrationDialog(QDialog):
             QSignalBlocker(self.marker_distance),
             QSignalBlocker(self.jog_steps),
             QSignalBlocker(self.jog_speed),
+            QSignalBlocker(self.target_acceleration),
         ):
             self.marker_distance.setValue(float(settings["marker_distance_mm"]))
             self.jog_steps.setValue(int(settings["jog_steps"]))
             self.jog_speed.setValue(float(settings["jog_speed_full_steps_per_sec"]))
+            self.target_acceleration.setValue(
+                float(
+                    settings.get(
+                        "acceleration_rpm_per_sec",
+                        CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC,
+                    )
+                )
+            )
+        self._update_belt_acceleration()
         self.ads.calibration_status_ready.connect(self.refresh_status)
+        self.ads.write_finished.connect(self._on_write_finished)
         self.ads.operation_failed.connect(self._on_ads_error)
         self._calibration_mode_requested = True
         self.ads.enter_calibration()
@@ -2181,6 +2383,30 @@ class ConveyorCalibrationDialog(QDialog):
         self.jog_speed.setSuffix(" full steps/s")
         self.jog_speed.setValue(CALIBRATION_JOG_SPEED_DEFAULT)
         form.addRow("Jog speed", self.jog_speed)
+
+        self.target_acceleration = QDoubleSpinBox()
+        self.target_acceleration.setRange(
+            CONVEYOR_ACCELERATION_MIN_RPM_PER_SEC,
+            CONVEYOR_ACCELERATION_MAX_RPM_PER_SEC,
+        )
+        self.target_acceleration.setDecimals(1)
+        self.target_acceleration.setSingleStep(1.0)
+        self.target_acceleration.setSuffix(" rpm/s")
+        self.target_acceleration.setKeyboardTracking(False)
+        self.target_acceleration.setValue(CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC)
+        self.target_acceleration.setToolTip(
+            "Shared velocity-ramp acceleration for both AM8112 motors"
+        )
+        form.addRow("Target acceleration", self.target_acceleration)
+
+        self.belt_acceleration_label = QLabel()
+        form.addRow("Belt acceleration (50 mm roller)", self.belt_acceleration_label)
+
+        self.apply_acceleration_button = QPushButton("Apply Tandem Settings")
+        self.apply_acceleration_button.setToolTip(
+            "Stop both drives, apply the shared acceleration, reset both drives, and verify readiness"
+        )
+        form.addRow("", self.apply_acceleration_button)
         layout.addWidget(parameters)
 
         movement_layout = QHBoxLayout()
@@ -2241,6 +2467,8 @@ class ConveyorCalibrationDialog(QDialog):
 
     def _connect_signals(self) -> None:
         self.marker_distance.valueChanged.connect(self._write_marker_distance)
+        self.target_acceleration.valueChanged.connect(self._update_belt_acceleration)
+        self.apply_acceleration_button.clicked.connect(self._apply_tandem_settings)
         self.move_left_button.clicked.connect(lambda: self._move("left"))
         self.move_right_button.clicked.connect(lambda: self._move("right"))
         self.stop_button.clicked.connect(self._stop)
@@ -2252,6 +2480,35 @@ class ConveyorCalibrationDialog(QDialog):
         self.ads.queue_write(
             "MAIN.GuiCalibrationMarkerDistanceMm", float(value), "marker_distance"
         )
+
+    def _update_belt_acceleration(self, _value: float | None = None) -> None:
+        belt_acceleration = motor_acceleration_to_belt_mm_per_sec2(
+            self.target_acceleration.value()
+        )
+        self.belt_acceleration_label.setText(f"{belt_acceleration:.2f} mm/s²")
+
+    def _apply_tandem_settings(self) -> None:
+        if self._tandem_configuration_pending:
+            return
+        self._tandem_configuration_pending = True
+        self.apply_acceleration_button.setEnabled(False)
+        self.close_button.setEnabled(False)
+        self.state_label.setText("Stopping both motors and applying tandem settings")
+        if self._calibration_mode_requested:
+            self._calibration_mode_requested = False
+            self.ads.leave_calibration()
+        self.ads.configure_tandem(self.target_acceleration.value())
+
+    @pyqtSlot(str)
+    def _on_write_finished(self, context: str) -> None:
+        if context != "tandem_configuration" or not self._tandem_configuration_pending:
+            return
+        self._tandem_configuration_pending = False
+        self.apply_acceleration_button.setEnabled(True)
+        self.close_button.setEnabled(True)
+        self.state_label.setText("Tandem settings applied; both drives ready")
+        self._calibration_mode_requested = True
+        self.ads.enter_calibration()
 
     def _move(self, direction: str) -> None:
         try:
@@ -2289,6 +2546,12 @@ class ConveyorCalibrationDialog(QDialog):
         self.jog_steps.setEnabled(not busy)
         self.jog_speed.setEnabled(not busy)
         self.marker_distance.setEnabled(not busy)
+        self.target_acceleration.setEnabled(
+            not busy and not self._tandem_configuration_pending
+        )
+        self.apply_acceleration_button.setEnabled(
+            not busy and not error and not self._tandem_configuration_pending
+        )
         self.stop_button.setEnabled(busy or error)
 
         self.left_position_label.setText(
@@ -2314,11 +2577,15 @@ class ConveyorCalibrationDialog(QDialog):
         if error:
             state_text = "Conveyor drive error"
         elif not ready:
-            state_text = "Drive not ready - verify Positioning Interface PDOs"
+            state_text = "Both CSV drives are not ready"
         self.state_label.setText(state_text)
 
     @pyqtSlot(str, str)
     def _on_ads_error(self, _context: str, message: str) -> None:
+        if self._tandem_configuration_pending:
+            self._tandem_configuration_pending = False
+            self.apply_acceleration_button.setEnabled(True)
+            self.close_button.setEnabled(True)
         self._show_error(message)
 
     def _show_error(self, error: Exception | str) -> None:
@@ -2331,21 +2598,24 @@ class ConveyorCalibrationDialog(QDialog):
         self.stop_button.setEnabled(True)
 
     def _leave_calibration_mode(self) -> None:
-        if not self._calibration_mode_requested:
-            return
+        calibration_mode_requested = self._calibration_mode_requested
         self._calibration_mode_requested = False
         try:
             self.ads.calibration_status_ready.disconnect(self.refresh_status)
             self.ads.operation_failed.disconnect(self._on_ads_error)
+            self.ads.write_finished.disconnect(self._on_write_finished)
         except (TypeError, RuntimeError):
             pass
-        self.ads.leave_calibration()
+        if calibration_mode_requested:
+            self.ads.leave_calibration()
 
     def done(self, result: int) -> None:
         self._leave_calibration_mode()
         super().done(result)
 
     def closeEvent(self, event) -> None:
+        if self._tandem_configuration_pending:
+            self.ads.stop_tandem()
         self._leave_calibration_mode()
         super().closeEvent(event)
 
@@ -3249,14 +3519,16 @@ class PressureControlWindow(QMainWindow):
         )
         self.conveyor_enabled = QCheckBox("Conveyor")
         self.conveyor_enabled.setChecked(False)
-        self.conveyor_enabled.setToolTip("Enable or disable the EL7047 conveyor motor")
+        self.conveyor_enabled.setToolTip(
+            "Start or stop both AM8112 conveyor motors together"
+        )
         machine_layout.addWidget(self.conveyor_enabled)
         self.conveyor_reverse = QCheckBox("Reverse")
         self.conveyor_reverse.setChecked(False)
-        self.conveyor_reverse.setToolTip("Reverse the conveyor motor direction")
+        self.conveyor_reverse.setToolTip("Reverse both conveyor motors together")
         machine_layout.addWidget(self.conveyor_reverse)
         self.conveyor_reset_button = QPushButton("Reset")
-        self.conveyor_reset_button.setToolTip("Pulse the EL7047 reset bit")
+        self.conveyor_reset_button.setToolTip("Reset both EL7201 conveyor drives")
         machine_layout.addWidget(self.conveyor_reset_button)
         machine_layout.addSpacing(20)
         machine_layout.addWidget(QLabel("Conveyor speed"))
@@ -3275,7 +3547,7 @@ class PressureControlWindow(QMainWindow):
         self.conveyor_max_speed.setDecimals(1)
         self.conveyor_max_speed.setSingleStep(10.0)
         self.conveyor_max_speed.setValue(CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC)
-        self.conveyor_max_speed.setToolTip("Speed that corresponds to 100 percent EL7047 STM Velocity")
+        self.conveyor_max_speed.setToolTip("Legacy compatibility value")
         self.conveyor_max_speed.setVisible(False)
         machine_layout.addStretch(1)
         main_layout.addLayout(machine_layout)
@@ -3364,7 +3636,9 @@ class PressureControlWindow(QMainWindow):
         button_layout.setContentsMargins(0, 0, 0, 0)
         self.reconnect_button = QPushButton("Reconnect")
         self.calibrate_conveyor_button = QPushButton("Calibrate Conveyor")
-        self.calibrate_conveyor_button.setToolTip("Open the conveyor step calibration")
+        self.calibrate_conveyor_button.setToolTip(
+            "Configure tandem acceleration and calibrate belt travel"
+        )
         self.jog_conveyor_button = QPushButton("Jog Conveyor")
         self.jog_conveyor_button.setToolTip("Move the conveyor by a calibrated distance")
         self.force_delay_settings_button = QPushButton("Force Delay Settings")
@@ -3630,10 +3904,16 @@ class PressureControlWindow(QMainWindow):
             "mm_per_full_step": float(calibration["mm_per_full_step"]),
             "valid": bool(calibration["valid"]),
         }
+        if context == "tandem_start":
+            with QSignalBlocker(self.conveyor_enabled):
+                self.conveyor_enabled.setChecked(True)
         self.statusBar().showMessage(f"ADS write complete: {context}")
 
     @pyqtSlot(str, str)
     def on_ads_error(self, context: str, message: str) -> None:
+        if context in {"tandem_start", "tandem_configuration"}:
+            with QSignalBlocker(self.conveyor_enabled):
+                self.conveyor_enabled.setChecked(False)
         self.statusBar().showMessage(f"{context}: {message}")
 
     def write_value(self, row: ArrayRow, field: str, value: bool | int | float) -> None:
@@ -4034,6 +4314,22 @@ class PressureControlWindow(QMainWindow):
         }
         label = labels.get(field, field)
         typed_value = bool(value) if field in {"enabled", "reverse", "reset"} else float(value)
+        if field == "enabled" and typed_value:
+            acceleration = float(
+                self.ads.calibration_cache.get(
+                    "acceleration_rpm_per_sec",
+                    CONVEYOR_ACCELERATION_DEFAULT_RPM_PER_SEC,
+                )
+            )
+            self.ads.configure_tandem(acceleration, start_after=True)
+            self.statusBar().showMessage(
+                "Preparing both conveyor motors for a synchronized start"
+            )
+            return
+        if field == "enabled":
+            self.ads.stop_tandem()
+            self.statusBar().showMessage("Stopping both conveyor motors")
+            return
         if field in {"enabled", "reverse", "reset"}:
             self.ads.write_now({symbols[field]: typed_value}, label)
         else:
@@ -4391,27 +4687,9 @@ class PressureControlWindow(QMainWindow):
             conveyor_reverse = bool(profile.get("conveyor_reverse", False))
             conveyor_speed = float(profile.get("conveyor_speed_mm_per_sec", self.conveyor_speed.value()))
             conveyor_max_speed = CONVEYOR_MAX_SPEED_FIXED_MM_PER_SEC
-            if profile_version >= 2:
-                calibration_data = profile.get("conveyor_calibration", {})
-                calibration_mm_per_step = float(
-                    calibration_data.get("mm_per_full_step", 0.0)
-                )
-                self.conveyor_calibration = {
-                    "marker_distance_mm": float(
-                        calibration_data.get(
-                            "marker_distance_mm", CALIBRATION_MARKER_DISTANCE_DEFAULT_MM
-                        )
-                    ),
-                    "mm_per_full_step": calibration_mm_per_step,
-                    "valid": bool(calibration_data.get("valid", False))
-                    and calibration_mm_per_step > 0.0,
-                }
-            else:
-                self.conveyor_calibration = {
-                    "marker_distance_mm": CALIBRATION_MARKER_DISTANCE_DEFAULT_MM,
-                    "mm_per_full_step": 0.0,
-                    "valid": False,
-                }
+            # Conveyor geometry belongs to the machine, not to a pressure
+            # profile. In particular, old EL7047 profiles must not replace the
+            # 50 mm direct-drive roller scale used by the tandem servos.
             # All light barrier settings and force response values are global.
             # Profile loads must leave the current machine settings unchanged.
             controls_to_block = [

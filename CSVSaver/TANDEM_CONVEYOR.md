@@ -97,12 +97,27 @@ GUIs keep the same controller, ADS port 851, and symbol names:
 | Single-motor selection | `MAIN.ConveyorServoSingleMotor`: 1 = Device 3, 2 = Device 4; stopped reset required |
 | Calibration / finite jog | `MAIN.GuiConveyorCalibrationMode`, `GuiCalibrationMoveLeft/Right` |
 | Jog distance / speed | `MAIN.GuiCalibrationJogSteps`, `GuiCalibrationJogSpeedFullStepsPerSec` |
+| Shared acceleration | `MAIN.ConveyorServoAccelerationRpmPerSec` |
 | Ready / busy / fault | Existing `MAIN.StepperPos*` status symbols |
 
 `Stepper*` names are compatibility signals, not physical EL7047 commands.
 `MAIN.ConveyorServo1*` refers to Device 3; `MAIN.ConveyorServo2*` refers to Device 4.
 Both motors must be ready in tandem mode. A drive, communication, feedback or
 sustained speed-mismatch fault stops the pair. Stop and timeout monitoring remains enabled.
+
+`PressureControlGUI.py` now treats the conveyor as one tandem device. Selecting
+Conveyor performs a stopped configuration/reset sequence, verifies the
+velocity-only PLC marker, fixes MotorCount to 2, keeps both directions at +1 and
+the motor ratio at 1.0, then enables both motors together. Clearing Conveyor
+requests the shared stop immediately; a stop during preparation also cancels
+the pending start. The nominal belt conversion is based on direct drive and a
+50 mm roller: `pi * 50 / 200 = 0.785398 mm` per legacy virtual full step.
+Pressure profiles can no longer restore the old stepper calibration.
+
+`Calibrate Conveyor` includes **Target acceleration** in rpm/s and shows the
+equivalent belt acceleration in mm/s². **Apply Tandem Settings** stops both
+drives, applies the shared ramp, resets the frozen drive configuration and
+checks that it returns without a PLC fault before calibration controls resume.
 
 `TestStart`, `TestAbort`, test torque/commutation-angle outputs and `FB_Cstca*`
 blocks are removed from the active project. `ConveyorDriveSettings` and

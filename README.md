@@ -20,12 +20,20 @@ python ConveyorSetupGUI.py
 ```
 
 The setup tool uses the stored conveyor calibration for all `mm` and `mm/s`
-commands. Light-barrier distance measurements latch the EL7047 internal position
+commands. Light-barrier distance measurements latch the conveyor's compatibility
+position signal
 inside the PLC cycle and can be applied to every adjacent pair from 1-2 through
 7-8. All seven distances are stored in the PLC and are shown at the bottom of
 the conveyor GUI with 2-3, 4-5, and 6-7 on the second row. The four existing
 velocity channels continue to use pairs 1-2,
 3-4, 5-6, and 7-8.
+
+The Pressure Control GUI controls the two AM8112 motors as one velocity-only
+conveyor. Both motors start and stop together with no position correction. The
+nominal belt-speed conversion uses the two direct-drive 50 mm rollers. In
+`Calibrate Conveyor`, `Target acceleration` sets the shared ramp in rpm/s and
+shows the corresponding belt acceleration in mm/s²; applying it performs a
+stopped tandem reset before either drive can run.
 
 The Pressure Control light-barrier dialog shows those four velocity-pair
 spacings and separate user-entered distances from LB2/4/6/8 to arrays 1/2/3/4.

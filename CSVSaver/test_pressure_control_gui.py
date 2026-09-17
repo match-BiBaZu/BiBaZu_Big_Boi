@@ -56,6 +56,38 @@ class FakeClient:
         self.plc = None
 
 
+class FakeTandemPlc:
+    def __init__(self):
+        self.write_calls = []
+        self.enabled = False
+
+    def read_by_name(self, name, _plc_type):
+        if name == "MAIN.GuiReorientationControlActive":
+            return False
+        if name == "MAIN.ConveyorServoVelocityOnly":
+            return True
+        raise KeyError(name)
+
+    def read_list_by_name(self, names, cache_symbol_info=True):
+        values = {
+            "MAIN.StepperPosBusy": False,
+            "MAIN.StepperPosError": False,
+            "MAIN.StepperPosReadyToExecute": self.enabled,
+            "MAIN.ConveyorServoCommissioned": True,
+            "MAIN.ConveyorServoFaultCode": 0,
+            "MAIN.ConveyorServoState": 20 if self.enabled else 0,
+            "MAIN.ConveyorServo1TargetVelocity": 0,
+            "MAIN.ConveyorServo2TargetVelocity": 0,
+        }
+        return {name: values[name] for name in names}
+
+    def write_list_by_name(self, values, cache_symbol_info=True):
+        self.write_calls.append(dict(values))
+        if "MAIN.GuiConveyorEnabled" in values:
+            self.enabled = bool(values["MAIN.GuiConveyorEnabled"])
+        return {name: "no error" for name in values}
+
+
 class FakeReorientationOwnerPlc:
     def __init__(self, *, safe_latched):
         self.owner = True
@@ -411,7 +443,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertTrue(controller.calibration_cache["valid"])
         self.assertAlmostEqual(
             controller.calibration_cache["mm_per_full_step"],
-            0.32960026,
+            gui.math.pi * 50.0 / 200.0,
         )
         self.assertEqual(controller.force_response_delays_ms, [8.7] * 4)
         self.assertEqual(
@@ -443,11 +475,67 @@ class AdsThreadTests(unittest.TestCase):
 
         self.assertTrue(snapshots[0]["calibration"]["valid"])
         self.assertAlmostEqual(
-            snapshots[0]["calibration"]["mm_per_full_step"], 0.32960026
+            snapshots[0]["calibration"]["mm_per_full_step"],
+            gui.math.pi * 50.0 / 200.0,
         )
         self.assertEqual(writes[0][1], "default_conveyor_calibration")
         self.assertTrue(writes[0][0]["MAIN.GuiConveyorCalibrationValid"])
         controller.shutdown()
+
+    def test_fifty_mm_roller_conversion_matches_direct_drive_geometry(self):
+        circumference = gui.math.pi * 50.0
+
+        self.assertAlmostEqual(gui.CONVEYOR_MM_PER_FULL_STEP_DEFAULT, circumference / 200.0)
+        self.assertAlmostEqual(
+            gui.motor_rpm_to_belt_speed_mm_per_sec(60.0), circumference
+        )
+        self.assertAlmostEqual(
+            gui.motor_acceleration_to_belt_mm_per_sec2(3.0),
+            circumference / 20.0,
+        )
+
+    def test_tandem_start_configures_both_motors_then_enables_once(self):
+        plc = FakeTandemPlc()
+        worker = gui.AdsWorker()
+        worker.client = FakeClient(plc)
+        completed = []
+        worker.write_finished.connect(lambda context, values: completed.append((context, values)))
+
+        with patch.object(gui.time, "sleep"):
+            worker.configure_tandem(3.0, True)
+
+        self.assertEqual(plc.write_calls[0], gui.AdsWorker.SAFE_STOP_VALUES)
+        config = plc.write_calls[1]
+        self.assertTrue(config["MAIN.ConveyorServoCommissioned"])
+        self.assertEqual(config["MAIN.ConveyorServoMotorCount"], 2)
+        self.assertEqual(config["MAIN.ConveyorServoDirection1"], 1)
+        self.assertEqual(config["MAIN.ConveyorServoDirection2"], 1)
+        self.assertEqual(config["MAIN.ConveyorServoMotor2Ratio"], 1.0)
+        self.assertEqual(config["MAIN.ConveyorServoAccelerationRpmPerSec"], 3.0)
+        self.assertEqual(plc.write_calls[2], {"MAIN.GuiConveyorReset": True})
+        self.assertEqual(plc.write_calls[3], {"MAIN.GuiConveyorEnabled": True})
+        self.assertEqual(completed[0][0], "tandem_start")
+
+    def test_main_window_start_uses_tandem_sequence_and_stop_is_immediate(self):
+        with patch.object(gui.AdsController, "start"):
+            window = gui.PressureControlWindow()
+        window.ads.connected = True
+        starts = []
+        writes = []
+        window.ads.configure_tandem = lambda acceleration, start_after=False: starts.append(
+            (acceleration, start_after)
+        )
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        window.write_conveyor_setting("enabled", True)
+        window.write_conveyor_setting("enabled", False)
+
+        self.assertEqual(starts, [(5.0, True)])
+        self.assertEqual(writes[-1][0], {"MAIN.GuiConveyorEnabled": False})
+        window.ads.connected = False
+        window.close()
 
     def test_debounce_keeps_only_latest_value(self):
         controller = gui.AdsController()
@@ -1166,10 +1254,12 @@ class ProfileCompatibilityTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_version_1_profile_loads_uncalibrated(self):
+    def test_version_1_profile_preserves_machine_conveyor_geometry(self):
         result = self.load_profile({"version": 1, "arrays": []})
-        self.assertFalse(result["valid"])
-        self.assertEqual(result["mm_per_full_step"], 0.0)
+        self.assertTrue(result["valid"])
+        self.assertAlmostEqual(
+            result["mm_per_full_step"], gui.math.pi * 50.0 / 200.0
+        )
         self.assertEqual(result["conveyor_max_speed"], 1000.0)
         self.assertTrue(result["conveyor_max_hidden"])
         self.assertEqual(
@@ -1246,7 +1336,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(result["conveyor_max_speed"], 1000.0)
 
-    def test_version_2_profile_preserves_calibration(self):
+    def test_old_profile_cannot_restore_stepper_calibration(self):
         result = self.load_profile(
             {
                 "version": 2,
@@ -1259,7 +1349,9 @@ class ProfileCompatibilityTests(unittest.TestCase):
             }
         )
         self.assertTrue(result["valid"])
-        self.assertEqual(result["mm_per_full_step"], 0.05)
+        self.assertAlmostEqual(
+            result["mm_per_full_step"], gui.math.pi * 50.0 / 200.0
+        )
         self.assertEqual(result["force_response_delays_ms"], [8.7] * 4)
         self.assertEqual(
             result["force_single_nozzle_response_delays_ms"],
