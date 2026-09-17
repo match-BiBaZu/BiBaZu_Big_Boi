@@ -41,8 +41,10 @@ count in the FB requires stopped reconfiguration; no partner feedback is fabrica
 
 ## Initial limits and mapping
 
-- Maximum **5 rpm**, acceleration **5 rpm/s**; speed requests above the limit are
-  limited by the PLC. At a 50 mm roller, 5 rpm is approximately **13.09 mm/s**.
+- The source disables the former **5 rpm (13.09 mm/s)** commissioning cap:
+  `ConveyorServoMaxMotorRpm=0`. Acceleration remains **5 rpm/s**. GUI maximum
+  speed and command representation bounds remain active. Load this updated PLC
+  before using the updated GUI, which writes zero during stopped configuration.
 - Direction -1 for both motors; 1048576 mapped encoder counts/revolution; 268435 velocity units
   per revolution/second; nominal DC supply 24000 mV.
 - Automatic holding-brake control. PLC CoE checks require actual mode 9,

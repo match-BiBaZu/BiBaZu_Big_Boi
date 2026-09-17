@@ -511,6 +511,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(config["MAIN.ConveyorServoDirection1"], -1)
         self.assertEqual(config["MAIN.ConveyorServoDirection2"], -1)
         self.assertEqual(config["MAIN.ConveyorServoMotor2Ratio"], 1.0)
+        self.assertEqual(config["MAIN.ConveyorServoMaxMotorRpm"], 0.0)
         self.assertEqual(config["MAIN.ConveyorServoAccelerationRpmPerSec"], 3.0)
         self.assertEqual(plc.write_calls[2], {"MAIN.GuiConveyorReset": True})
         self.assertEqual(plc.write_calls[3], {"MAIN.GuiConveyorEnabled": True})

@@ -25,7 +25,7 @@ VAR_INPUT
     FeedbackCountsPerRev2   : LREAL := 1048576.0;
     VelocityUnitsPerRevPerSec : LREAL := 0.0; //REQUIRED verified CSV raw velocity scaling
     VelocityUnitsPerRevPerSec2 : LREAL := 0.0;
-    MaxMotorRpm             : LREAL := 300.0;
+    MaxMotorRpm             : LREAL := 300.0; //0 disables the optional motor RPM cap
     AccelerationRpmPerSec    : LREAL := 300.0;
     CycleSeconds            : LREAL := 0.001; //must match the calling PLC task
 
@@ -199,7 +199,7 @@ ConfigValid := ((MotorCount = 1) OR (MotorCount = 2))
     AND (FeedbackCountsPerRev2 >= 1.0) AND (FeedbackCountsPerRev2 <= 4294967295.0)
     AND (VelocityUnitsPerRevPerSec >= 0.000001) AND (VelocityUnitsPerRevPerSec <= 1000000000.0)
     AND (VelocityUnitsPerRevPerSec2 >= 0.000001) AND (VelocityUnitsPerRevPerSec2 <= 1000000000.0)
-    AND (MaxMotorRpm >= 0.1) AND (MaxMotorRpm <= 10000.0)
+    AND ((MaxMotorRpm = 0.0) OR ((MaxMotorRpm >= 0.1) AND (MaxMotorRpm <= 10000.0)))
     AND (AccelerationRpmPerSec >= 0.1) AND (AccelerationRpmPerSec <= 100000.0)
     AND (CycleSeconds >= 0.0001) AND (CycleSeconds <= 0.1)
     AND (LegacySpeedRange >= 0.01) AND (LegacySpeedRange <= 10000000.0);
@@ -338,6 +338,15 @@ IF ConfigLoaded THEN
     IF (LastMotor = 2) AND (CfgRatio[2] > 1.0) THEN
         MaxCommonSpeed := MaxCommonSpeed / CfgRatio[2];
         CommonAcceleration := CommonAcceleration / CfgRatio[2];
+    END_IF;
+    IF CfgMaxRpm = 0.0 THEN
+        //No commissioning RPM cap. Keep the command representation and the
+        //one-hour deceleration bound enforced by the capped configuration.
+        MaxCommonSpeed := MIN(CfgLegacyRange, CommonAcceleration * 3600.0);
+        FOR I := FirstMotor TO LastMotor DO
+            MaxCommonSpeed := MIN(MaxCommonSpeed,
+                2147480000.0 / CfgVelocityUnits[I] * 200.0 / CfgRatio[I]);
+        END_FOR;
     END_IF;
     SpeedSettled := EncoderStationary;
 END_IF;

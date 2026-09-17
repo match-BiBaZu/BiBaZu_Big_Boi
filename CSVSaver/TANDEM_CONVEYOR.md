@@ -55,7 +55,10 @@ Finite GUI/calibration jogs keep their existing commands and busy/done interface
 but finish a calculated speed profile and wait for standstill. They do not
 correct a residual distance error or hold a target position. Actual encoder
 travel remains the source for the legacy position and calibration readings.
-The initial speed cap remains 5 rpm; larger test limits are temporary.
+The source now disables the former 5 rpm commissioning cap with
+`ConveyorServoMaxMotorRpm=0`. Load the updated PLC before using the updated GUI;
+older PLC blocks reject zero as invalid configuration. No live deployment or
+higher-speed hardware validation is implied by this source change.
 
 Use the existing project **`TwinCAT Projekt3 - Kopie/TwinCAT Projekt3.sln`**.
 It has been updated in place. The additional `Device3_Conveyor` copy has been
@@ -77,11 +80,14 @@ archived under workspace `.tandem_validation`.
 | Encoder counts per revolution | 1048576 mapped counts |
 | Velocity factor | 268435 raw units per revolution/second |
 | Nominal supply | 24000 mV |
-| Initial maximum speed / acceleration | **5 rpm / 5 rpm/s** |
+| Initial motor RPM cap / acceleration | **disabled (0) / 5 rpm/s** |
 
-Five rpm corresponds to approximately **13.09 mm/s** at the roller. Higher GUI
-requests are limited by the PLC. Speed/acceleration configuration is frozen after
-initialization; changes require a stopped reset.
+The former five rpm cap caused a plateau at **13.09 mm/s** at the roller.
+Zero disables that extra cap; positive values still configure an RPM cap.
+The GUI maximum belt speed, legacy command range, DINT output range and
+one-hour deceleration bound remain enforced. Speed/acceleration configuration is
+frozen after initialization; changes require a stopped reset. The GUI's stopped
+tandem configuration sequence now writes zero to clear the commissioning cap.
 
 ## Existing GUI controls
 

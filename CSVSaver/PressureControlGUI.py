@@ -571,6 +571,7 @@ class AdsWorker(QObject):
         "MAIN.ConveyorServoDirection1": -1,
         "MAIN.ConveyorServoDirection2": -1,
         "MAIN.ConveyorServoMotor2Ratio": 1.0,
+        "MAIN.ConveyorServoMaxMotorRpm": 0.0,
     }
 
     SAFE_STOP_VALUES = {

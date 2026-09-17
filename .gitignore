@@ -1,0 +1,7 @@
+# Local IDE indexes can be locked while TwinCAT / Visual Studio is open.
+.vs/
+
+# Python bytecode and temporary TwinCAT user files.
+__pycache__/
+*.py[cod]
+*.~u

@@ -133,7 +133,7 @@ VAR
 	ConveyorServoFeedbackCountsPerRev2 : LREAL := 1048576.0;
 	ConveyorServoVelocityUnitsPerRevPerSec : LREAL := 268435.0; // live CoE 0x9010:14 readback
 	ConveyorServoVelocityUnitsPerRevPerSec2 : LREAL := 268435.0;
-	ConveyorServoMaxMotorRpm : LREAL := 5.0;
+	ConveyorServoMaxMotorRpm : LREAL := 0.0; //no additional commissioning RPM cap
 	ConveyorServoAccelerationRpmPerSec : LREAL := 5.0;
 	ConveyorServoSingleMotor : UINT := 1; // Physical motor selected when MotorCount=1; stopped reset.
 	ConveyorServoVelocityOnly : BOOL := TRUE; // raw shared CSV target; no PLC speed/position correction

@@ -146,7 +146,7 @@ class TandemIoContractTests(unittest.TestCase):
         self.assertEqual(initial("ConveyorServoDirection1"), "-1")
         self.assertEqual(initial("ConveyorServoDirection2"), "-1")
         self.assertEqual(float(initial("ConveyorServoMotor2Ratio")), 1.0)
-        self.assertEqual(float(initial("ConveyorServoMaxMotorRpm")), 5.0)
+        self.assertEqual(float(initial("ConveyorServoMaxMotorRpm")), 0.0)
         self.assertAlmostEqual(float(initial("ConveyorServoCalibratedMmPerFullStep")),
                                math.pi * 50.0 / 200.0, places=8)
         for suffix in ("", "2"):

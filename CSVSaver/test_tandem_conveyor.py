@@ -86,6 +86,36 @@ class DrivePlant:
 
 
 class TandemConveyorTests(unittest.TestCase):
+    def test_optional_rpm_cap_and_increasing_uncapped_commands(self):
+        for rpm_cap in (5.0, 0.0):
+            with self.subTest(rpm_cap=rpm_cap):
+                plant = DrivePlant(direction2=-1, warm_up=False)
+                plant.step(MaxMotorRpm=rpm_cap)
+                for _ in range(120):
+                    plant.step()
+                plant.enable()
+                targets = []
+                for command in (100, 200):
+                    plant.step(Execute=True, StartType=3, Velocity=command)
+                    for _ in range(500):
+                        values = plant.step()
+                    self.assertFalse(values["Error"], values["FaultCode"])
+                    expected_steps = command / 10000.0 * 2000.0
+                    if rpm_cap:
+                        expected_steps = min(expected_steps, rpm_cap / 60.0 * 200.0)
+                    for axis, direction in ((1, 1), (2, -1)):
+                        self.assertAlmostEqual(
+                            values[f"TargetVelocity{axis}"] / plant.units[axis - 1],
+                            direction * expected_steps / 200.0, places=5,
+                        )
+                    targets.append(values["TargetVelocity1"])
+                    plant.step(Execute=False)
+                    plant.run_until(lambda v: not v["Busy"])
+                if rpm_cap:
+                    self.assertEqual(targets[0], targets[1])
+                else:
+                    self.assertGreater(targets[1], targets[0])
+
     def assert_pair_zero(self, values):
         self.assertEqual((values["Controlword1"], values["Controlword2"]), (0, 0))
         self.assertEqual((values["TargetVelocity1"], values["TargetVelocity2"]), (0, 0))
