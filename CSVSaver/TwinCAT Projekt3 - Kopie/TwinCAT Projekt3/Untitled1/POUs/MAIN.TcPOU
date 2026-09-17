@@ -126,8 +126,8 @@ VAR
 	// Start remains an explicit GUI command; see CSVSaver/TANDEM_CONVEYOR.md.
 	ConveyorServoCommissioned : BOOL := TRUE; // stationary setup and live CoE readback verified; GUI motion starts disabled
 	ConveyorServoMotorCount : UINT := 2; // 1 = Device 3 only; 2 = tandem. Requires stopped reset.
-	ConveyorServoDirection1 : INT := 1; // same shaft direction, confirmed for the two 50 mm rollers
-	ConveyorServoDirection2 : INT := 1;
+	ConveyorServoDirection1 : INT := -1; // both rollers reverse together; same physical orientation
+	ConveyorServoDirection2 : INT := -1;
 	ConveyorServoMotor2Ratio : LREAL := 1.0; // motor 2 rev / motor 1 rev, including roller diameter
 	ConveyorServoFeedbackCountsPerRev : LREAL := 1048576.0;
 	ConveyorServoFeedbackCountsPerRev2 : LREAL := 1048576.0;
@@ -136,9 +136,7 @@ VAR
 	ConveyorServoMaxMotorRpm : LREAL := 5.0;
 	ConveyorServoAccelerationRpmPerSec : LREAL := 5.0;
 	ConveyorServoSingleMotor : UINT := 1; // Physical motor selected when MotorCount=1; stopped reset.
-	ConveyorServoSpeedToleranceRpm : LREAL := 2.0;
-	ConveyorServoSpeedTolerancePercent : LREAL := 15.0;
-	ConveyorServoVelocityOnly : BOOL := TRUE; // readback marker; FB has no position correction
+	ConveyorServoVelocityOnly : BOOL := TRUE; // raw shared CSV target; no PLC speed/position correction
 	// Authoritative NEW belt calibration: 200 virtual full steps per motor 1 revolution.
 	// Legacy GUI profiles cannot overwrite this with the old stepper's scale.
 	ConveyorServoCalibratedMmPerFullStep : REAL := 0.7853981634; // pi * 50 mm / 200; refine with GUI marker calibration
@@ -3155,8 +3153,6 @@ TandemConveyor(
 	MaxMotorRpm := ConveyorServoMaxMotorRpm,
 	AccelerationRpmPerSec := ConveyorServoAccelerationRpmPerSec,
 	SingleMotor := ConveyorServoSingleMotor,
-	SpeedToleranceRpm := ConveyorServoSpeedToleranceRpm,
-	SpeedTolerancePercent := ConveyorServoSpeedTolerancePercent,
 	CycleSeconds := 0.001,
 	Position1 := ConveyorServo1Position,
 	Position2 := ConveyorServo2Position,

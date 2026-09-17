@@ -568,8 +568,8 @@ class AdsWorker(QObject):
         "MAIN.ConveyorServoCommissioned": True,
         "MAIN.ConveyorServoMotorCount": 2,
         "MAIN.ConveyorServoSingleMotor": 1,
-        "MAIN.ConveyorServoDirection1": 1,
-        "MAIN.ConveyorServoDirection2": 1,
+        "MAIN.ConveyorServoDirection1": -1,
+        "MAIN.ConveyorServoDirection2": -1,
         "MAIN.ConveyorServoMotor2Ratio": 1.0,
     }
 

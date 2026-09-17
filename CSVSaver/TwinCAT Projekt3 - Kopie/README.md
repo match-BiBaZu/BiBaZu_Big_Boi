@@ -2,7 +2,7 @@
 
 The existing PLC project now uses pure velocity commands without position
 correction. Direction, ratio, speed ramp and GUI commands remain supported;
-encoder feedback supplies travel reporting and speed monitoring only. Finite
+encoder positions supply travel reporting and stopped-reset qualification only. Finite
 GUI jogs run a calculated speed profile without endpoint correction.
 
 Device 4 passed ten-second plateaus at 10, 30 and 50 rpm with unchanged PI gains.
@@ -43,7 +43,7 @@ count in the FB requires stopped reconfiguration; no partner feedback is fabrica
 
 - Maximum **5 rpm**, acceleration **5 rpm/s**; speed requests above the limit are
   limited by the PLC. At a 50 mm roller, 5 rpm is approximately **13.09 mm/s**.
-- Direction +1; 1048576 mapped encoder counts/revolution; 268435 velocity units
+- Direction -1 for both motors; 1048576 mapped encoder counts/revolution; 268435 velocity units
   per revolution/second; nominal DC supply 24000 mV.
 - Automatic holding-brake control. PLC CoE checks require actual mode 9,
   manual brake release FALSE and torque offset zero on both masters before

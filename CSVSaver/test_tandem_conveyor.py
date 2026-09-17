@@ -365,17 +365,23 @@ class TandemConveyorTests(unittest.TestCase):
         self.assertTrue(values["Busy"])
         self.assertFalse(values["Error"])
 
-    def test_stalled_partner_causes_latched_sync_fault(self):
+    def test_stalled_partner_does_not_change_or_cancel_open_loop_targets(self):
         plant = DrivePlant()
         plant.enable()
         plant.stalled[1] = True
         plant.step(Execute=True, StartType=3, Velocity=1000)
-        values = plant.run_until(lambda v: v["Error"], limit=2000)
-        self.assertIn(values["FaultCode"], (5, 6))
-        self.assert_pair_zero(values)
+        for _ in range(2000):
+            values = plant.step()
+            self.assertFalse(values["Error"], values["FaultCode"])
+            self.assertEqual(
+                values["TargetVelocity1"] / plant.units[0],
+                values["TargetVelocity2"] / plant.units[1],
+            )
+        self.assertGreater(values["TargetVelocity1"], 0)
+        self.assertGreater(values["TargetVelocity2"], 0)
 
     def test_live_configuration_changes_stop_and_require_explicit_reset(self):
-        for change in ({"MotorCount": 1}, {"SingleMotor": 2}, {"SpeedToleranceRpm": 3.0}, {"Direction2": -1}, {"VelocityUnitsPerRevPerSec2": 1.0},
+        for change in ({"MotorCount": 1}, {"SingleMotor": 2}, {"Direction2": -1}, {"VelocityUnitsPerRevPerSec2": 1.0},
                        {"FeedbackCountsPerRev2": 42.0}, {"Motor2Ratio": float("nan")}):
             with self.subTest(change=change):
                 plant = DrivePlant()

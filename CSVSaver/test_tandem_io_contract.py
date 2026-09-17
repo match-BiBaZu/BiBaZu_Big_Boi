@@ -100,6 +100,25 @@ class TandemIoContractTests(unittest.TestCase):
         for link in self.project.findall(".//Mappings//Link"):
             self.assertNotIn("MAIN.Test", link.get("VarA", ""))
 
+    def test_plc_velocity_command_has_no_speed_feedback_or_partner_comparison(self):
+        declaration = self.fb.findtext("./POU/Declaration")
+        body = self.fb.findtext("./POU/Implementation/ST")
+
+        for removed_name in (
+            "SpeedToleranceRpm",
+            "SpeedTolerancePercent",
+            "FollowingTimer",
+            "SyncTimer",
+            "MeasuredVelocity",
+            "SpeedErrorRpm",
+        ):
+            self.assertNotIn(removed_name, declaration)
+            self.assertNotIn(removed_name, body)
+        self.assertIn(
+            "DriveCommand[I] := LIMIT(-MaxCommonSpeed, TrajectoryVelocity, MaxCommonSpeed);",
+            body,
+        )
+
     def test_each_drive_has_independent_coe_and_fault_monitoring(self):
         body = self.main.findtext("./POU/Implementation/ST")
         for axis, instance, netid in ((1, "ConveyorDriveSettings", "10.145.4.14.4.1"),
@@ -124,8 +143,8 @@ class TandemIoContractTests(unittest.TestCase):
             self.assertEqual(initial(name), "FALSE", name)
         for number in range(1, 5):
             self.assertEqual(float(initial(f"GuiPressureMbar{number}")), 0.0)
-        self.assertEqual(initial("ConveyorServoDirection1"), "1")
-        self.assertEqual(initial("ConveyorServoDirection2"), "1")
+        self.assertEqual(initial("ConveyorServoDirection1"), "-1")
+        self.assertEqual(initial("ConveyorServoDirection2"), "-1")
         self.assertEqual(float(initial("ConveyorServoMotor2Ratio")), 1.0)
         self.assertEqual(float(initial("ConveyorServoMaxMotorRpm")), 5.0)
         self.assertAlmostEqual(float(initial("ConveyorServoCalibratedMmPerFullStep")),

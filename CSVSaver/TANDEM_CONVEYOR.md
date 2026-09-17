@@ -43,11 +43,13 @@ in `.tandem_validation/velocity_only_notes_20260915_1805.md`.
 scaled for each motor's direction, ratio and CoE velocity factor. There is no
 position-error correction and no phase locking. `SyncErrorFullSteps` remains
 available as a diagnostic; it does not steer the motors or cause a fault.
-Speed monitoring uses a 100 ms low-pass of encoder-derived velocity. Its
-allowance is 2 rpm + 15% of commanded speed + the filter's acceleration lag;
-a sustained tracking or partner-speed mismatch for 250 ms stops the motors.
-Fault 5 now means partner-speed mismatch; fault 6 includes speed tracking or
-loss of operation-enabled. Communication, enable, stop and move timeouts remain.
+The PLC does not compare actual speeds, does not compare actual speed with the
+target, and never modifies or cancels a target because of speed difference.
+Both EL7201 terminals receive the same open-loop PLC velocity trajectory. The
+EL7201's internal encoder-based commutation, current loop and velocity loop
+remain active, as required for CSV operation. Communication, feedback validity,
+drive faults, loss of operation-enabled, enable timeout and stop/move timeout
+remain safety/availability checks.
 
 Finite GUI/calibration jogs keep their existing commands and busy/done interface,
 but finish a calculated speed profile and wait for standstill. They do not
@@ -71,7 +73,7 @@ archived under workspace `.tandem_validation`.
 | Motor 2 master / slave / serial | `10.145.4.14.5.1` / `1002` / `00186867` — formerly Term 21 |
 | Operating mode | **CSV, 9**, no NC axis |
 | Physical motor count | **2**, sharing the conveyor trajectory |
-| Roller / gearbox / direction | 50 mm / none / +1 |
+| Roller / gearbox / direction | 50 mm / none / **-1 for both motors** |
 | Encoder counts per revolution | 1048576 mapped counts |
 | Velocity factor | 268435 raw units per revolution/second |
 | Nominal supply | 24000 mV |
@@ -102,12 +104,12 @@ GUIs keep the same controller, ADS port 851, and symbol names:
 
 `Stepper*` names are compatibility signals, not physical EL7047 commands.
 `MAIN.ConveyorServo1*` refers to Device 3; `MAIN.ConveyorServo2*` refers to Device 4.
-Both motors must be ready in tandem mode. A drive, communication, feedback or
-sustained speed-mismatch fault stops the pair. Stop and timeout monitoring remains enabled.
+Both motors must be ready in tandem mode. A drive, communication or feedback
+fault stops the pair. No partner-speed or target-tracking comparison is active.
 
 `PressureControlGUI.py` now treats the conveyor as one tandem device. Selecting
 Conveyor performs a stopped configuration/reset sequence, verifies the
-velocity-only PLC marker, fixes MotorCount to 2, keeps both directions at +1 and
+velocity-only PLC marker, fixes MotorCount to 2, keeps both directions at -1 and
 the motor ratio at 1.0, then enables both motors together. Clearing Conveyor
 requests the shared stop immediately; a stop during preparation also cancels
 the pending start. The nominal belt conversion is based on direct drive and a
