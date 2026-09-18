@@ -57,9 +57,10 @@ class FakeClient:
 
 
 class FakeTandemPlc:
-    def __init__(self):
+    def __init__(self, active_immediately=False):
         self.write_calls = []
         self.enabled = False
+        self.active_immediately = active_immediately
 
     def read_by_name(self, name, _plc_type):
         if name == "MAIN.GuiReorientationControlActive":
@@ -70,14 +71,21 @@ class FakeTandemPlc:
 
     def read_list_by_name(self, names, cache_symbol_info=True):
         values = {
-            "MAIN.StepperPosBusy": False,
+            "MAIN.StepperPosBusy": self.enabled and self.active_immediately,
             "MAIN.StepperPosError": False,
-            "MAIN.StepperPosReadyToExecute": self.enabled,
+            "MAIN.StepperPosReadyToExecute": self.enabled and not self.active_immediately,
             "MAIN.ConveyorServoCommissioned": True,
             "MAIN.ConveyorServoFaultCode": 0,
-            "MAIN.ConveyorServoState": 20 if self.enabled else 0,
-            "MAIN.ConveyorServo1TargetVelocity": 0,
-            "MAIN.ConveyorServo2TargetVelocity": 0,
+            "MAIN.ConveyorServoState": (
+                30 if self.enabled and self.active_immediately
+                else 20 if self.enabled else 0
+            ),
+            "MAIN.ConveyorServo1TargetVelocity": (
+                -178420 if self.enabled and self.active_immediately else 0
+            ),
+            "MAIN.ConveyorServo2TargetVelocity": (
+                -178420 if self.enabled and self.active_immediately else 0
+            ),
         }
         return {name: values[name] for name in names}
 
@@ -520,6 +528,26 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(plc.write_calls[2], {"MAIN.GuiConveyorReset": True})
         self.assertEqual(plc.write_calls[3], {"MAIN.GuiConveyorEnabled": True})
         self.assertEqual(completed[0][0], "tandem_start")
+
+    def test_tandem_start_accepts_motion_when_ready_pulse_was_missed(self):
+        plc = FakeTandemPlc(active_immediately=True)
+        worker = gui.AdsWorker()
+        worker.client = FakeClient(plc)
+        completed = []
+        failures = []
+        worker.write_finished.connect(
+            lambda context, values: completed.append((context, values))
+        )
+        worker.operation_failed.connect(
+            lambda context, message: failures.append((context, message))
+        )
+
+        with patch.object(gui.time, "sleep"):
+            worker.configure_tandem(5.0, True)
+
+        self.assertFalse(failures)
+        self.assertEqual(completed[0][0], "tandem_start")
+        self.assertEqual(plc.write_calls[-1], {"MAIN.GuiConveyorEnabled": True})
 
     def test_main_window_start_uses_tandem_sequence_and_stop_is_immediate(self):
         with patch.object(gui.AdsController, "start"):

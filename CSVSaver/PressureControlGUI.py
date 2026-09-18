@@ -679,6 +679,12 @@ class AdsWorker(QObject):
                 status = self._wait_for_tandem_state(
                     lambda values: (
                         bool(values["MAIN.StepperPosReadyToExecute"])
+                        or (
+                            bool(values["MAIN.StepperPosBusy"])
+                            and int(values["MAIN.ConveyorServoState"]) == 30
+                            and int(values["MAIN.ConveyorServo1TargetVelocity"]) != 0
+                            and int(values["MAIN.ConveyorServo2TargetVelocity"]) != 0
+                        )
                         or int(values["MAIN.ConveyorServoFaultCode"]) != 0
                     ),
                     8.0,
