@@ -565,7 +565,7 @@ class AdsThreadTests(unittest.TestCase):
         window.write_conveyor_setting("enabled", True)
         window.write_conveyor_setting("enabled", False)
 
-        self.assertEqual(starts, [(5.0, True)])
+        self.assertEqual(starts, [(50.0, True)])
         self.assertEqual(writes[-1][0], {"MAIN.GuiConveyorEnabled": False})
         window.ads.connected = False
         window.close()
@@ -1293,7 +1293,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
         self.assertAlmostEqual(
             result["mm_per_full_step"], gui.math.pi * 50.0 / (200.0 * 32.0)
         )
-        self.assertEqual(result["conveyor_max_speed"], 100.0)
+        self.assertEqual(result["conveyor_max_speed"], 200.0)
         self.assertTrue(result["conveyor_max_hidden"])
         self.assertEqual(
             result["sensor_spacings"],
@@ -1367,7 +1367,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
                 "conveyor_max_speed_mm_per_sec": 2345.0,
             }
         )
-        self.assertEqual(result["conveyor_max_speed"], 100.0)
+        self.assertEqual(result["conveyor_max_speed"], 200.0)
 
     def test_old_profile_cannot_restore_stepper_calibration(self):
         result = self.load_profile(

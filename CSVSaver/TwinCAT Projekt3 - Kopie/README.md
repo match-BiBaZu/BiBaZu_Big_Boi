@@ -43,9 +43,9 @@ count in the FB requires stopped reconfiguration; no partner feedback is fabrica
 ## Initial limits and mapping
 
 - The source disables the former 5 rpm commissioning cap:
-  `ConveyorServoMaxMotorRpm=0`. Acceleration remains **5 rpm/s** and adjustable
-  in `Calibrate Conveyor`. The hard belt-speed limit is **100 mm/s**, equal to
-  1222.31 motor rpm with the nominal 50 mm roller and 32:1 reduction.
+  `ConveyorServoMaxMotorRpm=0`. Acceleration defaults to **50 rpm/s** and remains
+  adjustable in `Calibrate Conveyor`. The hard belt-speed limit is **200 mm/s**,
+  equal to 2444.62 motor rpm with the nominal 50 mm roller and 32:1 reduction.
 - Direction -1 for both motors; 1048576 mapped encoder counts/revolution; 268435 velocity units
   per revolution/second; nominal DC supply 24000 mV.
 - Automatic holding-brake control. PLC CoE checks require actual mode 9,

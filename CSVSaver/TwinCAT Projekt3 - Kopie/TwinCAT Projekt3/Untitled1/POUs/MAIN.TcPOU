@@ -110,7 +110,7 @@ VAR
 	GuiConveyorReverse		: BOOL := FALSE;
 	GuiConveyorReset		: BOOL := FALSE;
 	GuiConveyorSpeedMmPerSec	: REAL := 0.0;
-	GuiConveyorMaxSpeedMmPerSec	: REAL := 100.0;
+	GuiConveyorMaxSpeedMmPerSec	: REAL := 200.0;
 	GuiConveyorCalibrationMode	: BOOL := FALSE;
 	GuiCalibrationMarkerDistanceMm	: REAL := 315.0;
 	GuiCalibrationJogSteps		: UDINT := 100;
@@ -134,7 +134,7 @@ VAR
 	ConveyorServoVelocityUnitsPerRevPerSec : LREAL := 268435.0; // live CoE 0x9010:14 readback
 	ConveyorServoVelocityUnitsPerRevPerSec2 : LREAL := 268435.0;
 	ConveyorServoMaxMotorRpm : LREAL := 0.0; //no additional commissioning RPM cap
-	ConveyorServoAccelerationRpmPerSec : LREAL := 5.0;
+	ConveyorServoAccelerationRpmPerSec : LREAL := 50.0;
 	ConveyorServoSingleMotor : UINT := 1; // Physical motor selected when MotorCount=1; stopped reset.
 	ConveyorServoVelocityOnly : BOOL := TRUE; // raw shared CSV target; no PLC speed/position correction
 	// Authoritative belt calibration: 200 virtual full steps per motor revolution, 32 motor revolutions per roller revolution.
@@ -354,7 +354,7 @@ VAR
 	ConveyorVelocityRatio	: REAL := 0.0;
 	ConveyorVelocityRaw		: INT := 0; //0..10000 legacy velocity command, adapted to both servos
 	ConveyorFullStepsPerSec	: REAL := 0.0;
-	ConveyorSpeedRangeFullStepsPerSec	: REAL := 4074.366543; //100 mm/s at 50 mm roller, 32:1 gearbox
+	ConveyorSpeedRangeFullStepsPerSec	: REAL := 8148.733086; //200 mm/s at 50 mm roller, 32:1 gearbox
 	ConveyorMotionState		: INT := 0;
 	ConveyorMotionMode		: INT := 0; //0 idle, 1 normal endless, 2 calibration move
 	ConveyorActiveVelocity	: INT := 0;
@@ -973,14 +973,14 @@ Array4Active := NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode AND 
 
 IF GuiConveyorSpeedMmPerSec < 0.0 THEN
 	GuiConveyorSpeedMmPerSec := 0.0;
-ELSIF GuiConveyorSpeedMmPerSec > 100.0 THEN
-	GuiConveyorSpeedMmPerSec := 100.0;
+ELSIF GuiConveyorSpeedMmPerSec > 200.0 THEN
+	GuiConveyorSpeedMmPerSec := 200.0;
 END_IF
 
 IF GuiConveyorMaxSpeedMmPerSec < 1.0 THEN
 	GuiConveyorMaxSpeedMmPerSec := 1.0;
-ELSIF GuiConveyorMaxSpeedMmPerSec > 100.0 THEN
-	GuiConveyorMaxSpeedMmPerSec := 100.0;
+ELSIF GuiConveyorMaxSpeedMmPerSec > 200.0 THEN
+	GuiConveyorMaxSpeedMmPerSec := 200.0;
 END_IF
 
 ConveyorSpeedMmPerSec := GuiConveyorSpeedMmPerSec;

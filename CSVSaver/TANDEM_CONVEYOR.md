@@ -58,7 +58,7 @@ travel remains the source for the legacy position and calibration readings.
 The source disables the former 5 rpm commissioning cap with
 `ConveyorServoMaxMotorRpm=0`. The current mechanical conversion uses identical
 32:1 reduction gearboxes and 50 mm rollers. The PLC and GUI cap belt commands
-at 100 mm/s, corresponding nominally to 1222.31 motor rpm.
+at 200 mm/s, corresponding nominally to 2444.62 motor rpm.
 
 Use the existing project **`TwinCAT Projekt3 - Kopie/TwinCAT Projekt3.sln`**.
 It has been updated in place. The additional `Device3_Conveyor` copy has been
@@ -80,11 +80,11 @@ archived under workspace `.tandem_validation`.
 | Encoder counts per revolution | 1048576 mapped counts |
 | Velocity factor | 268435 raw units per revolution/second |
 | Nominal supply | 24000 mV |
-| Initial motor RPM cap / acceleration | **disabled (0) / 5 rpm/s** |
+| Initial motor RPM cap / acceleration | **disabled (0) / 50 rpm/s** |
 
 Zero disables the extra motor-RPM cap; positive values still configure one.
-The hard GUI/PLC belt limit is **100 mm/s**. The shared command range is
-4074.366543 virtual full steps/s, equal to 1222.31 motor rpm and 100 mm/s at the
+The hard GUI/PLC belt limit is **200 mm/s**. The shared command range is
+8148.733086 virtual full steps/s, equal to 2444.62 motor rpm and 200 mm/s at the
 nominal 50 mm / 32:1 geometry. DINT output bounds and the deceleration bound
 remain enforced. Speed/acceleration configuration is frozen after initialization;
 changes require a stopped reset. The GUI's stopped tandem configuration sequence
