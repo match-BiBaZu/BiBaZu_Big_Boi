@@ -5,3 +5,8 @@
 __pycache__/
 *.py[cod]
 *.~u
+
+# Local backups from the maintained TwinCAT project are preserved by Git history.
+/CSVSaver/TwinCAT Projekt3 - Kopie/TwinCAT Projekt3/*.bak
+/CSVSaver/TwinCAT Projekt3 - Kopie/TwinCAT Projekt3/Untitled1/POUs/*.codex-backup-*
+/CSVSaver/TwinCAT Projekt3 - Kopie/UpgradeLog.htm

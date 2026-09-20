@@ -357,13 +357,6 @@
 							<Type GUID="{E0088335-DE2C-5D66-A8AA-F4305DB1ED0C}">ARRAY [0..2] OF WORD</Type>
 						</Var>
 					</Vars>
-					<UnrestoredVarLinks ImportTime="2026-07-01T12:55:01">
-						<OwnerA Name="InputDst" Prefix="TIPC^Untitled1^Untitled1 Instance" Type="1">
-							<OwnerB Name="TIID^Device 1 (EtherCAT)^Term 6 (EK1100)^Term 8 (EL1018)">
-								<Link VarA="MAIN.LightBarrierOn" TypeA="BOOL" InOutA="0" GuidA="{18071995-0000-0000-0000-000000000030}" VarB="Channel 1^Input" Size="1" RestoreInfo="ANotFound"/>
-							</OwnerB>
-						</OwnerA>
-					</UnrestoredVarLinks>
 					<Contexts>
 						<Context>
 							<Id>0</Id>

@@ -17,6 +17,23 @@ restored. See the parent `TANDEM_CONVEYOR.md` for current state and evidence.
 Open `TwinCAT Projekt3.sln` in this directory. This is the existing conveyor project;
 the earlier CSTCA diagnostic projects and their evidence remain archived outside it.
 
+### Faster repeat builds in an open XAE instance
+
+Opening a fresh TwinCAT XAE instance and loading the complete hardware project is
+much slower than compiling this PLC. Keep this solution open and run the following
+command from this directory for repeat builds:
+
+```powershell
+pwsh -NoProfile -Sta -File .\Build-OpenTwinCATProject.ps1
+```
+
+The helper accepts only this already-open solution and target
+`10.145.4.14.1.1`. It saves the open editors and builds
+`Release|TwinCAT RT (x64)`. It does not activate a configuration, generate or
+transfer a boot project, restart TwinCAT, or close XAE. If this exact solution is
+not already open, it stops with an error. Measured repeat builds take roughly
+five seconds; a build after source changes takes about 15 to 16 seconds.
+
 Target controller: `10.145.4.14.1.1`. Motor: **Device 3 > Term 6 (EK1100) >
 Term 7 (EL7201-0010)**, master `10.145.4.14.4.1`, slave address **1002**,
 AM8112 serial **00186867**. Motor 2 is **Device 4 > Term 9 (EK1100) >
