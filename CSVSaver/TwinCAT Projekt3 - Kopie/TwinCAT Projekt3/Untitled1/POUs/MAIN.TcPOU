@@ -392,6 +392,10 @@ VAR
 	GuiLightBarrierDebounceEnabled6	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled7	: BOOL := FALSE;
 	GuiLightBarrierDebounceEnabled8	: BOOL := FALSE;
+	// Global route for the secondary VCXU-02C Line0 recording trigger.
+	// Link CameraRecordTrigger to Terminal 27, EL2004 channel 1 in the XAE I/O map.
+	GuiCameraRecordTriggerEnabled	: BOOL := FALSE;
+	GuiCameraRecordTriggerLightBarrier	: UINT := 4;
 	GuiBarrierCalibrationStart	: BOOL := FALSE;
 	BarrierCalibrationActive	: BOOL := FALSE;
 	BarrierCalibrationFirstCaptured	: BOOL := FALSE;
@@ -584,6 +588,7 @@ VAR
 	OpenValve22 AT %Q*		: BOOL := 0;
 	OpenValve23 AT %Q*		: BOOL := 0;
 	OpenValve24 AT %Q*		: BOOL := 0;
+	CameraRecordTrigger AT %Q*	: BOOL := FALSE;
 
 	// Existing ADS contract, now backed by FB_TandemConveyor rather than EL7047 I/O.
 	StepperStmStatus : WORD := 0;
@@ -1477,7 +1482,7 @@ CASE ConveyorMotionState OF
 			END_IF
 		ELSIF (NOT GuiConveyorEnabled)
 			OR GuiConveyorCalibrationMode
-			OR (ConveyorVelocityRaw <> ConveyorActiveVelocity)
+			OR (ConveyorVelocityRaw = 0)
 			OR ((GuiConveyorReverse AND (ConveyorActiveStartType <> 4))
 				OR ((NOT GuiConveyorReverse) AND (ConveyorActiveStartType <> 3))) THEN
 			StepperPosExecute := FALSE;
@@ -1486,6 +1491,10 @@ CASE ConveyorMotionState OF
 			StepperPosExecute := FALSE;
 			ConveyorMotionState := 0;
 			ConveyorMotionMode := 0;
+		ELSE
+			// Keep endless motion active while changing to a new positive speed.
+			ConveyorActiveVelocity := ConveyorVelocityRaw;
+			StepperPosVelocity := ConveyorActiveVelocity;
 		END_IF
 
 	40:
@@ -1530,6 +1539,23 @@ LightBarrier5FallingEdge := (NOT LightBarrierStable5) AND LastLightBarrier5;
 LightBarrier6FallingEdge := (NOT LightBarrierStable6) AND LastLightBarrier6;
 LightBarrier7FallingEdge := (NOT LightBarrierStable7) AND LastLightBarrier7;
 LightBarrier8FallingEdge := (NOT LightBarrierStable8) AND LastLightBarrier8;
+
+// The Baumer Line0 input is rising-edge triggered.  Each selected, debounced
+// light-barrier activation therefore produces one 1 ms 24 V pulse.  Invalid
+// selector values and a disabled route always leave the physical output low.
+CameraRecordTrigger := FALSE;
+IF GuiCameraRecordTriggerEnabled THEN
+	CASE GuiCameraRecordTriggerLightBarrier OF
+		1: CameraRecordTrigger := LightBarrier1FallingEdge;
+		2: CameraRecordTrigger := LightBarrier2FallingEdge;
+		3: CameraRecordTrigger := LightBarrier3FallingEdge;
+		4: CameraRecordTrigger := LightBarrier4FallingEdge;
+		5: CameraRecordTrigger := LightBarrier5FallingEdge;
+		6: CameraRecordTrigger := LightBarrier6FallingEdge;
+		7: CameraRecordTrigger := LightBarrier7FallingEdge;
+		8: CameraRecordTrigger := LightBarrier8FallingEdge;
+	END_CASE
+END_IF
 
 // Alternating pair gate. A workpiece can expose more than one optical edge at
 // either barrier. After the first barrier fires, only the second barrier can

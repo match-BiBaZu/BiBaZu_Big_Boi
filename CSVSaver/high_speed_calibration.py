@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
 
 USB_CTI_PATH = Path(r"C:\Program Files\Baumer Camera Explorer\bgapi2_usb.cti")
 DEFAULT_CAMERA_SERIAL = "700005072151"
+CAMERA_TRIGGER_ROUTE_CONTEXT_PREFIX = "pressure_delay_camera_trigger_route_"
 DEFAULT_POST_TRIGGER_MS = 200
 PREVIEW_INTERVAL_SECONDS = 1.0 / 30.0
 RECORDING_QUEUE_CAPACITY = 512
@@ -2028,6 +2029,11 @@ class PressureDelayTab(QWidget):
         self._updating_exposure_input = False
         self.fast_response_active = False
         self.fast_response_pending = ""
+        self.camera_trigger_route_pending = False
+        self.camera_trigger_route_context = (
+            f"{CAMERA_TRIGGER_ROUTE_CONTEXT_PREFIX}{id(self):x}"
+        )
+        self._camera_trigger_route_initialized = False
         self.fast_response_saved_values: dict[str, bool | int | float] = {}
         self._pressure_array_loaded: int | None = None
         self._pulse_array_loaded: int | None = None
@@ -2643,6 +2649,19 @@ class PressureDelayTab(QWidget):
 
     @pyqtSlot(str)
     def _ads_write_finished(self, context: str) -> None:
+        if context == self.camera_trigger_route_context:
+            self.camera_trigger_route_pending = False
+            if self.latest_status is not None:
+                self.latest_status["camera_record_trigger_enabled"] = True
+                self.latest_status["camera_record_trigger_light_barrier"] = int(
+                    self.barrier_input.currentData()
+                )
+            self.status_message.emit(
+                f"Camera trigger routed from LB {self.barrier_input.currentData()}"
+            )
+            self._update_controls()
+            self.start_recording()
+            return
         if context == FAST_RESPONSE_ENABLE_CONTEXT:
             self.fast_response_pending = ""
             self.fast_response_active = True
@@ -2685,6 +2704,13 @@ class PressureDelayTab(QWidget):
 
     @pyqtSlot(str, str)
     def _ads_operation_failed(self, context: str, message: str) -> None:
+        if context == self.camera_trigger_route_context:
+            self.camera_trigger_route_pending = False
+            self.recording_state_label.setText(
+                f"Camera trigger routing failed: {message}"
+            )
+            self._update_controls()
+            return
         if context not in {
             FAST_RESPONSE_ENABLE_CONTEXT,
             FAST_RESPONSE_RESTORE_CONTEXT,
@@ -2702,6 +2728,7 @@ class PressureDelayTab(QWidget):
         self.ads_connected = bool(connected)
         if not connected:
             self.fast_response_pending = ""
+            self.camera_trigger_route_pending = False
             if self.fast_response_saved_values:
                 self.plc_setup_state_label.setText(
                     "ADS connection lost; reconnect and restore the saved PLC setup"
@@ -2712,6 +2739,15 @@ class PressureDelayTab(QWidget):
 
     def process_setup_status(self, status: dict[str, Any]) -> None:
         self.latest_status = status
+        route_sensor = int(status.get("camera_record_trigger_light_barrier", 0))
+        if (
+            not self._camera_trigger_route_initialized
+            and self.fixed_light_barrier is None
+            and self.session is None
+            and 1 <= route_sensor <= 8
+        ):
+            self.barrier_input.setCurrentIndex(route_sensor - 1)
+            self._camera_trigger_route_initialized = True
         self._sync_pressure_from_status()
         self._render_plc_setup_state()
         if (
@@ -2720,7 +2756,15 @@ class PressureDelayTab(QWidget):
         ):
             self._update_controls()
             return
-        if self.camera_status.get("hardware_trigger_available"):
+        route_known = "camera_record_trigger_enabled" in status
+        route_matches = (
+            bool(status.get("camera_record_trigger_enabled", False))
+            and int(status.get("camera_record_trigger_light_barrier", 0))
+            == self.session.light_barrier
+        )
+        if self.camera_status.get("hardware_trigger_available") and (
+            route_matches or not route_known
+        ):
             self._update_controls()
             return
         sensor = self.session.light_barrier
@@ -2815,6 +2859,30 @@ class PressureDelayTab(QWidget):
             QMessageBox.warning(
                 self, "Recording unavailable", "No barrier counters received."
             )
+            return
+        route_enabled = bool(
+            self.latest_status.get("camera_record_trigger_enabled", False)
+        )
+        route_sensor = int(
+            self.latest_status.get("camera_record_trigger_light_barrier", 0)
+        )
+        if (
+            route_enabled
+            and route_sensor != sensor
+            and not self.camera_trigger_route_pending
+        ):
+            self.camera_trigger_route_pending = True
+            self.recording_state_label.setText(
+                f"Routing LB {sensor} to the camera trigger …"
+            )
+            self.ads.write_now(
+                {
+                    "MAIN.GuiCameraRecordTriggerEnabled": True,
+                    "MAIN.GuiCameraRecordTriggerLightBarrier": sensor,
+                },
+                self.camera_trigger_route_context,
+            )
+            self._update_controls()
             return
         output = Path(self.output_input.text()).expanduser()
         session_name = self.session_name_input.text() if self.review_only else ""
@@ -3135,6 +3203,7 @@ class PressureDelayTab(QWidget):
             and not recording
             and not finalizing
             and not self.fast_response_pending
+            and not self.camera_trigger_route_pending
             and not analyzing
         )
         plc_ready = (
@@ -3144,6 +3213,7 @@ class PressureDelayTab(QWidget):
             and not recording
             and not finalizing
             and not self.fast_response_pending
+            and not self.camera_trigger_route_pending
             and not analyzing
         )
         self.connect_button.setEnabled(not self.camera.running)
@@ -3156,6 +3226,7 @@ class PressureDelayTab(QWidget):
             self.fixed_light_barrier is None
             and not recording
             and not self.fast_response_pending
+            and not self.camera_trigger_route_pending
             and (not self.fast_response_saved_values or self.ads_connected)
         )
         self.pressure_input.setEnabled(plc_ready)
@@ -3171,12 +3242,22 @@ class PressureDelayTab(QWidget):
             plc_ready and bool(self.fast_response_saved_values)
         )
         self.post_trigger_input.setEnabled(
-            self.fixed_post_trigger_ms is None and not recording
+            self.fixed_post_trigger_ms is None
+            and not recording
+            and not self.camera_trigger_route_pending
         )
-        self.session_name_input.setEnabled(not recording)
-        self.output_input.setEnabled(not recording)
-        self.browse_output_button.setEnabled(not recording)
-        self.open_button.setEnabled(not recording and not analyzing)
+        self.session_name_input.setEnabled(
+            not recording and not self.camera_trigger_route_pending
+        )
+        self.output_input.setEnabled(
+            not recording and not self.camera_trigger_route_pending
+        )
+        self.browse_output_button.setEnabled(
+            not recording and not self.camera_trigger_route_pending
+        )
+        self.open_button.setEnabled(
+            not recording and not analyzing and not self.camera_trigger_route_pending
+        )
         self.compare_recordings_button.setEnabled(not recording and not analyzing)
         loaded = bool(self.loaded_frames) and not recording and not analyzing
         self.frame_slider.setEnabled(loaded)

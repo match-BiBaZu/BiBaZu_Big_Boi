@@ -920,6 +920,8 @@ class AdsWorker(QObject):
                 f"MAIN.GuiLightBarrierDebounceEnabled{index}"
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
+            "MAIN.GuiCameraRecordTriggerEnabled",
+            "MAIN.GuiCameraRecordTriggerLightBarrier",
             "MAIN.GuiConveyorEnabled",
             "MAIN.GuiConveyorReverse",
             "MAIN.GuiConveyorSpeedMmPerSec",
@@ -990,6 +992,12 @@ class AdsWorker(QObject):
                 bool(values[f"MAIN.GuiLightBarrierDebounceEnabled{index}"])
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
+            "camera_record_trigger": {
+                "enabled": bool(values["MAIN.GuiCameraRecordTriggerEnabled"]),
+                "light_barrier": int(
+                    values["MAIN.GuiCameraRecordTriggerLightBarrier"]
+                ),
+            },
             "conveyor": {
                 "enabled": bool(values["MAIN.GuiConveyorEnabled"]),
                 "reverse": bool(values["MAIN.GuiConveyorReverse"]),
@@ -1230,6 +1238,9 @@ class AdsWorker(QObject):
                 f"MAIN.GuiLightBarrierDebounceEnabled{index}"
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
+            "MAIN.GuiCameraRecordTriggerEnabled",
+            "MAIN.GuiCameraRecordTriggerLightBarrier",
+            "MAIN.CameraRecordTrigger",
             *[f"MAIN.LightBarrierEventCount{index}" for index in range(1, LIGHT_BARRIER_COUNT + 1)],
             *[
                 f"MAIN.LightBarrierLastEventTimeMs{index}"
@@ -1305,6 +1316,15 @@ class AdsWorker(QObject):
                 bool(values[f"MAIN.GuiLightBarrierDebounceEnabled{index}"])
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
             ],
+            "camera_record_trigger_enabled": bool(
+                values["MAIN.GuiCameraRecordTriggerEnabled"]
+            ),
+            "camera_record_trigger_light_barrier": int(
+                values["MAIN.GuiCameraRecordTriggerLightBarrier"]
+            ),
+            "camera_record_trigger_output": bool(
+                values["MAIN.CameraRecordTrigger"]
+            ),
             "light_barrier_event_counts": [
                 int(values[f"MAIN.LightBarrierEventCount{index}"])
                 for index in range(1, LIGHT_BARRIER_COUNT + 1)
@@ -3553,8 +3573,14 @@ class PressureControlWindow(QMainWindow):
         self.conveyor_speed.setDecimals(1)
         self.conveyor_speed.setSingleStep(1.0)
         self.conveyor_speed.setValue(0.0)
-        self.conveyor_speed.setToolTip("Conveyor belt speed setpoint stored in the motion profile")
+        self.conveyor_speed.setKeyboardTracking(False)
+        self.conveyor_speed.setToolTip(
+            "Enter the conveyor speed, then press Set Speed to apply it to the PLC"
+        )
         machine_layout.addWidget(self.conveyor_speed)
+        self.set_conveyor_speed_button = QPushButton("Set Speed")
+        self.set_conveyor_speed_button.setToolTip("Apply the entered conveyor speed to the PLC")
+        machine_layout.addWidget(self.set_conveyor_speed_button)
         machine_layout.addSpacing(20)
         self.conveyor_max_speed = QDoubleSpinBox(root)
         self.conveyor_max_speed.setRange(CONVEYOR_MAX_SPEED_MIN_MM_PER_SEC, CONVEYOR_MAX_SPEED_MAX_MM_PER_SEC)
@@ -3771,9 +3797,7 @@ class PressureControlWindow(QMainWindow):
         self.conveyor_reset_button.clicked.connect(
             lambda: self.write_conveyor_setting("reset", True)
         )
-        self.conveyor_speed.valueChanged.connect(
-            lambda value: self.write_conveyor_setting("speed_mm_per_sec", value)
-        )
+        self.set_conveyor_speed_button.clicked.connect(self.set_conveyor_speed)
         self.conveyor_max_speed.valueChanged.connect(
             lambda value: self.write_conveyor_setting("max_speed_mm_per_sec", value)
         )
@@ -4312,6 +4336,10 @@ class PressureControlWindow(QMainWindow):
             label.setPixmap(pixmap)
             label.setStyleSheet("background: white; border: 1px solid #8bb8dd;")
 
+    def set_conveyor_speed(self) -> None:
+        self.conveyor_speed.interpretText()
+        self.write_conveyor_setting("speed_mm_per_sec", self.conveyor_speed.value())
+
     def write_conveyor_setting(self, field: str, value: bool | float) -> None:
         labels = {
             "enabled": "Conveyor enable",
@@ -4345,7 +4373,8 @@ class PressureControlWindow(QMainWindow):
             self.ads.stop_tandem()
             self.statusBar().showMessage("Stopping both conveyor motors")
             return
-        if field in {"enabled", "reverse", "reset"}:
+        immediate = field in {"enabled", "reverse", "reset", "speed_mm_per_sec"}
+        if immediate:
             self.ads.write_now({symbols[field]: typed_value}, label)
         else:
             self.ads.queue_write(symbols[field], typed_value, label)
@@ -4353,7 +4382,10 @@ class PressureControlWindow(QMainWindow):
             display_value = "on" if typed_value else "off"
         else:
             display_value = f"{typed_value:.1f} mm/s"
-        self.statusBar().showMessage(f"{label} queued: {display_value}")
+        if self.ads.connected:
+            self.statusBar().showMessage(
+                f"{label} {'sent' if immediate else 'queued'}: {display_value}"
+            )
 
     def open_conveyor_calibration(self) -> None:
         if not self.ads.is_connected:

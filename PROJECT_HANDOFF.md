@@ -621,6 +621,14 @@ bei 640x480, BayerRG8 und 4000 us Belichtung am aktuellen Rechner ungefaehr
 247 FPS. Die Vorschau wird auf 30 FPS begrenzt; waehrend einer Aufnahme werden
 alle abgeholten Kameraframes an einen separaten JPEG-Writer uebergeben.
 
+Im Lichtschrankenbereich von `ConveyorSetupGUI.py` kann eine beliebige LB1..LB8
+global auf den VCXU-02C-Aufnahmetrigger geroutet werden. Die SPS erzeugt dafuer
+auf `MAIN.CameraRecordTrigger` bei der entprellten Aktivierungsflanke einen
+PLC-Zyklus HIGH. Dieses `%Q*`-Symbol muss in TwinCAT auf Terminal 27 (EL2004),
+Kanal 1 verknuepft sein. Beide USB-Kameraansichten gleichen beim Scharfstellen
+ihre gewaehlte Lichtschranke mit der aktiven Route ab; bei deaktivierter Route
+wird die ADS-Zeitbasis verwendet.
+
 `Record` speichert ab dem Tastendruck. Die Kamera bleibt dabei im Free-Run, damit
 auch Bilder vor dem Bauteil erhalten bleiben. Der bevorzugte Trigger ist die
 erste kamerainterne `Line0RisingEdge`-Flanke. Deren exakter Kamerazeitstempel

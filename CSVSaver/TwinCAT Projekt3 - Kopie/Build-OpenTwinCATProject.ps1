@@ -179,8 +179,11 @@ if ($null -eq $build) {
 if ((Invoke-ComRetry { [int]$build.BuildState }) -eq 2) {
     throw 'In dieser XAE-Instanz läuft bereits ein Build.'
 }
+# SolutionConfigurations.Item accepts the configuration name without the platform,
+# while BuildProject requires the full "configuration|platform" string.
+$configurationName = $Configuration.Split('|', 2)[0]
 try {
-    $null = Invoke-ComRetry { ,($build.SolutionConfigurations.Item($Configuration)) }
+    $null = Invoke-ComRetry { ,($build.SolutionConfigurations.Item($configurationName)) }
 }
 catch {
     throw "Buildkonfiguration nicht gefunden: $Configuration"

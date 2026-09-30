@@ -5,8 +5,7 @@ $ErrorActionPreference = 'Stop'
 $shortcutNames = @(
     'BiBaZu Reorientation Control.lnk',
     'BiBaZu Pressure Control.lnk',
-    'BiBaZu Conveyor Setup.lnk',
-    'BiBaZu Automated Image Capture.lnk'
+    'BiBaZu Conveyor Setup.lnk'
 )
 $locations = @(
     [Environment]::GetFolderPath('Desktop'),

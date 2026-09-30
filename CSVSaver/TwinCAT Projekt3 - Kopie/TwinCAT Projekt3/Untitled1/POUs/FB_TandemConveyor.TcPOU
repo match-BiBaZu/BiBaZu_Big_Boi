@@ -555,6 +555,14 @@ IF ConfigLoaded AND FeedbackInitialized AND HealthyInputs AND Commissioned
         DesiredVelocity := 0.0;
         Remaining := TargetFullSteps - TrajectoryPosition;
         IF State = 30 THEN
+            IF NOT FiniteMove AND (Velocity > 0) AND (Velocity <= 10000) THEN
+                // Retime an endless run in place; the common ramp limits acceleration.
+                CommandSpeed := INT_TO_LREAL(Velocity) / 10000.0 * CfgLegacyRange;
+                LimitedSpeed := CommandSpeed > MaxCommonSpeed;
+                IF LimitedSpeed THEN
+                    CommandSpeed := MaxCommonSpeed;
+                END_IF;
+            END_IF;
             IF FiniteMove THEN
                 BrakingSpeed := SQRT(2.0 * CommonAcceleration * ABS(Remaining));
                 DesiredVelocity := MIN(CommandSpeed, BrakingSpeed);

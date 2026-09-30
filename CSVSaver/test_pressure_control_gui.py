@@ -270,6 +270,10 @@ class AdsThreadTests(unittest.TestCase):
             "AND Array4Active",
             main,
         )
+        self.assertIn("GuiCameraRecordTriggerEnabled\t: BOOL := FALSE;", main)
+        self.assertIn("GuiCameraRecordTriggerLightBarrier\t: UINT := 4;", main)
+        self.assertIn("CameraRecordTrigger AT %Q*\t: BOOL := FALSE;", main)
+        self.assertIn("4: CameraRecordTrigger := LightBarrier4FallingEdge;", main)
 
     def test_pressure_inputs_use_ten_mbar_steps(self):
         row = gui.ArrayRow(1)
@@ -569,6 +573,34 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(writes[-1][0], {"MAIN.GuiConveyorEnabled": False})
         window.ads.connected = False
         window.close()
+
+    def test_conveyor_speed_is_written_only_after_set_speed_click(self):
+        with patch.object(gui.AdsController, "start"):
+            window = gui.PressureControlWindow()
+        try:
+            window.ads.connected = True
+            writes = []
+            window.ads.write_requested.connect(
+                lambda values, context: writes.append((values, context))
+            )
+
+            window.conveyor_speed.setValue(80.0)
+            window.conveyor_speed.lineEdit().setText("120.0 mm/s")
+            self.assertEqual(writes, [])
+
+            window.set_conveyor_speed_button.click()
+
+            self.assertEqual(window.conveyor_speed.value(), 120.0)
+            self.assertEqual(
+                writes,
+                [({"MAIN.GuiConveyorSpeedMmPerSec": 120.0}, "Conveyor speed")],
+            )
+            self.assertNotIn(
+                "MAIN.GuiConveyorSpeedMmPerSec", window.ads.pending_writes
+            )
+        finally:
+            window.ads.connected = False
+            window.close()
 
     def test_debounce_keeps_only_latest_value(self):
         controller = gui.AdsController()
@@ -1019,7 +1051,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(plc.read_calls[0], ["MAIN.LightBarrierEventHistory"])
         self.assertEqual(plc.read_calls[1], ["MAIN.LightBarrierFilteredEventHistory"])
         self.assertEqual(len(plc.read_calls), 3)
-        self.assertEqual(len(plc.read_calls[2]), 112)
+        self.assertEqual(len(plc.read_calls[2]), 115)
         self.assertIn("MAIN.LightBarrierEventClockMs", plc.read_calls[2])
         self.assertIsNone(snapshot["light_barrier_event_history"])
         self.assertIsNone(snapshot["light_barrier_filtered_event_history"])
@@ -1029,6 +1061,9 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(snapshot["raw_light_barriers"], [False] * 8)
         self.assertEqual(snapshot["light_barrier_inverted"], [False] * 8)
         self.assertEqual(snapshot["light_barrier_debounce_enabled"], [False] * 8)
+        self.assertFalse(snapshot["camera_record_trigger_enabled"])
+        self.assertEqual(snapshot["camera_record_trigger_light_barrier"], 0)
+        self.assertFalse(snapshot["camera_record_trigger_output"])
         self.assertEqual(snapshot["light_barrier_event_counts"], [0] * 8)
         self.assertEqual(snapshot["light_barrier_event_times_ms"], [0] * 8)
         self.assertEqual(snapshot["plc_event_clock_ms"], 0)
@@ -1791,6 +1826,28 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         window.ads.connected = False
         window.close()
 
+    def test_camera_trigger_controls_write_one_global_route(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        window.ads.connected = True
+        window.connected = True
+        window.camera_trigger_initialized = True
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        window.camera_trigger_barrier.setCurrentIndex(5)
+        window.camera_trigger_enabled.setChecked(True)
+
+        values, context = writes[-1]
+        self.assertEqual(context, "camera_record_trigger_route")
+        self.assertTrue(values["MAIN.GuiCameraRecordTriggerEnabled"])
+        self.assertEqual(values["MAIN.GuiCameraRecordTriggerLightBarrier"], 6)
+        self.assertTrue(window.camera_trigger_barrier.isEnabled())
+        window.ads.connected = False
+        window.close()
+
     def test_speed_statistics_report_mean_spread_and_target_error(self):
         result = setup_gui.calculate_speed_statistics([14.0, 15.0, 16.0], 15.0)
 
@@ -2272,6 +2329,67 @@ class ConveyorSetupWindowTests(unittest.TestCase):
             [(1_287_298_020_290, 5_000_000_000, 0x8007)],
         )
         self.assertIn("hardware edge captured", tab.recording_state_label.text())
+        tab.session = None
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_routes_enabled_hardware_trigger_before_recording(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        tab = window.pressure_delay_tab
+        window.ads.connected = True
+        tab.set_ads_connected(True)
+        tab.camera_connected = True
+        tab.barrier_input.setCurrentIndex(5)
+        tab.latest_status = {
+            "light_barrier_event_counts": [0] * 8,
+            "camera_record_trigger_enabled": True,
+            "camera_record_trigger_light_barrier": 4,
+        }
+        writes = []
+        window.ads.write_requested.connect(
+            lambda values, context: writes.append((values, context))
+        )
+
+        tab.start_recording()
+
+        values, context = writes[-1]
+        self.assertEqual(context, tab.camera_trigger_route_context)
+        self.assertTrue(values["MAIN.GuiCameraRecordTriggerEnabled"])
+        self.assertEqual(values["MAIN.GuiCameraRecordTriggerLightBarrier"], 6)
+        self.assertTrue(tab.camera_trigger_route_pending)
+        self.assertIsNone(tab.session)
+        window.ads.connected = False
+        window.close()
+
+    def test_pressure_delay_uses_ads_fallback_when_plc_route_is_disabled(self):
+        with patch.object(gui.AdsController, "start"):
+            window = setup_gui.ConveyorSetupWindow()
+        captured = []
+        tab = window.pressure_delay_tab
+        tab.camera_status = {"hardware_trigger_available": True}
+        tab.session = SimpleNamespace(
+            light_barrier=2,
+            event_camera_ns=None,
+            post_trigger_ms=200,
+            set_trigger=lambda *values: captured.append(values),
+        )
+        tab.trigger_baseline_count = 10
+
+        tab.process_setup_status(
+            {
+                "camera_record_trigger_enabled": False,
+                "camera_record_trigger_light_barrier": 2,
+                "light_barriers": [False] * 8,
+                "light_barrier_event_counts": [0, 11, 0, 0, 0, 0, 0, 0],
+                "light_barrier_event_times_ms": [0, 1_000, 0, 0, 0, 0, 0, 0],
+                "sampled_monotonic_ns": 5_000_000_000,
+                "plc_event_clock_ms": 1_010,
+                "ads_roundtrip_ns": 2_000_000,
+            }
+        )
+
+        self.assertEqual(captured[0][0:2], (11, 1_000))
         tab.session = None
         window.ads.connected = False
         window.close()

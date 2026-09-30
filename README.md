@@ -87,6 +87,12 @@ writing/restoring PLC settings.
 
 For the preferred hardware timing, connect the PNP receiver output to the
 camera process connector (`Line0`: M8 pin 3/green, `GND IN1`: pin 4/yellow).
+The Conveyor Setup light-barrier panel has a global **VCXU-02C recording
+trigger** route. Enable it and select LB1..LB8 to emit a one-cycle 24 V pulse on
+`MAIN.CameraRecordTrigger` whenever that debounced light barrier activates.
+Map this `%Q*` symbol to Terminal 27 (EL2004), channel 1. Camera recording views
+reuse this route; when the route is enabled and their selected barrier differs,
+they update it before arming. With the route disabled they use ADS event timing.
 `Record` starts free-running capture before the part arrives. The first
 `Line0RisingEdge` event marks time zero on the camera clock, and capture stops on
 the first frame at or after that timestamp plus the configured post-roll. The

@@ -805,6 +805,8 @@ class ConveyorSetupWindow(QMainWindow):
         self.mm_per_full_step = 0.0
         self.pending_measurement = None
         self.debounce_initialized = False
+        self.camera_trigger_initialized = False
+        self.camera_trigger_write_pending = False
         self.ur_connected = False
         self.latest_ur_pose = None
         self.ur_capture_active = False
@@ -888,6 +890,22 @@ class ConveyorSetupWindow(QMainWindow):
             self.barrier_labels.append(state)
             self.barrier_inverted.append(inverted)
             self._set_barrier_indicator(index - 1, None)
+        self.camera_trigger_enabled = QCheckBox(
+            "Link a light barrier to the VCXU-02C recording trigger"
+        )
+        self.camera_trigger_barrier = QComboBox()
+        for index in range(1, LIGHT_BARRIER_COUNT + 1):
+            self.camera_trigger_barrier.addItem(f"Light barrier {index}", index)
+        self.camera_trigger_barrier.setCurrentIndex(3)
+        self.camera_trigger_barrier.setToolTip(
+            "A debounced barrier activation creates a one-cycle pulse on "
+            "CameraRecordTrigger (map it to Terminal 27, EL2004 channel 1)."
+        )
+        self.camera_trigger_state = QLabel("Waiting for PLC")
+        self.camera_trigger_state.setWordWrap(True)
+        barrier_layout.addWidget(self.camera_trigger_enabled, 4, 0, 1, 4)
+        barrier_layout.addWidget(self.camera_trigger_barrier, 4, 4, 1, 2)
+        barrier_layout.addWidget(self.camera_trigger_state, 4, 6, 1, 2)
         barrier_layout.setColumnStretch(LIGHT_BARRIER_COUNT, 1)
         layout.addWidget(barrier_group)
 
@@ -1297,6 +1315,12 @@ class ConveyorSetupWindow(QMainWindow):
             checkbox.stateChanged.connect(
                 lambda _state, sensor=index: self._write_barrier_inversion(sensor)
             )
+        self.camera_trigger_enabled.toggled.connect(
+            self._write_camera_trigger_route
+        )
+        self.camera_trigger_barrier.currentIndexChanged.connect(
+            self._write_camera_trigger_route
+        )
 
     def _write_barrier_inversion(self, sensor: int) -> None:
         if not self.connected:
@@ -1305,6 +1329,28 @@ class ConveyorSetupWindow(QMainWindow):
         self.ads.write_now(
             {f"MAIN.GuiLightBarrierInvert{sensor}": inverted},
             f"light_barrier_{sensor}_inversion",
+        )
+
+    def _write_camera_trigger_route(self, _value: object = None) -> None:
+        self.camera_trigger_barrier.setEnabled(
+            self.connected and self.camera_trigger_enabled.isChecked()
+        )
+        if not self.connected or not self.camera_trigger_initialized:
+            return
+        sensor = int(self.camera_trigger_barrier.currentData())
+        enabled = self.camera_trigger_enabled.isChecked()
+        self.camera_trigger_write_pending = True
+        self.ads.write_now(
+            {
+                "MAIN.GuiCameraRecordTriggerEnabled": enabled,
+                "MAIN.GuiCameraRecordTriggerLightBarrier": sensor,
+            },
+            "camera_record_trigger_route",
+        )
+        self.camera_trigger_state.setText(
+            f"Applying LB {sensor} → Terminal 27 channel 1 …"
+            if enabled
+            else "Disabling camera trigger output …"
         )
 
     def _on_calibration_tab_changed(self, index: int) -> None:
@@ -1949,6 +1995,10 @@ class ConveyorSetupWindow(QMainWindow):
         self.consistency_plot_button.setEnabled(False)
         for checkbox in self.barrier_inverted:
             checkbox.setEnabled(enabled)
+        self.camera_trigger_enabled.setEnabled(enabled)
+        self.camera_trigger_barrier.setEnabled(
+            enabled and self.camera_trigger_enabled.isChecked()
+        )
 
     def _set_barrier_indicator(self, index: int, state: bool | None) -> None:
         if state is None:
@@ -1975,6 +2025,8 @@ class ConveyorSetupWindow(QMainWindow):
         self.pressure_delay_tab.set_ads_connected(connected)
         self.have_setup_status = False
         self.debounce_initialized = False
+        self.camera_trigger_initialized = False
+        self.camera_trigger_write_pending = False
         self._set_controls_enabled(connected)
         if connected:
             self.statusBar().showMessage(f"ADS online: {AMS_NET_ID} / {PLC_IP}")
@@ -2000,6 +2052,23 @@ class ConveyorSetupWindow(QMainWindow):
             float(calibration["mm_per_full_step"]) if calibration["valid"] else 0.0
         )
         self._update_calibration_display()
+        trigger = snapshot.get("camera_record_trigger", {})
+        sensor = int(trigger.get("light_barrier", 4))
+        if not 1 <= sensor <= LIGHT_BARRIER_COUNT:
+            sensor = 4
+        blockers = (
+            QSignalBlocker(self.camera_trigger_enabled),
+            QSignalBlocker(self.camera_trigger_barrier),
+        )
+        try:
+            self.camera_trigger_enabled.setChecked(bool(trigger.get("enabled", False)))
+            self.camera_trigger_barrier.setCurrentIndex(sensor - 1)
+        finally:
+            del blockers
+        self.camera_trigger_initialized = True
+        self.camera_trigger_barrier.setEnabled(
+            self.connected and self.camera_trigger_enabled.isChecked()
+        )
 
     @pyqtSlot(object)
     def _on_setup_status(self, status: dict) -> None:
@@ -2024,6 +2093,33 @@ class ConveyorSetupWindow(QMainWindow):
             finally:
                 del blockers
             self.debounce_initialized = True
+        sensor = int(status.get("camera_record_trigger_light_barrier", 4))
+        if not 1 <= sensor <= LIGHT_BARRIER_COUNT:
+            sensor = 4
+        trigger_enabled = bool(status.get("camera_record_trigger_enabled", False))
+        if not self.camera_trigger_write_pending:
+            blockers = (
+                QSignalBlocker(self.camera_trigger_enabled),
+                QSignalBlocker(self.camera_trigger_barrier),
+            )
+            try:
+                self.camera_trigger_enabled.setChecked(trigger_enabled)
+                self.camera_trigger_barrier.setCurrentIndex(sensor - 1)
+            finally:
+                del blockers
+            self.camera_trigger_initialized = True
+        trigger_high = bool(status.get("camera_record_trigger_output", False))
+        self.camera_trigger_state.setText(
+            (
+                f"LB {sensor} → Terminal 27 channel 1"
+                + (" · pulse HIGH" if trigger_high else " · armed")
+            )
+            if trigger_enabled
+            else "Camera trigger output disabled"
+        )
+        self.camera_trigger_barrier.setEnabled(
+            self.connected and self.camera_trigger_enabled.isChecked()
+        )
         for index, barrier_state in enumerate(status["light_barriers"]):
             self._set_barrier_indicator(index, barrier_state)
         self._process_ur_capture(status["light_barriers"])
@@ -2237,10 +2333,14 @@ class ConveyorSetupWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_write_finished(self, context: str) -> None:
+        if context == "camera_record_trigger_route":
+            self.camera_trigger_write_pending = False
         self.statusBar().showMessage(f"ADS write complete: {context}")
 
     @pyqtSlot(str, str)
     def _on_ads_error(self, context: str, message: str) -> None:
+        if context == "camera_record_trigger_route":
+            self.camera_trigger_write_pending = False
         self.statusBar().showMessage(f"{context}: {message}")
 
     def closeEvent(self, event) -> None:

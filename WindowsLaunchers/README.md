@@ -5,7 +5,11 @@ Ein Doppelklick auf `Verknuepfungen-installieren.cmd` erzeugt Verknüpfungen fü
 - BiBaZu Reorientation Control
 - BiBaZu Pressure Control
 - BiBaZu Conveyor Setup
-- BiBaZu Automated Image Capture
+
+Automated Image Capture und Pose Roadmap Generator besitzen jeweils einen
+eigenen `WindowsLaunchers`-Ordner im jeweiligen Repository. Deren Installer,
+Symbole und Python-Umgebungen benötigen dieses Repository nicht mehr.
+Dieser Installer/Uninstaller verwaltet nur die drei oben genannten Programme.
 
 Alle Einträge erscheinen auf dem Desktop und im Startmenü im Ordner **BiBaZu**.
 Über die Windows-Suche genügt anschließend die Eingabe `BiBaZu`.

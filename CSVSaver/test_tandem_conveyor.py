@@ -86,6 +86,25 @@ class DrivePlant:
 
 
 class TandemConveyorTests(unittest.TestCase):
+    def test_endless_speed_changes_ramp_without_stopping(self):
+        plant = DrivePlant()
+        plant.enable()
+        plant.step(Execute=True, StartType=3, Velocity=500)
+        for _ in range(300):
+            plant.step()
+
+        for speed, expected in ((250, 250000), (750, 750000)):
+            plant.step(Velocity=speed)
+            targets = []
+            for _ in range(300):
+                values = plant.step()
+                self.assertEqual(values["State"], 30)
+                self.assertFalse(values["Error"])
+                targets.append(values["TargetVelocity1"])
+                self.assertGreater(values["TargetVelocity2"], 0)
+            self.assertGreater(min(targets), 0)
+            self.assertAlmostEqual(targets[-1], expected, delta=1)
+
     def test_optional_rpm_cap_and_increasing_uncapped_commands(self):
         for rpm_cap in (5.0, 0.0):
             with self.subTest(rpm_cap=rpm_cap):

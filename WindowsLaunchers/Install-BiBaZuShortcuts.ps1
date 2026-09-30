@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
     [switch]$DesktopOnly,
-    [switch]$StartMenuOnly
+    [switch]$StartMenuOnly,
+    [string]$ApplicationName
 )
 
 $ErrorActionPreference = 'Stop'
 $launcherDirectory = Split-Path -Parent $PSCommandPath
 $bibazuRepository = Split-Path -Parent $launcherDirectory
-$workspace = Split-Path -Parent $bibazuRepository
 $iconDirectory = Join-Path $launcherDirectory 'icons'
 
 $desktopDirectory = [Environment]::GetFolderPath('Desktop')
@@ -42,14 +42,6 @@ $applications = @(
         Arguments = '"' + (Join-Path $bibazuRepository 'CSVSaver\ConveyorSetupGUI.py') + '"'
         WorkingDirectory = Join-Path $bibazuRepository 'CSVSaver'
         Icon = (Join-Path $iconDirectory 'conveyor.ico') + ',0'
-    },
-    [pscustomobject]@{
-        Name = 'BiBaZu Automated Image Capture'
-        Description = 'Baumer-Aufnahmen und YOLO-Datenerfassung'
-        Executable = Join-Path $workspace 'automated_image_capture\.venv\Scripts\pythonw.exe'
-        Arguments = '-m automated_image_capture.app'
-        WorkingDirectory = Join-Path $workspace 'automated_image_capture'
-        Icon = (Join-Path $iconDirectory 'capture.ico') + ',0'
     }
 )
 
@@ -95,6 +87,11 @@ function New-ApplicationShortcut {
         throw "Programmsymbol konnte nicht gespeichert werden: $shortcutPath"
     }
     Write-Host "Erstellt: $shortcutPath"
+}
+
+if ($ApplicationName) {
+    $applications = @($applications | Where-Object { $_.Name -eq $ApplicationName })
+    if ($applications.Count -eq 0) { throw "Unknown application: $ApplicationName" }
 }
 
 foreach ($application in $applications) {

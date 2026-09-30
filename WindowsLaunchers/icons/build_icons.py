@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
-ICON_NAMES = ("reorientation", "pressure", "conveyor", "capture")
+ICON_NAMES = ("reorientation", "pressure", "conveyor", "capture", "pose-roadmap")
 
 
 def build_icon(source: Path, destination: Path) -> None:
