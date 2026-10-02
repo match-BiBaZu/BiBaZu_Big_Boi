@@ -152,6 +152,14 @@ VAR
 	GuiOffsetMm2			: REAL := 0.0;
 	GuiOffsetMm3			: REAL := 0.0;
 	GuiOffsetMm4			: REAL := 0.0;
+	GuiConveyorVelocityDelay1	: BOOL := FALSE;
+	GuiConveyorVelocityDelay2	: BOOL := FALSE;
+	GuiConveyorVelocityDelay3	: BOOL := FALSE;
+	GuiConveyorVelocityDelay4	: BOOL := FALSE;
+	OffsetVelocityMmPerSec1	: REAL := 0.0;
+	OffsetVelocityMmPerSec2	: REAL := 0.0;
+	OffsetVelocityMmPerSec3	: REAL := 0.0;
+	OffsetVelocityMmPerSec4	: REAL := 0.0;
 	GuiForceDelayMeasurementEnabled	: BOOL := FALSE;
 	GuiForceDelayLightBarrier	: UINT := 2;
 	GuiForceDelaySensor		: UINT := 1;
@@ -2583,12 +2591,23 @@ EffectiveForceResponseDelayMs2 := GuiForceSingleNozzleResponseDelayMs2;
 EffectiveForceResponseDelayMs3 := GuiForceSingleNozzleResponseDelayMs3;
 EffectiveForceResponseDelayMs4 := GuiForceSingleNozzleResponseDelayMs4;
 
-IF NOT GuiReorientationControlActive AND VelocityMeasurementValid AND (EstimatedVelocityMmPerSec1 > 0.0) THEN
+// The checkbox selects the configured conveyor speed only for offset timing.
+// Keep the light barrier estimates available for diagnostics and logging.
+IF GuiConveyorVelocityDelay1 THEN OffsetVelocityMmPerSec1 := ConveyorSpeedMmPerSec;
+ELSE OffsetVelocityMmPerSec1 := EstimatedVelocityMmPerSec1; END_IF
+IF GuiConveyorVelocityDelay2 THEN OffsetVelocityMmPerSec2 := ConveyorSpeedMmPerSec;
+ELSE OffsetVelocityMmPerSec2 := EstimatedVelocityMmPerSec2; END_IF
+IF GuiConveyorVelocityDelay3 THEN OffsetVelocityMmPerSec3 := ConveyorSpeedMmPerSec;
+ELSE OffsetVelocityMmPerSec3 := EstimatedVelocityMmPerSec3; END_IF
+IF GuiConveyorVelocityDelay4 THEN OffsetVelocityMmPerSec4 := ConveyorSpeedMmPerSec;
+ELSE OffsetVelocityMmPerSec4 := EstimatedVelocityMmPerSec4; END_IF
+
+IF NOT GuiReorientationControlActive AND (GuiConveyorVelocityDelay1 OR VelocityMeasurementValid) AND (OffsetVelocityMmPerSec1 > 0.0) THEN
 	IF (GuiSensor2ToArray1SpacingMm + GuiOffsetMm1) <= 0.0 THEN
 		EstimatedOffsetDelayMs1 := 0.0;
 	ELSE
 		EstimatedOffsetDelayMs1 := ((GuiSensor2ToArray1SpacingMm + GuiOffsetMm1)
-			* 1000.0 / EstimatedVelocityMmPerSec1) - EffectiveForceResponseDelayMs1;
+			* 1000.0 / OffsetVelocityMmPerSec1) - EffectiveForceResponseDelayMs1;
 		IF EstimatedOffsetDelayMs1 < 0.0 THEN
 			EstimatedOffsetDelayMs1 := 0.0;
 		END_IF
@@ -2597,12 +2616,12 @@ ELSE
 	EstimatedOffsetDelayMs1 := 0.0;
 END_IF
 
-IF NOT GuiReorientationControlActive AND VelocityMeasurement2Valid AND (EstimatedVelocityMmPerSec2 > 0.0) THEN
+IF NOT GuiReorientationControlActive AND (GuiConveyorVelocityDelay2 OR VelocityMeasurement2Valid) AND (OffsetVelocityMmPerSec2 > 0.0) THEN
 	IF (GuiSensor4ToArray2SpacingMm + GuiOffsetMm2) <= 0.0 THEN
 		EstimatedOffsetDelayMs2 := 0.0;
 	ELSE
 		EstimatedOffsetDelayMs2 := ((GuiSensor4ToArray2SpacingMm + GuiOffsetMm2)
-			* 1000.0 / EstimatedVelocityMmPerSec2) - EffectiveForceResponseDelayMs2;
+			* 1000.0 / OffsetVelocityMmPerSec2) - EffectiveForceResponseDelayMs2;
 		IF EstimatedOffsetDelayMs2 < 0.0 THEN
 			EstimatedOffsetDelayMs2 := 0.0;
 		END_IF
@@ -2611,12 +2630,12 @@ ELSE
 	EstimatedOffsetDelayMs2 := 0.0;
 END_IF
 
-IF NOT GuiReorientationControlActive AND VelocityMeasurement3Valid AND (EstimatedVelocityMmPerSec3 > 0.0) THEN
+IF NOT GuiReorientationControlActive AND (GuiConveyorVelocityDelay3 OR VelocityMeasurement3Valid) AND (OffsetVelocityMmPerSec3 > 0.0) THEN
 	IF (GuiSensor6ToArray3SpacingMm + GuiOffsetMm3) <= 0.0 THEN
 		EstimatedOffsetDelayMs3 := 0.0;
 	ELSE
 		EstimatedOffsetDelayMs3 := ((GuiSensor6ToArray3SpacingMm + GuiOffsetMm3)
-			* 1000.0 / EstimatedVelocityMmPerSec3) - EffectiveForceResponseDelayMs3;
+			* 1000.0 / OffsetVelocityMmPerSec3) - EffectiveForceResponseDelayMs3;
 		IF EstimatedOffsetDelayMs3 < 0.0 THEN
 			EstimatedOffsetDelayMs3 := 0.0;
 		END_IF
@@ -2625,12 +2644,12 @@ ELSE
 	EstimatedOffsetDelayMs3 := 0.0;
 END_IF
 
-IF NOT GuiReorientationControlActive AND VelocityMeasurement4Valid AND (EstimatedVelocityMmPerSec4 > 0.0) THEN
+IF NOT GuiReorientationControlActive AND (GuiConveyorVelocityDelay4 OR VelocityMeasurement4Valid) AND (OffsetVelocityMmPerSec4 > 0.0) THEN
 	IF (GuiSensor8ToArray4SpacingMm + GuiOffsetMm4) <= 0.0 THEN
 		EstimatedOffsetDelayMs4 := 0.0;
 	ELSE
 		EstimatedOffsetDelayMs4 := ((GuiSensor8ToArray4SpacingMm + GuiOffsetMm4)
-			* 1000.0 / EstimatedVelocityMmPerSec4) - EffectiveForceResponseDelayMs4;
+			* 1000.0 / OffsetVelocityMmPerSec4) - EffectiveForceResponseDelayMs4;
 		IF EstimatedOffsetDelayMs4 < 0.0 THEN
 			EstimatedOffsetDelayMs4 := 0.0;
 		END_IF

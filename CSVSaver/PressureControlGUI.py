@@ -78,7 +78,7 @@ PLC_PORT = pyads.PORT_TC3PLC1
 
 PROFILE_DIR = Path("pressure_profiles")
 LIGHT_BARRIER_SETTINGS_FILE = Path(__file__).resolve().parent / "light_barrier_settings.json"
-PROFILE_VERSION = 12
+PROFILE_VERSION = 13
 CSV_FILE = Path("pressure_log.csv")
 LIGHT_BARRIER_EVENT_LOG_FILE = Path(__file__).resolve().parent / "light_barrier_events.csv"
 FORCE_DELAY_LOG_FILE = Path(__file__).resolve().parent / "force_peak_delay_log.csv"
@@ -270,6 +270,7 @@ class ArraySymbols:
     delay: str
     pulse_duration: str
     offset: str
+    conveyor_velocity_delay: str
     estimated_velocity: str
     estimated_delay: str
 
@@ -285,6 +286,7 @@ SYMBOLS = {
         delay=f"MAIN.GuiDelayMs{index}",
         pulse_duration=f"MAIN.GuiPulseDurationMs{index}",
         offset=f"MAIN.GuiOffsetMm{index}",
+        conveyor_velocity_delay=f"MAIN.GuiConveyorVelocityDelay{index}",
         estimated_velocity=f"MAIN.EstimatedVelocityMmPerSec{index}",
         estimated_delay=f"MAIN.EstimatedOffsetDelayMs{index}",
     )
@@ -337,6 +339,9 @@ class AdsClient:
             "delay_ms": self.plc.read_by_name(symbols.delay, pyads.PLCTYPE_UINT),
             "pulse_duration_ms": self.plc.read_by_name(symbols.pulse_duration, pyads.PLCTYPE_UINT),
             "offset_mm": self.plc.read_by_name(symbols.offset, pyads.PLCTYPE_REAL),
+            "conveyor_velocity_delay": self.plc.read_by_name(
+                symbols.conveyor_velocity_delay, pyads.PLCTYPE_BOOL
+            ),
         }
 
     def write_array_value(self, index: int, field: str, value: bool | int | float) -> None:
@@ -357,6 +362,8 @@ class AdsClient:
             self.plc.write_by_name(symbols.pulse_duration, int(value), pyads.PLCTYPE_UINT)
         elif field == "offset_mm":
             self.plc.write_by_name(symbols.offset, float(value), pyads.PLCTYPE_REAL)
+        elif field == "conveyor_velocity_delay":
+            self.plc.write_by_name(symbols.conveyor_velocity_delay, bool(value), pyads.PLCTYPE_BOOL)
         else:
             raise ValueError(f"Unknown field: {field}")
 
@@ -955,6 +962,7 @@ class AdsWorker(QObject):
                     symbols.delay,
                     symbols.pulse_duration,
                     symbols.offset,
+                    symbols.conveyor_velocity_delay,
                 ]
             )
         values = self.read_values(names)
@@ -970,6 +978,7 @@ class AdsWorker(QObject):
                     "delay_ms": int(values[symbols.delay]),
                     "pulse_duration_ms": int(values[symbols.pulse_duration]),
                     "offset_mm": float(values[symbols.offset]),
+                    "conveyor_velocity_delay": bool(values[symbols.conveyor_velocity_delay]),
                 }
             )
         return {
@@ -2055,6 +2064,13 @@ class ArrayRow:
             "0 mm means aligned with the nozzle"
         )
 
+        self.conveyor_velocity_delay = QCheckBox()
+        self.conveyor_velocity_delay.setChecked(False)
+        self.conveyor_velocity_delay.setToolTip(
+            "Calculate this array's nozzle offset delay from the set conveyor speed "
+            "instead of the light barrier velocity. Requires a speed above 0 mm/s."
+        )
+
         self.estimated_delay = QLabel("0.0 ms")
         self.estimated_delay.setMinimumWidth(90)
         self.estimated_delay.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -2083,6 +2099,7 @@ class ArrayRow:
             "delay_ms": self.delay.value(),
             "pulse_duration_ms": self.pulse_duration.value(),
             "offset_mm": self.offset.value(),
+            "conveyor_velocity_delay": self.conveyor_velocity_delay.isChecked(),
         }
 
     def set_values(self, values: dict) -> None:
@@ -2093,6 +2110,7 @@ class ArrayRow:
             QSignalBlocker(self.delay),
             QSignalBlocker(self.pulse_duration),
             QSignalBlocker(self.offset),
+            QSignalBlocker(self.conveyor_velocity_delay),
         ]
         try:
             self.enabled.setChecked(bool(values.get("enabled", self.enabled.isChecked())))
@@ -2122,6 +2140,9 @@ class ArrayRow:
                 int(values.get("pulse_duration_ms", self.pulse_duration.value()))
             )
             self.offset.setValue(float(values.get("offset_mm", self.offset.value())))
+            self.conveyor_velocity_delay.setChecked(
+                bool(values.get("conveyor_velocity_delay", False))
+            )
         finally:
             del blockers
 
@@ -3611,6 +3632,7 @@ class PressureControlWindow(QMainWindow):
             "Delay",
             "Pulse Duration",
             "Nozzle Offset",
+            "Conveyor Velocity Delay",
             "Est. Velocity",
             "Est. Offset Delay",
             "Status",
@@ -3628,11 +3650,12 @@ class PressureControlWindow(QMainWindow):
             grid.addWidget(row.delay, row_number, 4)
             grid.addWidget(row.pulse_duration, row_number, 5)
             grid.addWidget(row.offset, row_number, 6)
-            grid.addWidget(row.estimated_velocity, row_number, 7)
-            grid.addWidget(row.estimated_delay, row_number, 8)
-            grid.addWidget(row.status, row_number, 9)
+            grid.addWidget(row.conveyor_velocity_delay, row_number, 7, alignment=Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(row.estimated_velocity, row_number, 8)
+            grid.addWidget(row.estimated_delay, row_number, 9)
+            grid.addWidget(row.status, row_number, 10)
 
-        grid.setColumnStretch(9, 1)
+        grid.setColumnStretch(10, 1)
         status_scroll = QScrollArea()
         status_scroll.setWidgetResizable(True)
         status_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -3824,6 +3847,11 @@ class PressureControlWindow(QMainWindow):
             row.offset.valueChanged.connect(
                 lambda value, r=row: self.write_value(r, "offset_mm", value)
             )
+            row.conveyor_velocity_delay.stateChanged.connect(
+                lambda _state, r=row: self.write_value(
+                    r, "conveyor_velocity_delay", r.conveyor_velocity_delay.isChecked()
+                )
+            )
 
     def reconnect(self) -> None:
         self.last_shot_counter = None
@@ -3963,6 +3991,7 @@ class PressureControlWindow(QMainWindow):
             "delay_ms": symbols.delay,
             "pulse_duration_ms": symbols.pulse_duration,
             "offset_mm": symbols.offset,
+            "conveyor_velocity_delay": symbols.conveyor_velocity_delay,
         }
         if field.startswith("nozzle_") and field.endswith("_enabled"):
             nozzle_index = int(field.split("_")[1]) - 1
@@ -4046,6 +4075,9 @@ class PressureControlWindow(QMainWindow):
             values[symbols.delay] = int(row_values["delay_ms"])
             values[symbols.pulse_duration] = int(row_values["pulse_duration_ms"])
             values[symbols.offset] = float(row_values["offset_mm"])
+            values[symbols.conveyor_velocity_delay] = bool(
+                row_values["conveyor_velocity_delay"]
+            )
             row.status.setText("queued")
         self.ads.write_now(values, "all settings")
 
@@ -4444,7 +4476,9 @@ class PressureControlWindow(QMainWindow):
             "",
             "D = distance from the array's even-numbered trigger sensor to its nozzle array",
             "x = requested Offset (leading-edge position across the nozzle)",
-            "v = matching measured velocity, F = effective force-response delay",
+            "v = selected offset velocity: set conveyor speed when checked, "
+            "otherwise matching light barrier velocity",
+            "F = effective force-response delay",
             "M = manual Delay",
             "",
             "Travel time = (D + x) * 1000 / v",
@@ -4466,7 +4500,11 @@ class PressureControlWindow(QMainWindow):
                 self.ads.force_response_delays_ms[array - 1],
                 active_nozzles,
             )
-            velocity = float(row.last_displayed_velocity or 0.0)
+            use_conveyor_speed = row.conveyor_velocity_delay.isChecked()
+            velocity = (
+                self.conveyor_speed.value() if use_conveyor_speed
+                else float(row.last_displayed_velocity or 0.0)
+            )
             timing = calculate_offset_timing(
                 self.sensor_to_array_controls[array].value(),
                 row.offset.value(),
@@ -4475,7 +4513,8 @@ class PressureControlWindow(QMainWindow):
                 row.delay.value(),
             )
             prefix = (
-                f"Array {array}: LB {sensor - 1}-{sensor} velocity; "
+                f"Array {array}: "
+                f"{'conveyor setting' if use_conveyor_speed else f'LB {sensor - 1}-{sensor}'} velocity; "
                 f"D={self.sensor_to_array_controls[array].value():.1f} mm, "
                 f"x={row.offset.value():.1f} mm, v={velocity:.1f} mm/s, "
                 f"F={force_response_ms:.1f} ms, M={row.delay.value()} ms"

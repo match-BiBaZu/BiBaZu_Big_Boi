@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "light_barrier_debounce_ms": 20,
+  "light_barrier_inverted": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "light_barrier_debounce_enabled": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "sensor_spacing_12_mm": 40.0,
+  "sensor_spacing_34_mm": 40.0,
+  "sensor_spacing_56_mm": 40.0,
+  "sensor_spacing_78_mm": 40.0,
+  "sensor_2_to_array_1_spacing_mm": 28.0,
+  "sensor_4_to_array_2_spacing_mm": 45.0,
+  "sensor_6_to_array_3_spacing_mm": 45.0,
+  "sensor_8_to_array_4_spacing_mm": 48.0
+}

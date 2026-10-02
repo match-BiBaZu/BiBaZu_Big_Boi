@@ -1288,11 +1288,14 @@ class ProfileCompatibilityTests(unittest.TestCase):
             ):
                 window = gui.PressureControlWindow()
                 window.ur_angle_input.setValue(20.4)
+                window.rows[1].conveyor_velocity_delay.setChecked(True)
                 window.save_profile()
                 window.close()
 
             profile = json.loads(profile_path.read_text(encoding="utf-8"))
-            self.assertEqual(profile["version"], 12)
+            self.assertEqual(profile["version"], 13)
+            self.assertFalse(profile["arrays"][0]["conveyor_velocity_delay"])
+            self.assertTrue(profile["arrays"][1]["conveyor_velocity_delay"])
             self.assertEqual(profile["force_delays_ms"], [8.7] * 4)
             self.assertEqual(profile["ur_ry_angle_deg"], 20.4)
             self.assertEqual(profile["sensor_spacing_78_mm"], 40.0)
