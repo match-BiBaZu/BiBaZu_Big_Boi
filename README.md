@@ -28,6 +28,35 @@ the conveyor GUI with 2-3, 4-5, and 6-7 on the second row. The four existing
 velocity channels continue to use pairs 1-2,
 3-4, 5-6, and 7-8.
 
+Each nozzle array requires a fresh ordered passage through its two light
+barriers: LB1 then LB2 for array 1, LB3 then LB4 for array 2, LB5 then LB6 for
+array 3, and LB7 then LB8 for array 4. The first barrier arms one passage; the
+second consumes it and permits the configured valve pulse. Detecting only the
+second barrier again, including when a part flips backwards, cannot fire another
+pulse even after the optical repeat lock expires. Simultaneous edges without an
+earlier first-barrier detection do not grant permission. Disabling an array in
+Pressure Control, entering calibration/velocity-check mode, or resetting/stopping
+production clears unused passage permissions. Build and download the updated PLC
+source to apply this behavior on the test stand.
+
+The pressure field for each array has a read-only **Last impulse avg** reading.
+It reports the measured VTEM outlet pressure feeding that array, averaged over
+the full commanded nozzle pulse in the PLC. Every 1 ms scan with at least one
+open nozzle contributes once; the preceding delay and pressure recovery are
+excluded. This sampling uses the latest available VTEM feedback and does not
+imply a 1 kHz sensor update rate. The last completed result remains visible
+between impulses. Before the first result the display shows `—`; interrupted
+pulses or invalid terminal feedback show `Invalid impulse`, and a disconnected
+GUI shows `Offline`. These readings are not saved in pressure profiles and do
+not change the external-sensor CSV logging.
+
+Arrays 1–4 use `ActPresValueV02`, `ActPresValueV04`, `ActPresValueV12`, and
+`ActPresValueV14`, respectively. Each array publishes
+`MAIN.ArrayImpulseAvgPressureMbarN : REAL`, `ArrayImpulseSampleCountN : UINT`,
+`ArrayImpulseResultCounterN : UDINT`, and `ArrayImpulseValidN : BOOL` through
+ADS, where `N` is 1–4. Build and download the updated PLC before using these
+readings in the GUI.
+
 The Pressure Control GUI controls the two AM8112 motors as one velocity-only
 conveyor. Both motors start and stop together with no position correction. The
 nominal belt-speed conversion uses the two direct-drive 50 mm rollers. In

@@ -42,7 +42,7 @@ def convert(value, kind):
         return float(value)
     if kind == "TIME":
         return int(value) / 1000.0
-    widths = {"UINT": (16, False), "WORD": (16, False), "INT": (16, True),
+    widths = {"BYTE": (8, False), "UINT": (16, False), "WORD": (16, False), "INT": (16, True),
               "UDINT": (32, False), "DINT": (32, True), "LINT": (64, True)}
     if kind not in widths:
         raise ValueError(f"Unsupported conversion {kind}")

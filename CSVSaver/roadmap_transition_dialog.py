@@ -49,7 +49,7 @@ class RoadmapTransition:
     transition_kind: str
     actuation: str
     signed_angle_deg: float | None
-    capture_width_deg: float
+    capture_width_deg: float | None
     geometric_score: float | None
     flip_count: int = 1
     via_pose_ids: tuple[int, ...] = ()
@@ -166,7 +166,7 @@ def selection_from_roadmap_transition_metadata(
                 if value.get("signed_angle_deg") is None
                 else float(value["signed_angle_deg"])
             ),
-            capture_width_deg=0.0,
+            capture_width_deg=None,
             geometric_score=None,
             flip_count=int(value.get("flip_count", 1)),
             via_pose_ids=tuple(int(item) for item in value.get("via_pose_ids", [])),
@@ -220,7 +220,7 @@ def _restore_component_flips(
                         None if value.get("signed_angle_deg") is None
                         else float(value["signed_angle_deg"])
                     ),
-                    capture_width_deg=0.0,
+                    capture_width_deg=None,
                     geometric_score=None,
                 )
                 by_id[flip.edge_id] = flip
@@ -313,6 +313,19 @@ def _quaternion(value: Any) -> tuple[float, float, float, float]:
     return tuple(component / norm for component in quaternion)  # type: ignore[return-value]
 
 
+def _optional_float(value: Any, field: str) -> float | None:
+    """Uncomputed roadmap metrics are null, rather than measured zeroes."""
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Roadmap {field} must be a finite number or null") from error
+    if isinstance(value, bool) or not math.isfinite(result):
+        raise ValueError(f"Roadmap {field} must be a finite number or null")
+    return result
+
+
 def load_roadmap_document(path: str | Path) -> RoadmapDocument:
     source = Path(path).expanduser().resolve()
     payload = json.loads(source.read_text(encoding="utf-8"))
@@ -362,8 +375,8 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
                 transition_kind=str(edge["transition_kind"]),
                 actuation=str(edge["actuation"]),
                 signed_angle_deg=float(edge["signed_angle_deg"]),
-                capture_width_deg=float(edge.get("capture_width_deg", 0.0)),
-                geometric_score=float(edge.get("geometric_score", 0.0)),
+                capture_width_deg=_optional_float(edge.get("capture_width_deg"), "capture_width_deg"),
+                geometric_score=_optional_float(edge.get("geometric_score"), "geometric_score"),
             )
         )
 
@@ -378,7 +391,7 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
     transitions.extend(_build_multi_reorientation_transitions(direct_robust))
 
     mesh_source = str(payload.get("source", source.stem))
-    part_name = Path(mesh_source).stem or source.stem.replace("_roadmap", "")
+    part_name = str(payload.get("part_name") or Path(mesh_source).stem or source.stem.replace("_roadmap", ""))
     return RoadmapDocument(
         path=source,
         part_name=part_name,
@@ -435,7 +448,7 @@ def _build_multi_reorientation_transitions(
                 transition_kind="multi_reorientation",
                 actuation=f"multiple_reorientation_{flip_count}",
                 signed_angle_deg=None,
-                capture_width_deg=0.0,
+                capture_width_deg=None,
                 geometric_score=None,
                 flip_count=flip_count,
                 via_pose_ids=pose_ids[1:-1],

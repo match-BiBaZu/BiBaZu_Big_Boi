@@ -266,7 +266,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertIn("IF LightBarrierStable7 <> LastLightBarrier7 THEN", main)
         self.assertIn("IF LightBarrierStable8 <> LastLightBarrier8 THEN", main)
         self.assertIn(
-            "IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[4] "
+            "IF NOT GuiReorientationControlActive AND PairedForwardPass[4] "
             "AND Array4Active",
             main,
         )
@@ -1232,6 +1232,15 @@ class ProfileCompatibilityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        settings = patch.object(
+            gui, "LIGHT_BARRIER_SETTINGS_FILE", Path(directory.name) / "machine_settings.json"
+        )
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def load_profile(self, profile, configure_window=None):
         with tempfile.TemporaryDirectory() as directory:
             profile_path = Path(directory) / "profile.json"
@@ -1637,6 +1646,78 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
             )
         finally:
             directory.cleanup()
+
+    def test_observed_roadmap_unknown_metrics_load_through_pressure_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Kl1i_roadmap.json"
+            payload = self.roadmap_payload()
+            payload["part_name"] = "Kl1i"
+            payload["source"] = "source/renamed_mesh.stl"
+            for edge in payload["edges"]:
+                edge["capture_width_deg"] = None
+                edge["geometric_score"] = None
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            document = gui.load_roadmap_document(path)
+            self.assertEqual(document.part_name, "Kl1i")
+            self.assertEqual(document.mesh_path, (path.parent / payload["source"]).resolve())
+            self.assertTrue(all(edge.capture_width_deg is None for edge in document.transitions))
+            self.assertTrue(all(edge.geometric_score is None for edge in document.transitions))
+
+            def choose_transition(dialog):
+                dialog._set_pose_selection(1, 2)
+                dialog.transition_table.selectRow(0)
+                dialog._accept_selected_transition()
+                return gui.QDialog.DialogCode.Accepted
+
+            with patch.object(gui.AdsController, "start"):
+                window = gui.PressureControlWindow()
+            try:
+                window.profile_directory = Path(directory) / "profiles"
+                with patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")), \
+                     patch.object(gui.RoadmapTransitionDialog, "exec", choose_transition), \
+                     patch.object(gui.QMessageBox, "critical") as error_dialog:
+                    window.load_pose_roadmap()
+                    error_dialog.assert_not_called()
+                selection = window.selected_roadmap_transition
+                self.assertIsNotNone(selection)
+                self.assertEqual(selection.profile_name_stem, "Kl1i_Transition_1-2_free_y")
+                restored = gui.selection_from_roadmap_transition_metadata(gui.roadmap_transition_metadata(selection))
+                self.assertIsNotNone(restored)
+                self.assertIsNone(restored.transition.capture_width_deg)
+                self.assertEqual(restored.transition.edge_id, selection.transition.edge_id)
+            finally:
+                window.close()
+
+    def test_roadmap_metrics_preserve_numbers_and_missing_values_are_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "roadmap.json"
+            payload = self.roadmap_payload()
+            payload["edges"][1]["capture_width_deg"] = 0.0
+            payload["edges"][1]["geometric_score"] = 0.0
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            document = gui.load_roadmap_document(path)
+            self.assertEqual(document.transitions[0].capture_width_deg, 42.0)
+            self.assertEqual(document.transitions[0].geometric_score, 0.45)
+            self.assertEqual(document.transitions[1].capture_width_deg, 0.0)
+            self.assertEqual(document.transitions[1].geometric_score, 0.0)
+            for edge in payload["edges"]:
+                edge.pop("capture_width_deg")
+                edge.pop("geometric_score")
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            document = gui.load_roadmap_document(path)
+            self.assertTrue(all(edge.capture_width_deg is None and edge.geometric_score is None for edge in document.transitions))
+
+    def test_roadmap_rejects_invalid_optional_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "roadmap.json"
+            for field in ("capture_width_deg", "geometric_score"):
+                for value in ("invalid", [], True, float("nan"), float("inf")):
+                    with self.subTest(field=field, value=value):
+                        payload = self.roadmap_payload()
+                        payload["edges"][0][field] = value
+                        path.write_text(json.dumps(payload), encoding="utf-8")
+                        with self.assertRaisesRegex(ValueError, field):
+                            gui.load_roadmap_document(path)
 
     def test_pose_pair_filters_paths_and_direct_path_is_highlighted(self):
         directory, document = self.load_document()
@@ -2651,6 +2732,104 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         self.assertIsNone(window.pending_measurement)
         window.ads.connected = False
         window.close()
+
+
+class ImpulsePressureGuiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_ads_snapshot_reads_all_four_plc_results_with_correct_types(self):
+        worker = gui.AdsWorker()
+        plc = FakePlc()
+        worker.client = FakeClient(plc)
+        original_read = plc.read_list_by_name
+
+        def read(names, **kwargs):
+            values = original_read(names, **kwargs)
+            for index in range(1, 5):
+                symbols = gui.SYMBOLS[index]
+                for name, value in ((symbols.impulse_average, 4200.25 - index * 100),
+                                    (symbols.impulse_sample_count, index * 10),
+                                    (symbols.impulse_result_counter, index),
+                                    (symbols.impulse_valid, index != 3)):
+                    if name in values:
+                        values[name] = value
+            return values
+
+        plc.read_list_by_name = read
+        snapshot = worker.read_live_snapshot()
+        for index, result in enumerate(snapshot["impulse_pressures"], start=1):
+            self.assertEqual(result, {"average_mbar": 4200.25 - index * 100,
+                                      "sample_count": index * 10,
+                                      "result_counter": index, "valid": index != 3})
+            symbols = gui.SYMBOLS[index]
+            for attr, kind in (("impulse_average", "REAL"), ("impulse_sample_count", "UINT"),
+                               ("impulse_result_counter", "UDINT"), ("impulse_valid", "BOOL")):
+                name = getattr(symbols, attr).split(".")[1]
+                main = ET.parse(Path(__file__).parent / "TwinCAT Projekt3 - Kopie" /
+                                "TwinCAT Projekt3/Untitled1/POUs/MAIN.TcPOU")
+                self.assertRegex(main.findtext(".//Declaration"), rf"\b{name}\s*:\s*{kind}\s*;")
+
+    def make_window(self):
+        with patch.object(gui.AdsController, "start"):
+            window = gui.PressureControlWindow()
+        self.addCleanup(window.close)
+        return window
+
+    def snapshot(self, results):
+        return {"velocities": [0.0] * 4, "delays": [0.0] * 4,
+                "shot_counter": 0, "impulse_pressures": results}
+
+    def test_labels_show_startup_valid_invalid_and_empty_sample_results(self):
+        window = self.make_window()
+        for row in window.rows:
+            self.assertEqual(row.impulse_average.text(), "Last impulse avg: —")
+            self.assertIs(row.pressure.parentWidget(), row.pressure_controls)
+            self.assertIs(row.impulse_average.parentWidget(), row.pressure_controls)
+        results = [
+            {"average_mbar": 4179.7, "sample_count": 20, "result_counter": 1, "valid": True},
+            {"average_mbar": 3000, "sample_count": 0, "result_counter": 0, "valid": False},
+            {"average_mbar": 2000, "sample_count": 10, "result_counter": 1, "valid": False},
+            {"average_mbar": 1000, "sample_count": 0, "result_counter": 1, "valid": True},
+        ]
+        window.apply_live_snapshot(self.snapshot(results))
+        self.assertEqual([row.impulse_average.text() for row in window.rows],
+                         ["Last impulse avg: 4180 mbar", "Last impulse avg: —",
+                          "Last impulse avg: Invalid impulse", "Last impulse avg: Invalid impulse"])
+        window.apply_live_snapshot(self.snapshot(results))
+        self.assertEqual(window.rows[0].impulse_average.text(), "Last impulse avg: 4180 mbar")
+
+    def test_reconnect_clears_stale_readings_and_restores_plc_result(self):
+        window = self.make_window()
+        results = [{"average_mbar": 4200, "sample_count": 10,
+                    "result_counter": 7, "valid": True}] * 4
+        window.apply_live_snapshot(self.snapshot(results))
+        window.on_connection_changed(False, "test disconnect")
+        self.assertTrue(all(row.impulse_average.text() == "Last impulse avg: Offline"
+                            for row in window.rows))
+        window.on_connection_changed(True, "")
+        self.assertTrue(all(row.impulse_average.text() == "Last impulse avg: —"
+                            for row in window.rows))
+        window.apply_live_snapshot(self.snapshot(results))
+        self.assertTrue(all(row.impulse_average.text() == "Last impulse avg: 4200 mbar"
+                            for row in window.rows))
+
+    def test_measurements_are_not_saved_in_profiles_or_written_to_plc(self):
+        window = self.make_window()
+        results = [{"average_mbar": 4180, "sample_count": 10,
+                    "result_counter": 7, "valid": True}] * 4
+        writes = []
+        window.ads.write_requested.connect(lambda *args: writes.append(args))
+        window.apply_live_snapshot(self.snapshot(results))
+        self.assertEqual(writes, [])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            with patch.object(QFileDialog, "getSaveFileName", return_value=(str(path), "JSON")):
+                window.save_profile()
+            profile = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("impulse", json.dumps(profile).lower())
+        self.assertEqual(gui.CSV_HEADER[:3], ["timestamp", "AvgPressureN1", "AvgPressureN2"])
 
 
 if __name__ == "__main__":

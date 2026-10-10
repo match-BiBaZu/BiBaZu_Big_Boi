@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.19">
   <POU Name="MAIN" Id="{e80dba2a-67f9-4c18-8302-7ea92125d6c4}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
@@ -312,6 +312,9 @@ VAR
 	PairedSecondBarrierLocked		: ARRAY [1..4] OF BOOL;
 	PairedSecondBarrierLockStartMs	: ARRAY [1..4] OF UDINT;
 	PairedBarrierLockTimeoutMs		: UDINT := 500;
+	PairedForwardPassArmed		: ARRAY [1..4] OF BOOL;
+	PairedForwardPass			: ARRAY [1..4] OF BOOL;
+	PairedForwardPassEnabled		: ARRAY [1..4] OF BOOL;
 	BatchSensorOrderInvalid			: BOOL := FALSE;
 	BatchCanResyncSkippedSensors	: BOOL := FALSE;
 	BatchCurrentFlightConfirmed	: BOOL := FALSE;
@@ -687,6 +690,36 @@ VAR
 	AvgPressureN2           : REAL  := 0.0;                 //average pressure of the second nozzle 
 	ShotCounter				: UDINT := 0;					//increments once for every completed nozzle shot
 	LogPressureTrigger		: BOOL  := FALSE;				//one PLC-cycle pulse when a new shot value is ready
+	// VTEM outlet feedback averaged over each array's final valve-open commands.
+	ArrayImpulseAvgPressureMbar1 : REAL;
+	ArrayImpulseAvgPressureMbar2 : REAL;
+	ArrayImpulseAvgPressureMbar3 : REAL;
+	ArrayImpulseAvgPressureMbar4 : REAL;
+	ArrayImpulseSampleCount1 : UINT;
+	ArrayImpulseSampleCount2 : UINT;
+	ArrayImpulseSampleCount3 : UINT;
+	ArrayImpulseSampleCount4 : UINT;
+	ArrayImpulseResultCounter1 : UDINT;
+	ArrayImpulseResultCounter2 : UDINT;
+	ArrayImpulseResultCounter3 : UDINT;
+	ArrayImpulseResultCounter4 : UDINT;
+	ArrayImpulseValid1 : BOOL;
+	ArrayImpulseValid2 : BOOL;
+	ArrayImpulseValid3 : BOOL;
+	ArrayImpulseValid4 : BOOL;
+	ArrayImpulseIndex : INT;
+	ArrayImpulseCompleted : ARRAY [1..4] OF BOOL;
+	ArrayImpulseOpen : ARRAY [1..4] OF BOOL;
+	ArrayImpulseFeedbackMbar : ARRAY [1..4] OF INT;
+	ArrayImpulseFeedbackValid : ARRAY [1..4] OF BOOL;
+	ArrayImpulseMeasuring : ARRAY [1..4] OF BOOL;
+	ArrayImpulseSum : ARRAY [1..4] OF LREAL;
+	ArrayImpulseSamples : ARRAY [1..4] OF UINT;
+	ArrayImpulseAllFeedbackValid : ARRAY [1..4] OF BOOL;
+	ArrayImpulseLastAverage : ARRAY [1..4] OF REAL;
+	ArrayImpulseLastSamples : ARRAY [1..4] OF UINT;
+	ArrayImpulseLastCounter : ARRAY [1..4] OF UDINT;
+	ArrayImpulseLastValid : ARRAY [1..4] OF BOOL;
 	
 	N1PressureValues        : ARRAY [0..1000] OF REAL;        //array for the output of pressure values for nozzle 1
 	N2PressureValues        : ARRAY [0..1000] OF REAL;        //array for the ouput of pressure values for nozzle 2
@@ -726,6 +759,9 @@ StepperPosError := TandemConveyor.Error OR (ConveyorServoCommissioned AND (
 NozzlePressure := TO_REAL(RawNozzlePressure) * 10.0 / 32767.0;
 NozzlePressure2 := TO_REAL(RawNozzlePressure2) * 10.0 / 32767.0;
 LogPressureTrigger := FALSE;
+FOR ArrayImpulseIndex := 1 TO 4 DO
+	ArrayImpulseCompleted[ArrayImpulseIndex] := FALSE;
+END_FOR
 LightBarrierEventClockMs := LightBarrierEventClockMs + 1;
 
 // Explicit compatibility escape hatch for PressureControlGUI. It is accepted
@@ -832,6 +868,7 @@ IF GuiReorientationReset AND GuiReorientationControlActive THEN
 		PairedFirstBarrierLockStartMs[BatchLoopIndex] := 0;
 		PairedSecondBarrierLocked[BatchLoopIndex] := FALSE;
 		PairedSecondBarrierLockStartMs[BatchLoopIndex] := 0;
+		PairedForwardPassArmed[BatchLoopIndex] := FALSE;
 	END_FOR
 	// Reset is a command pulse. The PLC consumes it once so the GUI does not
 	// need a separate reset/ready handshake just to lower the bit again.
@@ -1611,6 +1648,33 @@ FOR BatchLoopIndex := 1 TO 4 DO
 	END_IF
 END_FOR
 
+// Valve permission requires first -> second in separate scans. The optical
+// locks above may time out, but that never creates a new forward-pass token.
+// A simultaneous second edge may consume an earlier first edge and the first
+// edge may then arm the following workpiece. Without that earlier edge, neither
+// a lone second edge nor simultaneous edges grant valve permission.
+PairedForwardPassEnabled[1] := Array1Active;
+PairedForwardPassEnabled[2] := Array2Active;
+PairedForwardPassEnabled[3] := Array3Active;
+PairedForwardPassEnabled[4] := Array4Active;
+FOR BatchLoopIndex := 1 TO 4 DO
+	PairedForwardPass[BatchLoopIndex] := FALSE;
+	IF GuiConveyorCalibrationMode OR GuiVelocityCheckMode OR ReorientationSafeLatch
+		OR (NOT GuiReorientationControlActive AND NOT PairedForwardPassEnabled[BatchLoopIndex])
+		OR (GuiReorientationControlActive AND (ReorientationState <> 20) AND (ReorientationState <> 30)) THEN
+		PairedForwardPassArmed[BatchLoopIndex] := FALSE;
+	ELSE
+		IF PairedSecondBarrierFalling[BatchLoopIndex] THEN
+			PairedForwardPass[BatchLoopIndex] := PairedForwardPassArmed[BatchLoopIndex];
+			PairedForwardPassArmed[BatchLoopIndex] := FALSE;
+		END_IF
+		IF PairedFirstBarrierFalling[BatchLoopIndex]
+			AND (NOT PairedSecondBarrierFalling[BatchLoopIndex] OR PairedForwardPass[BatchLoopIndex]) THEN
+			PairedForwardPassArmed[BatchLoopIndex] := TRUE;
+		END_IF
+	END_IF
+END_FOR
+
 // Capture the exact gate BOOLs, including their return to FALSE next cycle.
 // This diagnostic buffer never participates in trigger or velocity decisions.
 LightBarrierFilteredSignal[1] := PairedFirstBarrierFalling[1];
@@ -1898,6 +1962,15 @@ IF GuiReorientationControlActive AND ((ReorientationState = 20) OR (Reorientatio
 					ReorientationFaultPreviousSequence := BatchSensorSequence[BatchLoopIndex - 1];
 					BatchSensorOrderInvalid :=
 						BatchSensorSequence[BatchLoopIndex - 1] < BatchNextSensorSequence[BatchLoopIndex];
+					// Active-array second edges also need an unconsumed physical
+					// first edge from an earlier scan. Reject repeats before advancing
+					// the part cursor or creating a job. Passive exit resync is retained.
+					IF ((BatchLoopIndex MOD 2) = 0)
+						AND ((BatchQueueArrayMask[BatchSlotIndex]
+							AND SHL(BYTE#1, (BatchLoopIndex / 2) - 1)) <> BYTE#0) THEN
+						BatchSensorOrderInvalid := BatchSensorOrderInvalid
+							OR NOT PairedForwardPass[BatchLoopIndex / 2];
+					END_IF
 					// The highest enabled array defines the final sensor pair that
 					// remains timing/actuation-critical for this queued part.
 					IF (BatchQueueArrayMask[BatchSlotIndex] AND BYTE#8) <> BYTE#0 THEN
@@ -2213,19 +2286,19 @@ IF BarrierCalibrationActive
 	END_IF
 END_IF
 
-IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[1] AND Array1Active AND (State <= 2) THEN
+IF NOT GuiReorientationControlActive AND PairedForwardPass[1] AND Array1Active AND (State <= 2) THEN
 	Array1TriggerPending := TRUE;
 END_IF
 
-IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[2] AND Array2Active AND (State2 = 2) THEN
+IF NOT GuiReorientationControlActive AND PairedForwardPass[2] AND Array2Active AND (State2 = 2) THEN
 	Array2TriggerPending := TRUE;
 END_IF
 
-IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[3] AND Array3Active AND (State3 <= 2) THEN
+IF NOT GuiReorientationControlActive AND PairedForwardPass[3] AND Array3Active AND (State3 <= 2) THEN
 	Array3TriggerPending := TRUE;
 END_IF
 
-IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[4] AND Array4Active AND (State4 = 2) THEN
+IF NOT GuiReorientationControlActive AND PairedForwardPass[4] AND Array4Active AND (State4 = 2) THEN
 	Array4TriggerPending := TRUE;
 END_IF
 
@@ -2756,6 +2829,7 @@ CASE State OF
 			END_IF
 
 			IF Counter > LatchedNozzleEndCycles1 THEN
+				ArrayImpulseCompleted[1] := TRUE;
 				OpenValve1 := FALSE;
 				OpenValve2 := FALSE;
 				OpenValve3 := FALSE;
@@ -2838,6 +2912,7 @@ CASE State2 OF
 			END_IF
 
 			IF Counter2 > LatchedNozzleEndCycles2 THEN
+				ArrayImpulseCompleted[2] := TRUE;
 				OpenValve5 := FALSE;
 				OpenValve6 := FALSE;
 				OpenValve7 := FALSE;
@@ -2904,6 +2979,7 @@ CASE State3 OF
 			END_IF
 
 			IF Counter3 > LatchedNozzleEndCycles3 THEN
+				ArrayImpulseCompleted[3] := TRUE;
 				OpenValve9 := FALSE;
 				OpenValve10 := FALSE;
 				OpenValve11 := FALSE;
@@ -2970,6 +3046,7 @@ CASE State4 OF
 			END_IF
 
 			IF Counter4 > LatchedNozzleEndCycles4 THEN
+				ArrayImpulseCompleted[4] := TRUE;
 				OpenValve13 := FALSE;
 				OpenValve14 := FALSE;
 				OpenValve15 := FALSE;
@@ -3136,6 +3213,74 @@ FBValveControlV1(
 	iActualValue2=> ActPresValueV14,
 	iResponseToValveModeSet=> ResponseToValveModeSet1,
 	iErrorCode=> ErrorCode1);
+
+// Impulse inlet-pressure measurement. Run after final valve overrides and both
+// VTEM calls: each open scan uses the current port feedback exactly once per
+// array, even when multiple nozzles open. Delay and recovery scans are excluded.
+ArrayImpulseOpen[1] := OpenValve1 OR OpenValve2 OR OpenValve3 OR OpenValve4 OR OpenValve17 OR OpenValve18;
+ArrayImpulseOpen[2] := OpenValve5 OR OpenValve6 OR OpenValve7 OR OpenValve8 OR OpenValve19 OR OpenValve20;
+ArrayImpulseOpen[3] := OpenValve9 OR OpenValve10 OR OpenValve11 OR OpenValve12 OR OpenValve21 OR OpenValve22;
+ArrayImpulseOpen[4] := OpenValve13 OR OpenValve14 OR OpenValve15 OR OpenValve16 OR OpenValve23 OR OpenValve24;
+ArrayImpulseFeedbackMbar[1] := ActPresValueV02;
+ArrayImpulseFeedbackMbar[2] := ActPresValueV04;
+ArrayImpulseFeedbackMbar[3] := ActPresValueV12;
+ArrayImpulseFeedbackMbar[4] := ActPresValueV14;
+ArrayImpulseFeedbackValid[1] := Enable0 AND (ActValveMode0 = 3) AND (ErrorCode0 = 0)
+	AND NOT ReorientationSafeLatch AND NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode;
+ArrayImpulseFeedbackValid[2] := ArrayImpulseFeedbackValid[1];
+ArrayImpulseFeedbackValid[3] := Enable1 AND (ActValveMode1 = 3) AND (ErrorCode1 = 0)
+	AND NOT ReorientationSafeLatch AND NOT GuiConveyorCalibrationMode AND NOT GuiVelocityCheckMode;
+ArrayImpulseFeedbackValid[4] := ArrayImpulseFeedbackValid[3];
+FOR ArrayImpulseIndex := 1 TO 4 DO
+	IF ArrayImpulseOpen[ArrayImpulseIndex] THEN
+		IF NOT ArrayImpulseMeasuring[ArrayImpulseIndex] THEN
+			ArrayImpulseSum[ArrayImpulseIndex] := 0.0;
+			ArrayImpulseSamples[ArrayImpulseIndex] := 0;
+			ArrayImpulseAllFeedbackValid[ArrayImpulseIndex] := TRUE;
+			ArrayImpulseMeasuring[ArrayImpulseIndex] := TRUE;
+		END_IF
+		IF ArrayImpulseSamples[ArrayImpulseIndex] < UINT#65535 THEN
+			ArrayImpulseSum[ArrayImpulseIndex] := ArrayImpulseSum[ArrayImpulseIndex]
+				+ INT_TO_LREAL(ArrayImpulseFeedbackMbar[ArrayImpulseIndex]);
+			ArrayImpulseSamples[ArrayImpulseIndex] := ArrayImpulseSamples[ArrayImpulseIndex] + 1;
+		ELSE
+			ArrayImpulseAllFeedbackValid[ArrayImpulseIndex] := FALSE;
+		END_IF
+		ArrayImpulseAllFeedbackValid[ArrayImpulseIndex] := ArrayImpulseAllFeedbackValid[ArrayImpulseIndex]
+			AND ArrayImpulseFeedbackValid[ArrayImpulseIndex];
+	ELSIF ArrayImpulseMeasuring[ArrayImpulseIndex] THEN
+		// A falling valve command without normal completion is an interrupted
+		// impulse. Publish an invalid result rather than a misleading partial mean.
+		ArrayImpulseLastValid[ArrayImpulseIndex] := ArrayImpulseCompleted[ArrayImpulseIndex]
+			AND ArrayImpulseAllFeedbackValid[ArrayImpulseIndex]
+			AND ArrayImpulseFeedbackValid[ArrayImpulseIndex]
+			AND (ArrayImpulseSamples[ArrayImpulseIndex] > 0);
+		ArrayImpulseLastAverage[ArrayImpulseIndex] := 0.0;
+		IF ArrayImpulseLastValid[ArrayImpulseIndex] THEN
+			ArrayImpulseLastAverage[ArrayImpulseIndex] := LREAL_TO_REAL(
+				ArrayImpulseSum[ArrayImpulseIndex] / UINT_TO_LREAL(ArrayImpulseSamples[ArrayImpulseIndex]));
+		END_IF
+		ArrayImpulseLastSamples[ArrayImpulseIndex] := ArrayImpulseSamples[ArrayImpulseIndex];
+		ArrayImpulseLastCounter[ArrayImpulseIndex] := ArrayImpulseLastCounter[ArrayImpulseIndex] + 1;
+		ArrayImpulseMeasuring[ArrayImpulseIndex] := FALSE;
+	END_IF
+END_FOR
+ArrayImpulseAvgPressureMbar1 := ArrayImpulseLastAverage[1];
+ArrayImpulseAvgPressureMbar2 := ArrayImpulseLastAverage[2];
+ArrayImpulseAvgPressureMbar3 := ArrayImpulseLastAverage[3];
+ArrayImpulseAvgPressureMbar4 := ArrayImpulseLastAverage[4];
+ArrayImpulseSampleCount1 := ArrayImpulseLastSamples[1];
+ArrayImpulseSampleCount2 := ArrayImpulseLastSamples[2];
+ArrayImpulseSampleCount3 := ArrayImpulseLastSamples[3];
+ArrayImpulseSampleCount4 := ArrayImpulseLastSamples[4];
+ArrayImpulseValid1 := ArrayImpulseLastValid[1];
+ArrayImpulseValid2 := ArrayImpulseLastValid[2];
+ArrayImpulseValid3 := ArrayImpulseLastValid[3];
+ArrayImpulseValid4 := ArrayImpulseLastValid[4];
+ArrayImpulseResultCounter1 := ArrayImpulseLastCounter[1];
+ArrayImpulseResultCounter2 := ArrayImpulseLastCounter[2];
+ArrayImpulseResultCounter3 := ArrayImpulseLastCounter[3];
+ArrayImpulseResultCounter4 := ArrayImpulseLastCounter[4];
 
 LastLightBarrier1 := LightBarrierStable1;
 LastLightBarrier2 := LightBarrierStable2;

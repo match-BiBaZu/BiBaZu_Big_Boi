@@ -273,6 +273,10 @@ class ArraySymbols:
     conveyor_velocity_delay: str
     estimated_velocity: str
     estimated_delay: str
+    impulse_average: str
+    impulse_sample_count: str
+    impulse_result_counter: str
+    impulse_valid: str
 
 
 SYMBOLS = {
@@ -289,6 +293,10 @@ SYMBOLS = {
         conveyor_velocity_delay=f"MAIN.GuiConveyorVelocityDelay{index}",
         estimated_velocity=f"MAIN.EstimatedVelocityMmPerSec{index}",
         estimated_delay=f"MAIN.EstimatedOffsetDelayMs{index}",
+        impulse_average=f"MAIN.ArrayImpulseAvgPressureMbar{index}",
+        impulse_sample_count=f"MAIN.ArrayImpulseSampleCount{index}",
+        impulse_result_counter=f"MAIN.ArrayImpulseResultCounter{index}",
+        impulse_valid=f"MAIN.ArrayImpulseValid{index}",
     )
     for index in range(1, ARRAY_COUNT + 1)
 }
@@ -1051,6 +1059,10 @@ class AdsWorker(QObject):
                  "MAIN.LightBarrierEventClockMs"]
         for index in range(1, ARRAY_COUNT + 1):
             names.extend([SYMBOLS[index].estimated_velocity, SYMBOLS[index].estimated_delay])
+            names.extend([
+                SYMBOLS[index].impulse_average, SYMBOLS[index].impulse_sample_count,
+                SYMBOLS[index].impulse_result_counter, SYMBOLS[index].impulse_valid,
+            ])
         for index in range(1, LIGHT_BARRIER_COUNT + 1):
             names.extend(
                 [
@@ -1085,6 +1097,15 @@ class AdsWorker(QObject):
             "plc_event_clock_ms": int(values["MAIN.LightBarrierEventClockMs"]),
             "avg_pressure_n1": float(values["MAIN.AvgPressureN1"]),
             "avg_pressure_n2": float(values["MAIN.AvgPressureN2"]),
+            "impulse_pressures": [
+                {
+                    "average_mbar": float(values[SYMBOLS[index].impulse_average]),
+                    "sample_count": int(values[SYMBOLS[index].impulse_sample_count]),
+                    "result_counter": int(values[SYMBOLS[index].impulse_result_counter]),
+                    "valid": bool(values[SYMBOLS[index].impulse_valid]),
+                }
+                for index in range(1, ARRAY_COUNT + 1)
+            ],
             "velocities": [
                 float(values[SYMBOLS[index].estimated_velocity])
                 for index in range(1, ARRAY_COUNT + 1)
@@ -2038,6 +2059,18 @@ class ArrayRow:
         self.pressure.setSingleStep(10)
         self.pressure.setValue(3000)
         self.pressure.setToolTip("Pressure setpoint for this array")
+        self.impulse_average = QLabel("Last impulse avg: —")
+        self.impulse_average.setToolTip(
+            "Measured VTEM outlet pressure feeding this array, averaged over "
+            "the full commanded valve pulse. The latest completed result is "
+            "held between impulses; the PLC samples the available feedback every 1 ms."
+        )
+        self.pressure_controls = QWidget()
+        pressure_layout = QVBoxLayout(self.pressure_controls)
+        pressure_layout.setContentsMargins(0, 0, 0, 0)
+        pressure_layout.setSpacing(2)
+        pressure_layout.addWidget(self.pressure)
+        pressure_layout.addWidget(self.impulse_average)
 
         self.delay = QSpinBox()
         self.delay.setRange(DELAY_MIN_MS, DELAY_MAX_MS)
@@ -3646,7 +3679,7 @@ class PressureControlWindow(QMainWindow):
             grid.addWidget(QLabel(f"Array {row.index}"), row_number, 0)
             grid.addWidget(row.enabled, row_number, 1)
             grid.addWidget(row.nozzle_controls, row_number, 2)
-            grid.addWidget(row.pressure, row_number, 3)
+            grid.addWidget(row.pressure_controls, row_number, 3)
             grid.addWidget(row.delay, row_number, 4)
             grid.addWidget(row.pulse_duration, row_number, 5)
             grid.addWidget(row.offset, row_number, 6)
@@ -3887,6 +3920,10 @@ class PressureControlWindow(QMainWindow):
     @pyqtSlot(bool, str)
     def on_connection_changed(self, connected: bool, message: str) -> None:
         self.light_barrier_plot.set_connected(connected)
+        for row in self.rows:
+            row.impulse_average.setText(
+                "Last impulse avg: —" if connected else "Last impulse avg: Offline"
+            )
         self.reconnect_button.setEnabled(True)
         self.light_barrier_settings_button.setEnabled(connected)
         if connected:
@@ -4248,8 +4285,7 @@ class PressureControlWindow(QMainWindow):
     def load_pose_roadmap(self) -> None:
         workspace_roadmaps = (
             Path(__file__).resolve().parents[2]
-            / "bibazu_geometry_to_pose"
-            / "Poses_Found_Robust"
+            / "BiBaZu_StableComponentenRoadmaps"
         )
         start_directory = workspace_roadmaps if workspace_roadmaps.exists() else Path.cwd()
         path, _selected_filter = QFileDialog.getOpenFileName(
@@ -4539,6 +4575,14 @@ class PressureControlWindow(QMainWindow):
         velocities = snapshot["velocities"]
         delays = snapshot["delays"]
         self._log_light_barrier_events(snapshot)
+        for row, result in zip(self.rows, snapshot.get("impulse_pressures", [])):
+            if result["result_counter"] == 0:
+                text = "—"
+            elif not result["valid"] or result["sample_count"] <= 0:
+                text = "Invalid impulse"
+            else:
+                text = f'{result["average_mbar"]:.0f} mbar'
+            row.impulse_average.setText(f"Last impulse avg: {text}")
         for row, velocity, delay in zip(self.rows, velocities, delays):
             if (
                 row.last_displayed_velocity is None

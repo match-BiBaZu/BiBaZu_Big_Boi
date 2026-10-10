@@ -50,11 +50,25 @@ def test_batch_jobs_are_latched_and_legacy_triggers_remain_separate() -> None:
     for barrier, array in ((2, 1), (4, 2), (6, 3), (8, 4)):
         pair = barrier // 2
         assert (
-            f"IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[{pair}] "
+            f"IF NOT GuiReorientationControlActive AND PairedForwardPass[{pair}] "
             f"AND Array{array}Active"
         ) in source
     assert "GuiReorientationLegacyTakeover AND ReorientationSafeLatch" in source
     assert "IF GuiReorientationControlActive AND ((ReorientationState = 20) OR " in source
+
+
+def test_active_batch_arrays_require_a_forward_pass_before_cursor_advance() -> None:
+    source = _main_source()
+    guard = source[source.index("// Active-array second edges") :]
+    guard = guard[: guard.index("// The highest enabled array")]
+    assert "BatchQueueArrayMask[BatchSlotIndex]" in guard
+    assert "OR NOT PairedForwardPass[BatchLoopIndex / 2];" in guard
+    assert source.index("// Active-array second edges") < source.index(
+        "BatchSensorSequence[BatchLoopIndex] := BatchNextSensorSequence[BatchLoopIndex];"
+    )
+    assert "PairedForwardPassArmed[BatchLoopIndex] := FALSE;" in source[
+        source.index("IF GuiReorientationReset") : source.index("IF GuiReorientationAbort")
+    ]
 
 
 def test_first_sensor_never_indexes_sensor_sequence_zero() -> None:
