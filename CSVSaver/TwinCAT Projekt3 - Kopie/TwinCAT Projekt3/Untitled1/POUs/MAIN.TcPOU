@@ -137,6 +137,7 @@ VAR
 	ConveyorServoAccelerationRpmPerSec : LREAL := 50.0;
 	ConveyorServoSingleMotor : UINT := 1; // Physical motor selected when MotorCount=1; stopped reset.
 	ConveyorServoVelocityOnly : BOOL := TRUE; // raw shared CSV target; no PLC speed/position correction
+	ConveyorCaptureInterfaceVersion : UINT := 1; // finite capture jogs support tandem speed range
 	// Authoritative belt calibration: 200 virtual full steps per motor revolution, 32 motor revolutions per roller revolution.
 	// Legacy GUI profiles cannot overwrite this with the old stepper's scale.
 	ConveyorServoCalibratedMmPerFullStep : REAL := 0.0245436926; // pi * 50 mm / (200 * 32); refine with GUI marker calibration
@@ -1046,14 +1047,14 @@ END_IF
 
 IF GuiCalibrationJogSteps < 1 THEN
 	GuiCalibrationJogSteps := 1;
-ELSIF GuiCalibrationJogSteps > 100000 THEN
-	GuiCalibrationJogSteps := 100000;
+ELSIF GuiCalibrationJogSteps > 250000 THEN
+	GuiCalibrationJogSteps := 250000;
 END_IF
 
 IF GuiCalibrationJogSpeedFullStepsPerSec < 1.0 THEN
 	GuiCalibrationJogSpeedFullStepsPerSec := 1.0;
-ELSIF GuiCalibrationJogSpeedFullStepsPerSec > 500.0 THEN
-	GuiCalibrationJogSpeedFullStepsPerSec := 500.0;
+ELSIF GuiCalibrationJogSpeedFullStepsPerSec > ConveyorSpeedRangeFullStepsPerSec THEN
+	GuiCalibrationJogSpeedFullStepsPerSec := ConveyorSpeedRangeFullStepsPerSec;
 END_IF
 
 // Entering calibration is fail-safe: normal belt motion remains disabled until explicitly re-enabled.

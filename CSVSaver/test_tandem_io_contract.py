@@ -163,6 +163,14 @@ class TandemIoContractTests(unittest.TestCase):
         self.assertEqual(links["PlcTask Inputs^MAIN.RawNozzlePressure"], "AI Standard Channel 1^Value")
         self.assertEqual(links["PlcTask Inputs^MAIN.RawNozzlePressure2"], "AI Standard Channel 2^Value")
 
+    def test_capture_jogs_use_tandem_distance_and_speed_limits(self):
+        implementation = self.main.findtext("./POU/Implementation/ST")
+        self.assertRegex(self.declaration, r"ConveyorCaptureInterfaceVersion\s*:\s*UINT\s*:=\s*1;")
+        self.assertIn("GuiCalibrationJogSteps > 250000", implementation)
+        self.assertIn("GuiCalibrationJogSpeedFullStepsPerSec > ConveyorSpeedRangeFullStepsPerSec",
+                      implementation)
+        self.assertNotIn("GuiCalibrationJogSpeedFullStepsPerSec > 500.0", implementation)
+
 
 if __name__ == "__main__":
     unittest.main()

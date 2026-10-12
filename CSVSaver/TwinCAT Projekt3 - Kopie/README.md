@@ -1,5 +1,13 @@
 # Two-motor conveyor with existing GUI
 
+The fixed-chute Automated Image Capture update (10 October 2026) uses
+`MAIN.ConveyorCaptureInterfaceVersion = 1`. Finite calibration/capture jogs now
+share `ConveyorSpeedRangeFullStepsPerSec` (8148.733086 steps/s, nominally
+200 mm/s) instead of the old 500 steps/s cap, and accept up to 250000 virtual
+full steps. The existing busy/done, stop, encoder and fault contracts remain.
+This source change must be compiled and loaded before using the new Capture GUI;
+starting the GUI does not deploy it. The update has no new physical motion result.
+
 The existing PLC project now uses pure velocity commands without position
 correction. Direction, ratio, speed ramp and GUI commands remain supported;
 encoder positions supply travel reporting and stopped-reset qualification only. Finite
