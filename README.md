@@ -1,156 +1,81 @@
 # BiBaZu_Big_Boi
 
-The code to run the big BiBaZu test stand.
+- Software and PLC project for the large BiBaZu pneumatic part-reorientation test stand.
+- Combines conveyor transport, camera-based pose detection, timed nozzle impulses, calibration, and experiment logging.
 
-## AutoTune and external API
+## Applications and tools
 
-Pressure Control now exposes a local API for array parameters and starts the
-separate AutoTune utility through **AutoTune öffnen**. See
-[Pressure Control API](docs/pressure-control-api.md) for installation, endpoints,
-session ownership and configuration. Conveyor start and stop remain manual.
+- **Pressure Control** (`CSVSaver/PressureControlGUI.py`): configure four nozzle arrays, pressure, pulse duration, delay, and offset.
+- **Profiles and roadmaps**: save/load pressure JSONs, select directed pose transitions, and preview CAD orientations.
+- **Conveyor Setup** (`CSVSaver/ConveyorSetupGUI.py`): control transport, calibrate travel and sensor spacing, and check part velocity.
+- **Reorientation Control** (`ReorientationControlGUI/`): detect poses with Baumer/YOLO and execute roadmap profiles for a fixed batch from one camera snapshot.
+- **Camera timing** (`CSVSaver/high_speed_calibration.py`): record USB high-speed video, review frames, and compare light-barrier-to-motion delays.
+- **Measurement tools**: plot light-barrier events, measure force-response delays, and export pressure, velocity, and consistency data.
+- **UR16e integration** (`CSVSaver/UR16e/`): robot programs and RTDE tools for chute-angle adjustment and calibration.
+- **AutoTune integration**: launch the separate AutoTune utility and expose array settings through a local [Pressure Control API](docs/pressure-control-api.md).
 
-## Conveyor setup
+## Hardware and connections
 
-1. Install or update the runtime environment from the repository root:
+- **TwinCAT controller**: AMS Net ID `10.145.4.14.1.1`, ADS port `851`; PLC task runs every `1 ms`.
+- **EtherCAT layout**: Device 1 carries general I/O; Device 2 carries Festo pneumatics; Devices 3 and 4 each carry one conveyor drive.
+- **Nozzle valves**: four arrays of six; Device 1 terminals 18/19 (`EL2008`) map outputs 1–16, terminals 20/21 (`EL2004`) map outputs 17–24.
+- **Pressure regulation**: two Festo VTEM units exchange process data through Device 2, Box 5 (`CPX-FB38 64Byte`).
+- **Light barriers**: eight SICK WTE11-2P2432 sensors on terminal 22 (`EL1018`), channels 1–8; pairs 1–2, 3–4, 5–6, and 7–8 serve arrays 1–4.
+- **Analog measurements**: terminal 250 (`EL3068`, 0–10 V), channels 1/2, maps `RawNozzlePressure` / `RawNozzlePressure2` for pressure/force-delay measurements.
+- **Camera trigger**: terminal 27 (`EL2004`), channel 1, maps `CameraRecordTrigger` for a selectable light-barrier recording pulse.
+- **Conveyor motors**: two Beckhoff AM8112 servos, each with a 32:1 gearbox and 50 mm roller; shared velocity commands.
+- **Servo connections**: Device 3 → terminal 6 (`EK1100`) → terminal 7 (`EL7201-0010`); Device 4 → terminal 9 (`EK1100`) → terminal 10 (`EL7201-0010`).
+- **Other configured terminals**: `EL1014-0010` digital inputs, the former `EL7047` stepper stage, and `EL9011` end terminals; the first two have no current PLC mappings.
+- **PC-connected peripherals**: Baumer GigE pose camera, Baumer VCXU-02C USB high-speed camera, two Neewer RGB660 Pro II BLE panels, and a UR16e robot over Ethernet/RTDE.
+- **Connection source**: [TwinCAT system project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/TwinCAT%20Projekt3/TwinCAT%20Projekt3.tsproj); PC peripherals are configured in the Python applications.
+
+## Repository layout
+
+- [`CSVSaver/`](CSVSaver/): pressure/conveyor GUIs, ADS communication, calibration, logging, and hardware helpers.
+- [`CSVSaver/TwinCAT Projekt3 - Kopie/`](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/): TwinCAT solution, I/O mappings, and PLC control logic.
+- [`ReorientationControlGUI/`](ReorientationControlGUI/): packaged Qt application, part YAMLs, pose roadmaps, hardware adapters, and tests.
+- [`pressure_profiles/`](pressure_profiles/): saved experiment settings.
+- [`WindowsLaunchers/`](WindowsLaunchers/): Desktop/Start menu shortcuts and application icons.
+- [`docs/`](docs/): integration documentation; tests also live beside the tools in `CSVSaver/`.
+
+## Setup and start
+
+- Use Windows, Python 3.12, `uv`, TwinCAT 3 XAE, and an ADS route to the controller.
+- Install Baumer Camera Explorer/GenTL producers for camera features and the bundled Festo VTEM library for PLC builds.
+- Install Pressure Control and Conveyor Setup dependencies from the repository root:
 
 ```powershell
 uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
-2. Build and download the TwinCAT project after changes to `MAIN.TcPOU`.
-3. Open a terminal in `CSVSaver`.
-4. Start the conveyor and light-barrier setup tool:
+- Start either tool from `CSVSaver`:
 
 ```powershell
-python ConveyorSetupGUI.py
+cd CSVSaver
+..\.venv\Scripts\python.exe .\PressureControlGUI.py
+# Or: ..\.venv\Scripts\python.exe .\ConveyorSetupGUI.py
 ```
 
-The setup tool uses the stored conveyor calibration for all `mm` and `mm/s`
-commands. Light-barrier distance measurements latch the conveyor's compatibility
-position signal
-inside the PLC cycle and can be applied to every adjacent pair from 1-2 through
-7-8. All seven distances are stored in the PLC and are shown at the bottom of
-the conveyor GUI with 2-3, 4-5, and 6-7 on the second row. The four existing
-velocity channels continue to use pairs 1-2,
-3-4, 5-6, and 7-8.
+- Reorientation Control also needs the sibling `../bibazu_geometry_to_pose` repository; install and start from this repository's root:
 
-Each nozzle array requires a fresh ordered passage through its two light
-barriers: LB1 then LB2 for array 1, LB3 then LB4 for array 2, LB5 then LB6 for
-array 3, and LB7 then LB8 for array 4. The first barrier arms one passage; the
-second consumes it and permits the configured valve pulse. Detecting only the
-second barrier again, including when a part flips backwards, cannot fire another
-pulse even after the optical repeat lock expires. Simultaneous edges without an
-earlier first-barrier detection do not grant permission. Disabling an array in
-Pressure Control, entering calibration/velocity-check mode, or resetting/stopping
-production clears unused passage permissions. Build and download the updated PLC
-source to apply this behavior on the test stand.
+```powershell
+uv sync --project ReorientationControlGUI --extra dev
+uv run --project ReorientationControlGUI bibazu-reorientation
+```
 
-The pressure field for each array has a read-only **Last impulse avg** reading.
-It reports the measured VTEM outlet pressure feeding that array, averaged over
-the full commanded nozzle pulse in the PLC. Every 1 ms scan with at least one
-open nozzle contributes once; the preceding delay and pressure recovery are
-excluded. This sampling uses the latest available VTEM feedback and does not
-imply a 1 kHz sensor update rate. The last completed result remains visible
-between impulses. Before the first result the display shows `—`; interrupted
-pulses or invalid terminal feedback show `Invalid impulse`, and a disconnected
-GUI shows `Offline`. These readings are not saved in pressure profiles and do
-not change the external-sensor CSV logging.
+- Install optional shortcuts with [`WindowsLaunchers/Verknuepfungen-installieren.cmd`](WindowsLaunchers/Verknuepfungen-installieren.cmd).
+- Build/download the matching PLC source before using changed interfaces; opening a GUI does not deploy TwinCAT changes.
+- Check PLC addressing: Pressure/Conveyor tools default to `192.168.10.23`; Reorientation Control defaults to `192.168.0.23`.
+- Run one PLC-control GUI at a time; close other camera/light clients before connecting those devices.
+- AutoTune runs in a separate repository; conveyor start/stop remains manual during API sessions.
 
-Arrays 1–4 use `ActPresValueV02`, `ActPresValueV04`, `ActPresValueV12`, and
-`ActPresValueV14`, respectively. Each array publishes
-`MAIN.ArrayImpulseAvgPressureMbarN : REAL`, `ArrayImpulseSampleCountN : UINT`,
-`ArrayImpulseResultCounterN : UDINT`, and `ArrayImpulseValidN : BOOL` through
-ADS, where `N` is 1–4. Build and download the updated PLC before using these
-readings in the GUI.
+## Further documentation
 
-The Pressure Control GUI controls the two AM8112 motors as one velocity-only
-conveyor. Both motors start and stop together with no position correction. The
-nominal belt-speed conversion uses the two direct-drive 50 mm rollers. In
-`Calibrate Conveyor`, `Target acceleration` sets the shared ramp in rpm/s and
-shows the corresponding belt acceleration in mm/s²; applying it performs a
-stopped tandem reset before either drive can run.
-
-The Pressure Control light-barrier dialog shows those four velocity-pair
-spacings and separate user-entered distances from LB2/4/6/8 to arrays 1/2/3/4.
-Their machine defaults are `50/45/45/48 mm` for arrays 1 through 4.
-Offset timing uses the matching velocity and subtracts the effective force
-response delay, so an array offset of `0 mm` refers to the workpiece leading
-edge being aligned with the nozzle. `Show Offset Equation` displays the exact
-formula and current values. Force Delay Settings provides one response-delay
-value per array, with `8.7 ms` as the default. These distances and force-response
-values are global machine settings and are not overwritten by pressure profiles.
-
-`USB High-Speed Camera` in the bottom bar of Nozzle Array Pressure Control opens
-the USB-camera live view in a separate window. This view is fixed to light
-barrier 4: `Record` arms the capture, the LB4 event starts image storage, and
-the capture stops after the selected recording duration (500 ms by default).
-The camera exposure is set to 1000 µs when the window connects and remains
-editable through the Exposure field and `Apply Exposure`. The Output field and
-`Browse` select where recording folders are stored. `Recording folder name`
-optionally sets the name of the new session subfolder; an empty field keeps the
-automatic name, and an existing name receives `_01`, `_02`, and so on instead
-of being overwritten. The completed recording is loaded directly into Frame
-Review, where the slider and Previous/Next buttons step through every saved
-frame. While the review is active, incoming live preview images no longer
-replace the selected recorded frame; arming a new recording switches the
-display back to live video. Pressure, pulse-duration, fastest-response and
-delay-analysis controls are intentionally omitted from this review-only window.
-
-The fourth tab, `Pressure Delay`, uses the Baumer USB GenTL producer at
-`C:\Program Files\Baumer Camera Explorer\bgapi2_usb.cti`. It records every frame
-from camera VCXU-02C (serial `700005072151`) as JPEG plus timestamp metadata,
-automatically stops after the selected light barrier and configurable post-roll,
-and provides frame-by-frame LB-to-movement evaluation. After each completed
-recording, the pre-trigger frames are used to learn the image noise and the
-first persistent component motion is found with optical flow. That frame is
-automatically marked and saved as the session result. Loading a recording opens
-its saved first-movement frame directly. `Analyze Movement` reruns the automatic
-analysis; the slider and `Mark First Movement` remain available to correct the
-selection manually. Normal recording remains passive. For minimum-latency
-tests, `Enable Fastest Response` saves the current
-PLC values for the selected light barrier and its paired nozzle array, applies
-the chosen test pressure, sets manual delay, offset and both response-delay
-compensations to zero, and disables debounce for that barrier. Use
-`Restore Previous Setup` after the test; shutdown also requests restoration.
-`Apply Pressure` changes only the pressure of the paired array. `Pulse Duration`
-and `Apply Pulse Duration` set its valve opening time independently from 1 to
-500 ms; fastest-response mode does not alter that duration.
-The stop-trigger light barrier can be changed between recordings. When fastest-
-response mode is still active, selecting another barrier first restores the
-saved PLC setup; the selector is disabled only while recording, analyzing, or
-writing/restoring PLC settings.
-
-For the preferred hardware timing, connect the PNP receiver output to the
-camera process connector (`Line0`: M8 pin 3/green, `GND IN1`: pin 4/yellow).
-The Conveyor Setup light-barrier panel has a global **VCXU-02C recording
-trigger** route. Enable it and select LB1..LB8 to emit a one-cycle 24 V pulse on
-`MAIN.CameraRecordTrigger` whenever that debounced light barrier activates.
-Map this `%Q*` symbol to Terminal 27 (EL2004), channel 1. Camera recording views
-reuse this route; when the route is enabled and their selected barrier differs,
-they update it before arming. With the route disabled they use ADS event timing.
-`Record` starts free-running capture before the part arrives. The first
-`Line0RisingEdge` event marks time zero on the camera clock, and capture stops on
-the first frame at or after that timestamp plus the configured post-roll. The
-selected light barrier in the tab must match the sensor physically connected to
-Line0. The camera status shows `Line0 ready`; `ADS fallback` means that the older
-PLC/host clock estimate will be used instead.
-
-The paired array is selected automatically: LB 1/2 -> array 1, LB 3/4 -> array
-2, LB 5/6 -> array 3, and LB 7/8 -> array 4. The applied pressure and timing mode
-are stored in `session.json` and included in `calibration_results.csv`, so runs
-at different pressures can be compared later. New recording folders include
-the light barrier, pressure, and impulse duration, for example
-`LB4_3000mbar_10ms_104310_03092026`.
-
-`Compare Recordings…` in Frame Review accepts multiple session folders (or a
-parent folder containing them) from one light barrier. Each session without a
-saved first-movement result is analyzed and marked independently before the
-plot is opened; existing results, including manual corrections, are preserved.
-The result dialog has horizontally scrollable galleries for pressure on the x
-axis (one plot per impulse duration) and impulse duration on the x axis (one
-plot per pressure). Every plot shows its fixed condition, an equal-setpoint-
-weighted suggested delay, group means, ±1 standard-deviation error bars for
-more than three trials at an x value, and a least-squares linear model. Each
-plot can be saved independently as SVG or PNG. Individual analysis failures or
-sessions without pressure or impulse-duration metadata are skipped.
+- [Reorientation Control](ReorientationControlGUI/README.md): configuration, production workflow, run exports, and tests.
+- [Conveyor commissioning](CSVSaver/TANDEM_CONVEYOR.md): drive configuration, calibration, and recorded hardware validation limits.
+- [TwinCAT project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/README.md): build workflow and conveyor interface.
+- [Consistency logging](CSVSaver/CONSISTENCY_LOGGING.md): sensor plots, event buffers, and raw data export.
+- [UR angle program](CSVSaver/UR16e/README_Continuous_Angle.md): robot setup and angle commands.
+- [Pressure Control API](docs/pressure-control-api.md): local endpoints, session ownership, and AutoTune integration.
+- [Windows launchers](WindowsLaunchers/README.md): shortcut installation and removal.
