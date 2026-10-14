@@ -56,6 +56,7 @@ from roadmap_transition_dialog import (
     RoadmapTransitionDialog,
     SelectedRoadmapTransition,
     action_display_label,
+    default_roadmap_directory,
     load_roadmap_document,
     pose_pixmap,
     roadmap_transition_metadata,
@@ -4348,10 +4349,7 @@ class PressureControlWindow(QMainWindow):
             del blockers
 
     def load_pose_roadmap(self) -> None:
-        workspace_roadmaps = (
-            Path(__file__).resolve().parents[2]
-            / "BiBaZu_StableComponentenRoadmaps"
-        )
+        workspace_roadmaps = default_roadmap_directory()
         start_directory = workspace_roadmaps if workspace_roadmaps.exists() else Path.cwd()
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,

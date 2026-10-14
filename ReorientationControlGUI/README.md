@@ -16,6 +16,11 @@ motor setup and belt calibration must be verified before motion is enabled.
 
 ## Installation and start
 
+- Geometry code is bundled in `vendor/bibazu_chute_pose`; no sibling geometry repository is required.
+- CAD/STEP pairs are bundled in `src/bibazu_reorientation/assets/geometry`.
+- Roadmaps come directly from the sibling `BiBaZu_StableComponentenRoadmaps` checkout; `BIBAZU_ROADMAPS_DIR` can select another local path.
+- See [standalone geometry](docs/standalone-geometry.md) for source versions and older configuration limits.
+
 Python 3.12 and the Baumer Camera Explorer/GenTL producer are required. Close
 Camera Explorer and every other GenTL client before connecting the camera.
 This explicitly includes **Automated Image Capture**: close that GUI completely

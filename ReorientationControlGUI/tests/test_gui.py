@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from local_roadmap_fixture import fixture_directory
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
@@ -64,10 +65,7 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     assert not window.light1._auto_reconnect
     assert not window.light2._auto_reconnect
     roadmap_path = (
-        Path(__file__).resolve().parents[3]
-        / "bibazu_geometry_to_pose"
-        / "Poses_Found_Robust"
-        / "Df1a_roadmap_provisional"
+        fixture_directory()
         / "Df1a_roadmap.yaml"
     )
     roadmap = load_pose_roadmap(roadmap_path)
@@ -79,8 +77,8 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
         part_name="Df1a",
         mesh_path=roadmap.mesh_path,
         model_path=model,
-        pose_class_mapping={9: 0, 24: 1, 35: 2, 60: 3},
-        target_pose=35,
+        pose_class_mapping={1: 0, 0: 1, 2: 2, 3: 3},
+        target_pose=2,
         transition_profiles={edge.edge_id: None for edge in roadmap.profile_transitions},
     )
     called = []
@@ -114,16 +112,13 @@ def test_roadmap_profile_prefills_machine_fields_and_enables_executor(
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
     roadmap_path = (
-        Path(__file__).resolve().parents[3]
-        / "bibazu_geometry_to_pose"
-        / "Poses_Found_Robust"
-        / "Df1a_roadmap_provisional"
+        fixture_directory()
         / "Df1a_roadmap.yaml"
     )
     roadmap = load_pose_roadmap(roadmap_path)
     model = tmp_path / "best.pt"
     model.write_bytes(b"model")
-    profile = tmp_path / "9-to-35.json"
+    profile = tmp_path / "1-to-35.json"
     profile.write_text(
         json.dumps(
             {
@@ -151,7 +146,7 @@ def test_roadmap_profile_prefills_machine_fields_and_enables_executor(
         encoding="utf-8",
     )
     selected_edge = next(
-        edge for edge in roadmap.profile_transitions if (edge.from_pose, edge.to_pose) == (9, 35)
+        edge for edge in roadmap.profile_transitions if (edge.from_pose, edge.to_pose) == (1, 2)
     )
     definition = save_roadmap_part_definition(
         tmp_path / "part.yaml",
@@ -159,8 +154,8 @@ def test_roadmap_profile_prefills_machine_fields_and_enables_executor(
         part_name="Df1a",
         mesh_path=roadmap.mesh_path,
         model_path=model,
-        pose_class_mapping={9: 0, 24: 1, 35: 2, 60: 3},
-        target_pose=35,
+        pose_class_mapping={1: 0, 0: 1, 2: 2, 3: 3},
+        target_pose=2,
         transition_profiles={
             edge.edge_id: profile if edge.edge_id == selected_edge.edge_id else None
             for edge in roadmap.profile_transitions
@@ -194,24 +189,21 @@ def test_roadmap_profile_conflicts_require_explicit_machine_values(
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
     roadmap_path = (
-        Path(__file__).resolve().parents[3]
-        / "bibazu_geometry_to_pose"
-        / "Poses_Found_Robust"
-        / "Df1a_roadmap_provisional"
+        fixture_directory()
         / "Df1a_roadmap.yaml"
     )
     roadmap = load_pose_roadmap(roadmap_path)
     model = tmp_path / "best.pt"
     model.write_bytes(b"model")
     first = write_transition_profile(
-        tmp_path / "60-to-9.json", array_index=1, speed=100, angle=18.0
+        tmp_path / "3-to-9.json", array_index=1, speed=100, angle=18.0
     )
     second = write_transition_profile(
-        tmp_path / "9-to-35.json", array_index=3, speed=150, angle=19.0
+        tmp_path / "1-to-35.json", array_index=3, speed=150, angle=19.0
     )
     selected = {
-        "a15:60->9:free_z": first,
-        "a0:9->35:wall_main_neg_x": second,
+        "a51:3->1:free_z": first,
+        "a17:1->2:wall_main_neg_x": second,
     }
     definition = save_roadmap_part_definition(
         tmp_path / "part.yaml",
@@ -219,8 +211,8 @@ def test_roadmap_profile_conflicts_require_explicit_machine_values(
         part_name="Df1a",
         mesh_path=roadmap.mesh_path,
         model_path=model,
-        pose_class_mapping={9: 0, 24: 1, 35: 2, 60: 3},
-        target_pose=35,
+        pose_class_mapping={1: 0, 0: 1, 2: 2, 3: 3},
+        target_pose=2,
         transition_profiles={
             edge.edge_id: selected.get(edge.edge_id) for edge in roadmap.profile_transitions
         },

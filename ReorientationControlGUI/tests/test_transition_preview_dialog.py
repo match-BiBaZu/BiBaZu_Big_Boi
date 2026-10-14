@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
+
+from local_roadmap_fixture import fixture_directory
 
 from bibazu_reorientation.roadmap import load_pose_roadmap
 from bibazu_reorientation.ui.transition_preview_dialog import TransitionPreviewDialog
 
 ROADMAP = (
-    Path(__file__).resolve().parents[3]
-    / "bibazu_geometry_to_pose"
-    / "Poses_Found_Robust"
-    / "Df1a_roadmap_provisional"
+    fixture_directory()
     / "Df1a_roadmap.yaml"
 )
 

@@ -15,6 +15,7 @@ from bibazu_reorientation.models import (
     TransitionSpec,
 )
 from bibazu_reorientation.profiles import load_pressure_profile
+from bibazu_reorientation.resources import local_geometry_path
 from bibazu_reorientation.roadmap import (
     PoseRoadmap,
     load_pose_roadmap,
@@ -39,7 +40,7 @@ class RoadmapHashMismatchError(ValueError):
 def _resolve(base: Path, value: Any, field: str, suffixes: set[str]) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must not be empty")
-    path = Path(value).expanduser()
+    path = local_geometry_path(value).expanduser()
     if not path.is_absolute():
         path = base / path
     path = path.resolve()

@@ -4,49 +4,47 @@ import json
 from pathlib import Path
 
 import pytest
+from local_roadmap_fixture import fixture_directory
 
 from bibazu_reorientation.roadmap import load_pose_roadmap
 
 ROADMAP_DIR = (
-    Path(__file__).resolve().parents[3]
-    / "bibazu_geometry_to_pose"
-    / "Poses_Found_Robust"
-    / "Df1a_roadmap_provisional"
+    fixture_directory()
 )
 
 
 def test_df1a_yaml_and_json_normalize_identically() -> None:
     yaml_roadmap = load_pose_roadmap(ROADMAP_DIR / "Df1a_roadmap.yaml")
     json_roadmap = load_pose_roadmap(ROADMAP_DIR / "Df1a_roadmap.json")
-    assert len(yaml_roadmap.poses) == len(json_roadmap.poses) == 11
-    assert len(yaml_roadmap.transitions) == len(json_roadmap.transitions) == 23
-    assert [pose.pose_id for pose in yaml_roadmap.robust_poses] == [9, 24, 35, 60]
+    assert len(yaml_roadmap.poses) == len(json_roadmap.poses) == 15
+    assert len(yaml_roadmap.transitions) == len(json_roadmap.transitions) == 67
+    assert [pose.pose_id for pose in yaml_roadmap.robust_poses] == [0, 1, 2, 3]
     assert [edge.edge_id for edge in yaml_roadmap.profile_transitions] == [
-        "a0:9->35:wall_main_neg_x",
-        "a1:9->60:free_z",
-        "a2:24->35:free_y",
-        "a3:24->60:floor_main_pos_x",
-        "a4:35->24:free_y",
-        "a15:60->9:free_z",
+        "a17:1->2:wall_main_neg_x",
+        "a18:1->3:free_z",
+        "a29:0->2:free_y",
+        "a30:0->3:floor_main_pos_x",
+        "a40:2->0:free_y",
+        "a51:3->1:free_z",
     ]
     multi = {edge.edge_id: edge for edge in yaml_roadmap.multi_reorientation_transitions}
     assert set(multi) == {
-        "multi2:9->35->24",
-        "multi2:24->60->9",
-        "multi2:35->24->60",
-        "multi2:60->9->35",
-        "multi3:9->35->24->60",
-        "multi3:24->60->9->35",
-        "multi3:35->24->60->9",
-        "multi3:60->9->35->24",
+        "multi2:1->2->0",
+        "multi2:0->3->1",
+        "multi2:2->0->3",
+        "multi2:3->1->2",
+        "multi3:1->2->0->3",
+        "multi3:0->3->1->2",
+        "multi3:2->0->3->1",
+        "multi3:3->1->2->0",
     }
-    requested = multi["multi2:60->9->35"]
+    requested = multi["multi2:3->1->2"]
     assert requested.transition_kind == "multi_reorientation"
     assert requested.flip_count == 2
-    assert requested.via_pose_ids == (9,)
+    assert requested.via_pose_ids == (1,)
     assert requested.component_edge_ids == (
-        "a15:60->9:free_z",
-        "a0:9->35:wall_main_neg_x",
+        "a51:3->1:free_z",
+        "a17:1->2:wall_main_neg_x",
     )
     assert all(pose.thumbnail_png for pose in yaml_roadmap.poses)
     assert {
@@ -61,6 +59,7 @@ def test_df1a_yaml_and_json_normalize_identically() -> None:
 def _mutated_json(tmp_path: Path, mutate) -> Path:
     source = ROADMAP_DIR / "Df1a_roadmap.json"
     payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["source"] = str(load_pose_roadmap(source).mesh_path)
     mutate(payload)
     destination = tmp_path / "roadmap.json"
     destination.write_text(json.dumps(payload), encoding="utf-8")
@@ -87,7 +86,7 @@ def test_rejects_invalid_roadmaps(tmp_path: Path, mutate, match: str) -> None:
 def test_passive_and_parallel_edges_remain_distinct() -> None:
     roadmap = load_pose_roadmap(ROADMAP_DIR / "Df1a_roadmap.yaml")
     passive = [edge for edge in roadmap.transitions if edge.transition_kind == "passive_tip"]
-    assert len(passive) == 7
+    assert len(passive) == 14
     grouped: dict[tuple[int, int], list[str]] = {}
     for edge in roadmap.transitions:
         grouped.setdefault((edge.from_pose, edge.to_pose), []).append(edge.edge_id)

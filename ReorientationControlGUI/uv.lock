@@ -9,7 +9,7 @@ resolution-markers = [
 [[package]]
 name = "bibazu-chute-pose"
 version = "0.1.0"
-source = { editable = "../../bibazu_geometry_to_pose" }
+source = { directory = "vendor/bibazu_chute_pose" }
 dependencies = [
     { name = "matplotlib" },
     { name = "networkx" },
@@ -24,11 +24,12 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.8,<4" },
     { name = "networkx", specifier = ">=3.2,<4" },
     { name = "numpy", specifier = ">=1.26,<3" },
+    { name = "pyqt6", marker = "extra == 'gui'", specifier = ">=6.7,<7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
     { name = "scipy", specifier = ">=1.11,<2" },
     { name = "trimesh", specifier = ">=4,<6" },
 ]
-provides-extras = ["dev", "step"]
+provides-extras = ["gui", "dev", "step"]
 
 [[package]]
 name = "bibazu-reorientation"
@@ -61,7 +62,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bibazu-chute-pose", editable = "../../bibazu_geometry_to_pose" },
+    { name = "bibazu-chute-pose", directory = "vendor/bibazu_chute_pose" },
     { name = "bleak", specifier = ">=1.0,<2" },
     { name = "genicam", specifier = ">=1.5.1,<2" },
     { name = "harvesters", specifier = ">=1.4.3,<2" },

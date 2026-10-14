@@ -12,6 +12,8 @@ from typing import Any
 
 import yaml
 
+from bibazu_reorientation.resources import local_geometry_path
+
 ALLOWED_STABILITIES = {"robust", "metastable"}
 ALLOWED_TRANSITION_KINDS = {"actuated", "passive_tip"}
 
@@ -216,7 +218,7 @@ def _decode_thumbnail(value: Any) -> bytes | None:
 def _mesh_path(source: Path, value: Any) -> Path | None:
     if value in (None, ""):
         return None
-    path = Path(str(value)).expanduser()
+    path = local_geometry_path(str(value)).expanduser()
     if not path.is_absolute():
         path = source.parent / path
     return path.resolve()

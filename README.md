@@ -57,7 +57,8 @@ cd CSVSaver
 # Or: ..\.venv\Scripts\python.exe .\ConveyorSetupGUI.py
 ```
 
-- Reorientation Control also needs the sibling `../bibazu_geometry_to_pose` repository; install and start from this repository's root:
+- Reorientation Control includes its own geometry dependency and CAD; keep the local `BiBaZu_StableComponentenRoadmaps` repo beside this repo for roadmaps.
+- Install and start Reorientation Control from this repository's root:
 
 ```powershell
 uv sync --project ReorientationControlGUI --extra dev
@@ -73,6 +74,7 @@ uv run --project ReorientationControlGUI bibazu-reorientation
 ## Further documentation
 
 - [Reorientation Control](ReorientationControlGUI/README.md): configuration, production workflow, run exports, and tests.
+- [Standalone geometry](ReorientationControlGUI/docs/standalone-geometry.md): bundled dependencies, portable data, and older configuration limits.
 - [Conveyor commissioning](CSVSaver/TANDEM_CONVEYOR.md): drive configuration, calibration, and recorded hardware validation limits.
 - [TwinCAT project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/README.md): build workflow and conveyor interface.
 - [Consistency logging](CSVSaver/CONSISTENCY_LOGGING.md): sensor plots, event buffers, and raw data export.

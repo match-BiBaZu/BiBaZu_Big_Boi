@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from bibazu_reorientation.config import save_part_definition
 from bibazu_reorientation.models import PartDefinition
+from bibazu_reorientation.resources import cad_directory, roadmap_directory
 from bibazu_reorientation.roadmap import load_stable_pose_roadmap
 from bibazu_reorientation.ui.roadmap_pose_dialog import RoadmapPoseDialog
 
@@ -101,14 +102,12 @@ class SetupDialog(QDialog):
 
     @staticmethod
     def _workpiece_directory() -> str:
-        workspace = Path(__file__).resolve().parents[5]
-        candidate = workspace / "bibazu_geometry_to_pose" / "Werkstücke_STL_grob"
+        candidate = cad_directory()
         return str(candidate) if candidate.is_dir() else ""
 
     @staticmethod
     def _roadmap_directory() -> str:
-        workspace = Path(__file__).resolve().parents[5]
-        candidate = workspace / "bibazu_geometry_to_pose" / "Poses_Found_Robust"
+        candidate = roadmap_directory()
         return str(candidate) if candidate.is_dir() else ""
 
     def _path_row(self, edit: QLineEdit, file_filter: str, start: str = ""):

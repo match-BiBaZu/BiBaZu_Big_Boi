@@ -1,8 +1,8 @@
 schema_version: 2
-roadmap_path: ../../bibazu_geometry_to_pose/Poses_Found_Robust/Kk1a_roadmap_provisional/Kk1a_roadmap.json
+roadmap_path: ../../BiBaZu_StableComponentenRoadmaps/Kk1a/Kk1a_roadmap.json
 roadmap_sha256: 1f97016d6860cfa3ea6817fc226df3d53784bae4d552a28bcbb27dae59e37b6f
 part_name: Kk1a
-mesh_path: ../../bibazu_geometry_to_pose/Werkstücke_STL_grob/Kk1a.STL
+mesh_path: src/bibazu_reorientation/assets/geometry/cad/Kk1a.STL
 model_path: ../../../../Pictures/Kk1i/Kk1a_YOLO_20260810/Kk1a_best.pt
 poses:
 - id: 5

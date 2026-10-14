@@ -56,6 +56,6 @@ url = "https://download.pytorch.org/whl/cu118"
 explicit = true
 
 [tool.uv.sources]
-bibazu-chute-pose = { path = "../../bibazu_geometry_to_pose", editable = true }
+bibazu-chute-pose = { path = "vendor/bibazu_chute_pose" }
 torch = { index = "pytorch-cu118" }
 torchvision = { index = "pytorch-cu118" }

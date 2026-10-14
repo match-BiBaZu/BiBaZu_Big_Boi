@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,6 +110,13 @@ class SelectedRoadmapTransition:
             f"{self.transition.actuation}"
         )
         return re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+
+
+def default_roadmap_directory() -> Path:
+    override = os.environ.get("BIBAZU_ROADMAPS_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[2] / "BiBaZu_StableComponentenRoadmaps"
 
 
 def roadmap_transition_metadata(selection: SelectedRoadmapTransition) -> dict[str, Any]:
@@ -258,11 +266,9 @@ def selection_from_pressure_profile(
         return None
     part_name, source_id, target_id, actuation = match.groups()
     actuation = actuation.lower()
-    workspace = Path(__file__).resolve().parents[2]
     roots = (
         profile_path.parent,
-        workspace / "bibazu_geometry_to_pose" / "Poses_Found_Robust",
-        workspace / "BiBaZu_Big_Boi" / "ReorientationControlGUI" / "all_1_roadmaps",
+        default_roadmap_directory(),
     )
     roadmap_path = profile_path.parent / f"{part_name}_roadmap.json"
     for root in roots:

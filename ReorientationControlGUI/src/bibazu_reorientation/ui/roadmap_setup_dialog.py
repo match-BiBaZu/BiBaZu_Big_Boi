@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from bibazu_reorientation.config import save_roadmap_part_definition
 from bibazu_reorientation.models import PartDefinition
 from bibazu_reorientation.profiles import load_pressure_profile
+from bibazu_reorientation.resources import roadmap_directory
 from bibazu_reorientation.roadmap import PoseRoadmap, RoadmapTransition, load_pose_roadmap
 from bibazu_reorientation.ui.roadmap_pose_dialog import RoadmapPoseDialog
 from bibazu_reorientation.ui.transition_preview_dialog import TransitionPreviewDialog
@@ -161,8 +162,7 @@ class RoadmapSetupDialog(QDialog):
 
     @staticmethod
     def _roadmap_directory() -> str:
-        workspace = Path(__file__).resolve().parents[5]
-        candidate = workspace / "bibazu_geometry_to_pose" / "Poses_Found_Robust"
+        candidate = roadmap_directory()
         return str(candidate) if candidate.is_dir() else ""
 
     def _choose_roadmap(self) -> None:
