@@ -577,6 +577,7 @@ class AdsClient:
 
 
 class AdsWorker(QObject):
+    api_finished = pyqtSignal(object)
     connection_changed = pyqtSignal(bool, str)
     initial_snapshot_ready = pyqtSignal(object)
     live_snapshot_ready = pyqtSignal(object)
@@ -1466,6 +1467,70 @@ class AdsWorker(QObject):
             self.write_finished.emit(context, dict(values))
         except Exception as exc:
             self.handle_failure(context, exc)
+
+    @pyqtSlot(object)
+    def api_command(self, command) -> None:
+        """Execute once on the ADS thread; never start or stop the conveyor."""
+        result = {"operation_id": command["id"], "status": "failed"}
+        try:
+            if command.get("lease"):
+                command["lease"].require(command["token"])
+            if not self.client.is_connected:
+                raise RuntimeError("ADS offline")
+            flags = self.read_values(
+                [
+                    "MAIN.GuiConveyorEnabled", "MAIN.GuiConveyorCalibrationMode",
+                    "MAIN.GuiVelocityCheckMode", "MAIN.GuiForceDelayMeasurementEnabled",
+                    "MAIN.ConveyorServo1TargetVelocity", "MAIN.ConveyorServo2TargetVelocity",
+                ]
+            )
+            if command["kind"] != "read" and (
+                any(flags.values()) or self.calibration_polling
+                or self.setup_polling or self.force_delay_polling
+            ):
+                raise RuntimeError(
+                    "Band ausschalten und Kalibrierung beenden, bevor Parameter geändert werden."
+                )
+            # Read settings on the worker, even for a save request, rather than
+            # trusting the UI or a previously cached initial snapshot.
+            snapshot = self.read_initial_snapshot()
+            if command["kind"] == "parameters":
+                from pressure_api import Parameters
+
+                parameters = Parameters.model_validate(command["parameters"]).model_dump()
+                values = {"MAIN.GuiConveyorSpeedMmPerSec": parameters["conveyor_speed_mm_per_sec"]}
+                for array in parameters["arrays"]:
+                    symbols = SYMBOLS[array["index"]]
+                    for field, symbol in (
+                        ("enabled", symbols.array_enabled), ("pressure_mbar", symbols.pressure),
+                        ("delay_ms", symbols.delay), ("pulse_duration_ms", symbols.pulse_duration),
+                        ("offset_mm", symbols.offset),
+                        ("conveyor_velocity_delay", symbols.conveyor_velocity_delay),
+                    ):
+                        values[symbol] = array[field]
+                    values.update(zip(symbols.nozzle_enabled, array["nozzles_enabled"], strict=True))
+                command["lease"].require(command["token"])
+                self.write_values_impl(values)
+                actual = self.read_values(list(values))
+                mismatch = {
+                    name: {"expected": expected, "actual": actual.get(name)}
+                    for name, expected in values.items()
+                    if name not in actual or not math.isclose(
+                        float(actual[name]), float(expected), rel_tol=1e-6, abs_tol=1e-4
+                    )
+                }
+                if mismatch:
+                    raise RuntimeError(f"SPS-Rücklesen stimmt nicht überein: {mismatch}")
+                snapshot = self.read_initial_snapshot()
+            result.update(status="succeeded", snapshot=snapshot)
+        except Exception as exc:
+            result["error"] = str(exc)
+            # Surface the actual settings even after a partial write when possible.
+            try:
+                result["snapshot"] = self.read_initial_snapshot()
+            except Exception:
+                pass
+        self.api_finished.emit(result)
 
     @pyqtSlot(bool)
     def set_calibration_mode(self, enabled: bool) -> None:
@@ -4709,7 +4774,8 @@ class PressureControlWindow(QMainWindow):
             transition.component_edge_ids,
         )
 
-    def save_profile(self) -> None:
+    def save_profile(self) -> bool | None:
+        self.profile_save_error = None
         self.profile_directory.mkdir(parents=True, exist_ok=True)
         transition_key = self._profile_transition_key(self.selected_roadmap_transition)
         if (self.profile_path is not None
@@ -4786,8 +4852,11 @@ class PressureControlWindow(QMainWindow):
             self.profile_title = profile["title"]
             self._saved_profile_transition_key = transition_key
             self.statusBar().showMessage(f"Profile saved: {path}")
+            return True
         except Exception as exc:
+            self.profile_save_error = str(exc)
             QMessageBox.critical(self, "Save Failed", str(exc))
+            return False
 
     def load_profile(self) -> None:
         self.profile_directory.mkdir(parents=True, exist_ok=True)
@@ -4894,6 +4963,8 @@ class PressureControlWindow(QMainWindow):
             QMessageBox.critical(self, "Load Failed", str(exc))
 
     def closeEvent(self, event) -> None:
+        if hasattr(self, "control_api"):
+            self.control_api.stop()
         self.ur_angle.shutdown()
         self.ads.shutdown()
         super().closeEvent(event)
@@ -4912,6 +4983,9 @@ def main() -> int:
         )
         return 2
     window = PressureControlWindow()
+    from pressure_api import install
+
+    install(window)
     window.show()
     try:
         return app.exec()

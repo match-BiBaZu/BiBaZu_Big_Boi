@@ -2,6 +2,13 @@
 
 The code to run the big BiBaZu test stand.
 
+## AutoTune and external API
+
+Pressure Control now exposes a local API for array parameters and starts the
+separate AutoTune utility through **AutoTune öffnen**. See
+[Pressure Control API](docs/pressure-control-api.md) for installation, endpoints,
+session ownership and configuration. Conveyor start and stop remain manual.
+
 ## Conveyor setup
 
 1. Install or update the runtime environment from the repository root:
