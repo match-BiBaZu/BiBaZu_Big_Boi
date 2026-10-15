@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
@@ -21,6 +22,7 @@ from bibazu_reorientation.mesh_preview import (
     slerp_quaternion,
 )
 from bibazu_reorientation.roadmap import PoseRoadmap, RoadmapPose, RoadmapTransition
+from bibazu_reorientation.orientation_animation import command_frame, preview_frame
 
 
 class TransitionPreviewDialog(QDialog):
@@ -39,6 +41,21 @@ class TransitionPreviewDialog(QDialog):
         self.mesh_path = mesh_path if mesh_path is not None else roadmap.mesh_path
         self.start_pose = roadmap.pose(transition.from_pose)
         self.end_pose = roadmap.pose(transition.to_pose)
+        if transition.member_context and roadmap.member_states:
+            states = {s["member_id"]: s for s in roadmap.member_states}
+            context = transition.member_context
+            self.start_pose = replace(
+                self.start_pose,
+                quaternion_xyzw=tuple(states[context["source_member_ids"][0]]["quaternion_xyzw"]),
+                thumbnail_png=None,
+            )
+            self.end_pose = replace(
+                self.end_pose,
+                quaternion_xyzw=tuple(
+                    states[context["possible_target_member_ids"][0]]["quaternion_xyzw"]
+                ),
+                thumbnail_png=None,
+            )
         self._triangles = None
         self._animation_error = ""
         self._hold_ticks = 0
@@ -92,6 +109,36 @@ class TransitionPreviewDialog(QDialog):
             category.setWordWrap(True)
             category.setStyleSheet("background:#fff3cd;color:#664d03;padding:7px;")
             layout.addWidget(category)
+        if self.transition.commands:
+            details = " → ".join(
+                f"{c['axis'].upper()} {c['signed_angle_deg']:+.1f}°"
+                for c in self.transition.commands
+            )
+            if self.transition.evidence_status:
+                details = (
+                    "Geometry only; contact and settling unverified. Calibration required.\n"
+                    + details
+                )
+            commands = QLabel(details)
+            commands.setWordWrap(True)
+            layout.addWidget(commands)
+        if self.transition.member_context:
+            context = self.transition.member_context
+            details = (
+                "Source members: "
+                + ", ".join(context["source_member_ids"])
+                + "\nPossible arrival members: "
+                + ", ".join(context["possible_target_member_ids"])
+            )
+            if context.get("capture_interval_deg") is not None:
+                details += f"\nSampled capture interval: {context['capture_interval_deg']}°"
+            details += (
+                "\nSettling segments are sampled geometry candidates; "
+                "source coverage must be declared in the assigned profile."
+            )
+            members = QLabel(details)
+            members.setWordWrap(True)
+            layout.addWidget(members)
 
         endpoints = QHBoxLayout()
         self.start_image = self._image_label()
@@ -213,10 +260,19 @@ class TransitionPreviewDialog(QDialog):
             self.slider.setEnabled(False)
             self.play_button.setEnabled(False)
             return
-        quaternion = slerp_quaternion(
-            self.start_pose.quaternion_xyzw,
-            self.end_pose.quaternion_xyzw,
-            progress,
+        member_frame = (
+            preview_frame(self.transition.preview_segments, progress)
+            if self.transition.preview_segments
+            else None
+        )
+        quaternion = (
+            member_frame
+            or command_frame(self.transition.commands, progress)
+            or slerp_quaternion(
+                self.start_pose.quaternion_xyzw,
+                self.end_pose.quaternion_xyzw,
+                progress,
+            )
         )
         frame = render_triangles_preview(
             self._triangles,

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
-from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from bibazu_reorientation.export_records import source_coverage
 from bibazu_reorientation.models import (
     PartDefinition,
     PoseDefinition,
@@ -15,7 +16,7 @@ from bibazu_reorientation.models import (
     TransitionSpec,
 )
 from bibazu_reorientation.profiles import load_pressure_profile
-from bibazu_reorientation.resources import local_geometry_path
+from bibazu_reorientation.resources import external_roadmap_path, local_geometry_path
 from bibazu_reorientation.roadmap import (
     PoseRoadmap,
     load_pose_roadmap,
@@ -43,7 +44,7 @@ def _resolve(base: Path, value: Any, field: str, suffixes: set[str]) -> Path:
     path = local_geometry_path(value).expanduser()
     if not path.is_absolute():
         path = base / path
-    path = path.resolve()
+    path = external_roadmap_path(path)
     if path.suffix.lower() not in suffixes:
         expected = "/".join(sorted(suffixes))
         raise ValueError(f"{field} must point to a {expected} file")
@@ -218,14 +219,30 @@ def _load_v2(
     previous_raw_edge_ids = {
         edge_id
         for edge_id in previous_edge_ids
-        if not edge_id.startswith(("multi2:", "multi3:"))
+        if not edge_id.startswith(("multi", "route:", "composite:", "member:", "member-route:"))
     }
     unknown_edge_ids = previous_edge_ids - set(valid_edges)
-    if not changed and unknown_edge_ids:
+    unavailable_ids = {
+        key
+        for key in unknown_edge_ids
+        if key.startswith(("multi", "route:", "composite:", "member:", "member-route:"))
+    }
+    if not changed and unknown_edge_ids - unavailable_ids:
         raise ValueError(f"transition_profiles contains unknown edges: {sorted(unknown_edge_ids)}")
     if not changed and not required_edge_ids.issubset(previous_edge_ids):
         raise ValueError("transition_profiles must contain every actuated robust-to-robust edge")
     transitions: list[TransitionSpec] = []
+    coverage_map = payload.get("transition_source_coverage", {})
+    if not isinstance(coverage_map, dict) or set(coverage_map) - set(valid_edges) - unavailable_ids:
+        raise ValueError("transition_source_coverage references unknown transfers")
+    unavailable_profiles = tuple(
+        (key, _resolve_optional(source.parent, raw_profiles[key], f"Profile {key}", {".json"}))
+        for key in sorted(unavailable_ids)
+    )
+    unavailable_coverage = tuple(
+        (key, source_coverage(coverage_map[key], coverage_map[key]))
+        for key in sorted(unavailable_ids & set(coverage_map))
+    )
     for edge_id, edge in valid_edges.items():
         raw_profile = raw_profiles.get(edge_id)
         profile_path = _resolve_optional(
@@ -233,6 +250,23 @@ def _load_v2(
         )
         if profile_path is not None:
             load_pressure_profile(profile_path, require_transition=False)
+        allowed = {
+            s["member_id"]
+            for s in roadmap.member_states
+            if s["retained"] and s["group_id"] == edge.from_pose
+        }
+        declared = coverage_map.get(edge_id)
+        if declared is None and profile_path is not None:
+            metadata = json.loads(profile_path.read_text(encoding="utf-8")).get(
+                "roadmap_transition", {}
+            )
+            if isinstance(metadata, dict) and metadata.get("edge_id") == edge_id:
+                declared = metadata.get("covered_source_member_ids", [])
+        covered = (
+            source_coverage(declared if declared is not None else [], allowed)
+            if roadmap.member_states
+            else ()
+        )
         transitions.append(
             TransitionSpec(
                 from_pose=edge.from_pose,
@@ -247,6 +281,10 @@ def _load_v2(
                 flip_count=edge.flip_count,
                 via_pose_ids=edge.via_pose_ids,
                 component_edge_ids=edge.component_edge_ids,
+                commands=edge.commands,
+                evidence_status=edge.evidence_status,
+                member_context=edge.member_context,
+                covered_source_member_ids=covered,
             )
         )
     return PartDefinition(
@@ -256,6 +294,10 @@ def _load_v2(
         poses=tuple(mappings[pose_id] for pose_id in sorted(mappings)),
         target_pose=target_pose,
         transitions=tuple(transitions),
+        member_states=roadmap.member_states,
+        execution_routes=roadmap.execution_routes,
+        unavailable_transition_profiles=unavailable_profiles,
+        unavailable_transition_source_coverage=unavailable_coverage,
         mesh_path=mesh_path,
         source_path=source,
         roadmap_path=roadmap_path,
@@ -353,6 +395,9 @@ def save_roadmap_part_definition(
     pose_class_mapping: Mapping[int, int],
     target_pose: int,
     transition_profiles: Mapping[str, Path | None],
+    transition_source_coverage: Mapping[str, tuple[str, ...]] | None = None,
+    unavailable_transition_profiles: Mapping[str, Path | None] | None = None,
+    unavailable_transition_source_coverage: Mapping[str, tuple[str, ...]] | None = None,
 ) -> PartDefinition:
     destination = Path(path).expanduser().resolve()
     roadmap = load_pose_roadmap(roadmap_path)
@@ -400,7 +445,35 @@ def save_roadmap_part_definition(
         ],
         "target_pose": int(target_pose),
         "transition_profiles": serialized_profiles,
+        "transition_source_coverage": {
+            key: list(value) for key, value in (transition_source_coverage or {}).items()
+        },
     }
+    if set(transition_source_coverage or {}) - edge_ids:
+        raise ValueError("Source coverage references an unknown transfer")
+    for key, values in (transition_source_coverage or {}).items():
+        edge = roadmap.edge(key)
+        allowed = {
+            s["member_id"]
+            for s in roadmap.member_states
+            if s["retained"] and s["group_id"] == edge.from_pose
+        }
+        source_coverage(values, allowed)
+    # Preserve saved assignments missing from older exports without adding executable
+    # transitions, deriving endpoints, or manufacturing a route in the consumer.
+    unavailable = unavailable_transition_profiles or {}
+    for key, profile in unavailable.items():
+        if key in edge_ids or not key.startswith(
+            ("multi", "route:", "composite:", "member:", "member-route:")
+        ):
+            raise ValueError("Invalid unavailable route assignment")
+        payload["transition_profiles"][key] = (
+            None if profile is None else _portable_path(Path(profile), destination)
+        )
+    for key, values in (unavailable_transition_source_coverage or {}).items():
+        if key not in unavailable:
+            raise ValueError("Unavailable coverage has no saved route assignment")
+        payload["transition_source_coverage"][key] = list(source_coverage(values, values))
     _atomic_yaml(destination, payload)
     return load_part_definition(destination)
 
@@ -422,17 +495,13 @@ def roadmap_readiness(
     roadmap = roadmap or load_pose_roadmap(definition.roadmap_path)
     mapped = {pose.id for pose in definition.poses}
     robust = {pose.pose_id for pose in roadmap.robust_poses}
-    available_edges = [edge for edge in definition.transitions if edge.pressure_profile is not None]
-    reverse: dict[int, set[int]] = {}
-    for edge in available_edges:
-        reverse.setdefault(edge.to_pose, set()).add(edge.from_pose)
     reachable = {definition.target_pose}
-    queue = deque([definition.target_pose])
-    while queue:
-        for predecessor in reverse.get(queue.popleft(), set()):
-            if predecessor not in reachable:
-                reachable.add(predecessor)
-                queue.append(predecessor)
+    for pose_id in robust:
+        try:
+            TransitionResolver(definition).plan(pose_id)
+            reachable.add(pose_id)
+        except ValueError:
+            pass
     return RoadmapReadiness(
         missing_profile_edge_ids=tuple(
             edge.edge_id
@@ -450,97 +519,77 @@ def roadmap_readiness(
 
 
 class TransitionResolver:
+    """Select a finished exported route with assigned pressure profiles and coverage."""
+
     def __init__(self, definition: PartDefinition) -> None:
         self.definition = definition
 
     def plan(
-        self,
-        start_pose: int,
-        target_pose: int | None = None,
-        *,
-        max_transitions: int = 3,
+        self, start_pose: int, target_pose: int | None = None, *, max_transitions: int | None = None
     ) -> tuple[TransitionSpec, ...]:
         target = self.definition.target_pose if target_pose is None else target_pose
         if start_pose == target:
             return ()
-        if max_transitions not in {1, 2, 3}:
-            raise ValueError("Only paths of one, two, or three transitions are supported")
-        available = tuple(
-            transition
-            for transition in self.definition.transitions
-            if transition.pressure_profile is not None
-        )
-        ordinary_direct = tuple(
-            transition
-            for transition in available
-            if transition.from_pose == start_pose
-            and transition.to_pose == target
-            and transition.transition_kind != "multi_reorientation"
-        )
-        if ordinary_direct:
-            if len(ordinary_direct) != 1:
-                choices = ", ".join(
-                    f"{transition.edge_id} ({transition.actuation or 'actuated'})"
-                    for transition in ordinary_direct
+        if max_transitions is not None and (
+            isinstance(max_transitions, bool)
+            or not isinstance(max_transitions, int)
+            or max_transitions < 1
+        ):
+            raise ValueError("max_transitions must be a positive integer")
+        by_id = {edge.edge_id: edge for edge in self.definition.transitions}
+        groups = {}
+        for state in self.definition.member_states:
+            if state["retained"]:
+                groups.setdefault(state["group_id"], set()).add(state["member_id"])
+        candidates = []
+        routes = self.definition.execution_routes
+        # Legacy exports/configs can still execute an explicitly assigned direct
+        # transition. They never acquire a synthesized multi-transfer route here.
+        if not routes:
+            routes = tuple(
+                dict(
+                    source=e.from_pose,
+                    target=e.to_pose,
+                    profile_edge_ids=[e.edge_id],
+                    steps=[
+                        dict(
+                            edge_id=e.edge_id,
+                            required_source_member_ids=sorted(groups.get(e.from_pose, ())),
+                        )
+                    ],
+                    priority=[0 if e.transition_kind != "multi_reorientation" else 1, 1],
                 )
-                raise ValueError(
-                    f"Transition {start_pose} → {target} is ambiguous: {choices}. "
-                    "Assign a pressure profile to exactly one of these parallel edges."
-                )
-            return ordinary_direct
-        multi_direct = tuple(
-            transition
-            for transition in available
-            if transition.from_pose == start_pose
-            and transition.to_pose == target
-            and transition.transition_kind == "multi_reorientation"
-        )
-        if multi_direct:
-            if len(multi_direct) != 1:
-                choices = ", ".join(transition.edge_id for transition in multi_direct)
-                raise ValueError(
-                    f"Multi-reorientation {start_pose} → {target} is ambiguous: {choices}. "
-                    "Assign a pressure profile to exactly one option."
-                )
-            return multi_direct
-        if max_transitions == 1:
-            raise ValueError(f"No transition {start_pose} → {target} is configured")
-        ordinary = tuple(
-            transition
-            for transition in available
-            if transition.transition_kind != "multi_reorientation"
-        )
-
-        def paths_of_length(length: int) -> tuple[tuple[TransitionSpec, ...], ...]:
-            found: list[tuple[TransitionSpec, ...]] = []
-
-            def walk(pose: int, visited: frozenset[int], path: tuple[TransitionSpec, ...]) -> None:
-                if len(path) == length:
-                    if pose == target:
-                        found.append(path)
-                    return
-                for transition in ordinary:
-                    if transition.from_pose != pose or transition.to_pose in visited:
-                        continue
-                    walk(
-                        transition.to_pose,
-                        visited | {transition.to_pose},
-                        path + (transition,),
-                    )
-
-            walk(start_pose, frozenset({start_pose}), ())
-            return tuple(found)
-
-        for length in range(2, max_transitions + 1):
-            paths = paths_of_length(length)
-            if not paths:
-                continue
-            if len(paths) == 1:
-                return paths[0]
-            raise ValueError(
-                f"No unique path ({length} transitions) {start_pose} → … → {target} is configured"
+                for e in self.definition.transitions
             )
-        raise ValueError(
-            f"No path {start_pose} → … → {target} with at most {max_transitions} "
-            "transitions is configured"
-        )
+        for record in routes:
+            if record["source"] != start_pose or record["target"] != target:
+                continue
+            keys = record["profile_edge_ids"]
+            if max_transitions is not None and len(keys) > max_transitions:
+                continue
+            if any(key not in by_id or by_id[key].pressure_profile is None for key in keys):
+                continue
+            if any(
+                not set(step.get("required_source_member_ids", ())).issubset(
+                    by_id[step["edge_id"]].covered_source_member_ids
+                )
+                for step in record["steps"]
+            ):
+                continue
+            candidates.append((tuple(record["priority"]), tuple(by_id[key] for key in keys)))
+        if not candidates:
+            raise ValueError(
+                f"No path {start_pose} → {target}: no exported route has all required "
+                "pressure profiles and source-member coverage. Calibrate an exported "
+                "choice or upgrade the roadmap offline."
+            )
+        priority = min(item[0] for item in candidates)
+        paths = {
+            tuple(e.edge_id for e in path): path for rank, path in candidates if rank == priority
+        }
+        if len(paths) != 1:
+            raise ValueError(
+                f"No unique path {start_pose} → {target}: exported choices are ambiguous. "
+                "Assign profiles to exactly one preferred option."
+            )
+        return next(iter(paths.values()))

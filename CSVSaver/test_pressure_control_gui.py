@@ -1787,6 +1787,10 @@ class RoadmapTransitionGuiTests(unittest.TestCase):
                 "geometric_score": 0.4,
             }
         )
+        payload["consumer_export"] = dict(version=1, execution_routes=[], calibration_choices=[
+            dict(edge_id="multi2:1->2->4", source=1, target=4, transition_kind="multi_reorientation",
+                 actuation="multiple_reorientation_2", actuation_count=2, via_pose_ids=[2],
+                 component_edge_ids=["a0:1->2:free_y", "a1:2->4:free_z"], commands=[], evidence_status="")])
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "Df1a_roadmap.json"
             path.write_text(json.dumps(payload), encoding="utf-8")

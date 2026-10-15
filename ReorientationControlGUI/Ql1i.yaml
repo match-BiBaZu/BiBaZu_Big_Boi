@@ -3,7 +3,7 @@ roadmap_path: ../../BiBaZu_StableComponentenRoadmaps/Ql1i/Ql1i_roadmap.json
 roadmap_sha256: 4bd74c5a9ffc8f3164350c152d9ab79d270d6fd5064d91c459b555bf76a224be
 part_name: Ql1i
 mesh_path: src/bibazu_reorientation/assets/geometry/cad/Ql1i.STL
-model_path: ../../automated_image_capture/artifacts/Ql1i_YOLO_tight_ends_20260812/runs/ql1i_tight_ends_20260812/weights/best.pt
+model_path: ../../BiBaZu_Automated_Image_Capture/artifacts/Ql1i_YOLO_tight_ends_20260812/runs/ql1i_tight_ends_20260812/weights/best.pt
 poses:
 - id: 2
   label: Pose 2

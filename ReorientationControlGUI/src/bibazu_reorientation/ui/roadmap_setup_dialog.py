@@ -22,8 +22,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bibazu_reorientation.config import save_roadmap_part_definition
-from bibazu_reorientation.models import PartDefinition
+from bibazu_reorientation.config import TransitionResolver, save_roadmap_part_definition
+from bibazu_reorientation.export_records import source_coverage
+from bibazu_reorientation.models import PartDefinition, PoseDefinition, TransitionSpec
 from bibazu_reorientation.profiles import load_pressure_profile
 from bibazu_reorientation.resources import roadmap_directory
 from bibazu_reorientation.roadmap import PoseRoadmap, RoadmapTransition, load_pose_roadmap
@@ -41,6 +42,7 @@ class RoadmapSetupDialog(QDialog):
         self.target_pose_id: int | None = None
         self.class_inputs: dict[int, QSpinBox] = {}
         self.profile_inputs: dict[str, QLineEdit] = {}
+        self.coverage_inputs: dict[str, QLineEdit] = {}
         self.setWindowTitle(
             "Edit roadmap configuration" if definition else "New roadmap configuration"
         )
@@ -270,7 +272,15 @@ class RoadmapSetupDialog(QDialog):
             if definition
             else {}
         )
+        if definition:
+            previous.update(dict(definition.unavailable_transition_profiles))
         self.profile_inputs.clear()
+        self.coverage_inputs.clear()
+        self.profile_table.setColumnCount(10 if self.roadmap.member_states else 9)
+        if self.roadmap.member_states:
+            self.profile_table.setHorizontalHeaderItem(
+                9, QTableWidgetItem("Tested source members (* = all)")
+            )
         self.profile_table.setRowCount(len(self.roadmap.calibratable_transitions))
         for row, edge in enumerate(self.roadmap.calibratable_transitions):
             self.profile_table.setItem(
@@ -280,6 +290,10 @@ class RoadmapSetupDialog(QDialog):
             if edge.transition_kind == "multi_reorientation":
                 via = " → ".join(map(str, edge.via_pose_ids))
                 action = f"{edge.flip_count} flips via {via}"
+            if edge.commands:
+                action = " → ".join(
+                    f"{c['axis'].upper()} {c['signed_angle_deg']:+.1f}°" for c in edge.commands
+                )
             self.profile_table.setItem(row, 1, QTableWidgetItem(action))
             self.profile_table.setItem(
                 row,
@@ -298,6 +312,8 @@ class RoadmapSetupDialog(QDialog):
             category = edge.experimental_status
             if edge.transition_kind == "multi_reorientation":
                 category = "MULTIPLE REORIENTATION · experimental · non-preferred"
+            if edge.evidence_status == "geometry_only":
+                category = "GEOMETRY ONLY · calibration required · contact/settling unverified"
             category_item = QTableWidgetItem(category)
             if edge.transition_kind == "multi_reorientation":
                 category_item.setToolTip(
@@ -325,6 +341,33 @@ class RoadmapSetupDialog(QDialog):
             )
             self.profile_table.setCellWidget(row, 8, choose)
             self.profile_inputs[edge.edge_id] = edit
+            if self.roadmap.member_states:
+                previous_coverage = (
+                    next(
+                        (
+                            e.covered_source_member_ids
+                            for e in definition.transitions
+                            if e.edge_id == edge.edge_id
+                        ),
+                        dict(definition.unavailable_transition_source_coverage).get(
+                            edge.edge_id, ()
+                        ),
+                    )
+                    if definition
+                    else ()
+                )
+                coverage = QLineEdit(", ".join(previous_coverage))
+                coverage.setPlaceholderText("Blank = calibration only; * = explicitly tested all")
+                coverage.setToolTip(
+                    ", ".join(
+                        s["member_id"]
+                        for s in self.roadmap.member_states
+                        if s["retained"] and s["group_id"] == edge.from_pose
+                    )
+                )
+                coverage.textChanged.connect(self._update_readiness)
+                self.profile_table.setCellWidget(row, 9, coverage)
+                self.coverage_inputs[edge.edge_id] = coverage
             self._validate_profile(edge, edit, row)
 
     def _validate_profile(self, edge: RoadmapTransition, edit: QLineEdit, row: int) -> None:
@@ -333,11 +376,42 @@ class RoadmapSetupDialog(QDialog):
         if value:
             try:
                 profile = load_pressure_profile(Path(value), require_transition=False)
+                if self.roadmap.member_states:
+                    import json
+
+                    from bibazu_reorientation.export_records import source_coverage
+
+                    coverage = self.coverage_inputs.get(edge.edge_id)
+                    metadata = json.loads(Path(value).read_text(encoding="utf-8")).get(
+                        "roadmap_transition", {}
+                    )
+                    if (
+                        coverage
+                        and not coverage.isModified()
+                        and not coverage.text()
+                        and metadata.get("edge_id") == edge.edge_id
+                    ):
+                        coverage.setText(", ".join(metadata.get("covered_source_member_ids", [])))
+                    allowed = {
+                        s["member_id"]
+                        for s in self.roadmap.member_states
+                        if s["retained"] and s["group_id"] == edge.from_pose
+                    }
+                    declared = (
+                        list(allowed)
+                        if coverage and coverage.text().strip() == "*"
+                        else [s.strip() for s in coverage.text().split(",") if s.strip()]
+                        if coverage
+                        else []
+                    )
+                    source_coverage(declared, allowed)
                 status = (
                     "valid (legacy; PLC baseline may be required)"
                     if profile.source_version < 8
                     else "valid"
                 )
+                if self.roadmap.member_states and not declared:
+                    status += " · no declared member coverage; calibration only"
             except Exception as exc:
                 status = f"invalid: {exc}"
         item = self.profile_table.item(row, 7)
@@ -420,7 +494,7 @@ class RoadmapSetupDialog(QDialog):
         reachable = self._reachable_starts(available)
         parts = [
             f"Missing profiles: {len(missing_profiles)}",
-            "Target reachable via assigned edges from: "
+            "Target reachable via exported routes from: "
             f"{', '.join(map(str, reachable)) or 'target pose only'}",
         ]
         parts.append(
@@ -429,6 +503,19 @@ class RoadmapSetupDialog(QDialog):
             else f"Class mapping incomplete/ambiguous: {missing_mapping}"
         )
         parts.append("Roadmap hash will be recorded again when saving")
+        unavailable_count = (
+            sum(
+                key not in self.profile_inputs
+                for key, _profile in self.definition.unavailable_transition_profiles
+            )
+            if self.definition
+            else 0
+        )
+        if unavailable_count:
+            parts.append(
+                f"Saved assignments retained for {unavailable_count} "
+                "unavailable route choices; upgrade the roadmap offline to use them."
+            )
         for (start, target, _category), edge_ids in ambiguous.items():
             parts.append(
                 f"Execution ambiguous for {start} → {target}: {', '.join(edge_ids)}; "
@@ -442,8 +529,8 @@ class RoadmapSetupDialog(QDialog):
         ):
             parts.append("CAD path intentionally differs from the roadmap")
         parts.append(
-            "Draft can be saved; execution supports a unique path with at most two "
-            "intermediate poses. An assigned multi-reorientation profile overrides "
+            "Draft can be saved; execution uses eligible exported routes. "
+            "An assigned multi-reorientation profile overrides "
             "composed individual flips for the same endpoints."
         )
         self.readiness.setText("<br>".join(f"• {part}" for part in parts))
@@ -451,18 +538,59 @@ class RoadmapSetupDialog(QDialog):
     def _reachable_starts(self, available_edge_ids: set[str]) -> list[int]:
         if self.roadmap is None or self.target_pose_id is None:
             return []
-        reachable = {self.target_pose_id}
-        changed = True
-        while changed:
-            changed = False
-            for edge in self.roadmap.calibratable_transitions:
-                if (
-                    edge.edge_id in available_edge_ids
-                    and edge.to_pose in reachable
-                    and edge.from_pose not in reachable
-                ):
-                    reachable.add(edge.from_pose)
-                    changed = True
+        transitions = []
+        for edge in self.roadmap.calibratable_transitions:
+            if edge.edge_id not in available_edge_ids:
+                continue
+            allowed = {
+                state["member_id"]
+                for state in self.roadmap.member_states
+                if state["retained"] and state["group_id"] == edge.from_pose
+            }
+            edit = self.coverage_inputs.get(edge.edge_id)
+            text = edit.text().strip() if edit else ""
+            declared = (
+                sorted(allowed)
+                if text == "*"
+                else [v.strip() for v in text.split(",") if v.strip()]
+            )
+            try:
+                covered = source_coverage(declared, allowed)
+            except ValueError:
+                continue
+            transitions.append(
+                TransitionSpec(
+                    edge.from_pose,
+                    edge.to_pose,
+                    Path(self.profile_inputs[edge.edge_id].text()),
+                    edge.edge_id,
+                    transition_kind=edge.transition_kind,
+                    evidence_status=edge.evidence_status,
+                    member_context=edge.member_context,
+                    covered_source_member_ids=covered,
+                )
+            )
+        definition = PartDefinition(
+            2,
+            self.roadmap.part_name,
+            Path("."),
+            tuple(
+                PoseDefinition(p.pose_id, str(p.pose_id), p.pose_id)
+                for p in self.roadmap.robust_poses
+            ),
+            self.target_pose_id,
+            tuple(transitions),
+            member_states=self.roadmap.member_states,
+            execution_routes=self.roadmap.execution_routes,
+        )
+        resolver = TransitionResolver(definition)
+        reachable = []
+        for pose in self.roadmap.robust_poses:
+            try:
+                resolver.plan(pose.pose_id)
+                reachable.append(pose.pose_id)
+            except ValueError:
+                pass
         return sorted(reachable)
 
     def accept(self) -> None:
@@ -506,5 +634,33 @@ class RoadmapSetupDialog(QDialog):
             transition_profiles={
                 edge_id: (Path(edit.text()) if edit.text().strip() else None)
                 for edge_id, edit in self.profile_inputs.items()
+            },
+            unavailable_transition_profiles=(
+                {
+                    key: value
+                    for key, value in self.definition.unavailable_transition_profiles
+                    if key not in self.profile_inputs
+                }
+                if self.definition
+                else None
+            ),
+            unavailable_transition_source_coverage=(
+                {
+                    key: value
+                    for key, value in self.definition.unavailable_transition_source_coverage
+                    if key not in self.profile_inputs
+                }
+                if self.definition
+                else None
+            ),
+            transition_source_coverage={
+                edge_id: tuple(
+                    s["member_id"]
+                    for s in self.roadmap.member_states
+                    if s["retained"] and s["group_id"] == self.roadmap.edge(edge_id).from_pose
+                )
+                if edit.text().strip() == "*"
+                else tuple(s.strip() for s in edit.text().split(",") if s.strip())
+                for edge_id, edit in self.coverage_inputs.items()
             },
         )

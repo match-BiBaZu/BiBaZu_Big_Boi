@@ -88,7 +88,7 @@ Messreihen sollte entschieden werden, ob die Logs versioniert, archiviert oder
 aus Git herausgenommen werden sollen.
 
 `Automated Image Capture` liegt weiterhin als separates Schwesterrepository
-`..\automated_image_capture`. Reorientation Control importiert daraus zur Laufzeit
+`..\BiBaZu_Automated_Image_Capture`. Reorientation Control importiert daraus zur Laufzeit
 nichts; Kamera-, Licht- und Inferenzbausteine sind lokal im neuen Paket enthalten.
 Der Windows-Launcher fuer Automated Image Capture zeigt jedoch bewusst auf dieses
 Schwesterrepository und erwartet dort eine eigene `.venv`.

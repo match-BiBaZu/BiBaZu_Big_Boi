@@ -35,8 +35,8 @@ def test_cad_loads_after_bundle_relocation(tmp_path: Path, monkeypatch) -> None:
 
 def test_dialogs_read_shared_local_roadmaps_and_allow_an_override(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("BIBAZU_ROADMAPS_DIR", raising=False)
-    assert roadmap_directory().name == "BiBaZu_StableComponentenRoadmaps"
-    roadmap = load_pose_roadmap(roadmap_directory() / "Df2i" / "Df2i_roadmap.json")
+    assert roadmap_directory().name == "BiBaZu_StableComponentenRoadmaps_grouped"
+    roadmap = load_pose_roadmap(roadmap_directory() / "Qk1a" / "Qk1a_roadmap.json")
     assert roadmap.mesh_path.is_relative_to(roadmap_directory())
     assert roadmap.mesh_path.is_file()
     monkeypatch.setenv("BIBAZU_ROADMAPS_DIR", str(tmp_path))
@@ -53,7 +53,7 @@ def test_legacy_geometry_path_only_resolves_an_exact_cad_copy() -> None:
 
 
 def test_external_roadmap_edit_still_requires_explicit_reimport(tmp_path: Path) -> None:
-    source = roadmap_directory() / "Df2i" / "Df2i_roadmap.json"
+    source = roadmap_directory() / "Qk1a" / "Qk1a_roadmap.json"
     roadmap = load_pose_roadmap(source)
     payload = json.loads(source.read_text(encoding="utf-8"))
     payload["source"] = str(roadmap.mesh_path)

@@ -195,6 +195,8 @@ def test_roadmap_cycle_combines_unique_two_step_path_before_staging(tmp_path: Pa
             TransitionSpec(2, 3, first.source_path, "edge-2-3"),
             TransitionSpec(3, 4, second.source_path, "edge-3-4"),
         ),
+        execution_routes=(dict(source=2, target=4, profile_edge_ids=["edge-2-3", "edge-3-4"],
+            steps=[dict(edge_id=k) for k in ("edge-2-3", "edge-3-4")], priority=[2, 2]),),
     )
     pressure = FakePressure()
     controller = ReorientationController(pressure, RunJournal(tmp_path / "runs"))

@@ -1017,7 +1017,7 @@ class MainWindow(QMainWindow):
             if pose.id == self.part.target_pose:
                 continue
             try:
-                path = resolver.plan(pose.id, max_transitions=3)
+                path = resolver.plan(pose.id)
             except ValueError as exc:
                 if "ambiguous" in str(exc).casefold() or "no unique" in str(exc).casefold():
                     ambiguous_paths.append(str(exc))

@@ -1,7 +1,5 @@
-"""Historical fixture already in this repo; production reads the shared roadmap repo."""
+"""Historical integration data lives in the external roadmap catalogue."""
+from bibazu_reorientation.resources import roadmap_directory
 
-from pathlib import Path
-
-
-def fixture_directory() -> Path:
-    return Path(__file__).resolve().parents[1] / "all_1_roadmaps" / "Df1a_roadmap_verified"
+def fixture_directory():
+    return roadmap_directory() / "legacy_catalogue/originals/Df1a_roadmap_verified"

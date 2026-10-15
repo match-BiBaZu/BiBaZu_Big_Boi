@@ -1,14 +1,27 @@
-# Local geometry and shared roadmaps
+# External roadmaps and local display assets
 
-- `vendor/bibazu_chute_pose/` contains a private geometry package snapshot at commit `41af9d6cb941ded3c86c2e488b28a063a94da607`.
-- `uv sync --extra dev` installs the local package; the original geometry checkout is no longer required.
-- `src/bibazu_reorientation/assets/geometry/cad/` contains 39 STL/STEP pairs with license and source hashes.
-- Both Reorientation Control and Pressure Control read roadmaps directly from the sibling `BiBaZu_StableComponentenRoadmaps` repository.
-- `BIBAZU_ROADMAPS_DIR` overrides the roadmap repository location for both applications.
-- Roadmap dialogs and legacy profile lookup use that shared local repository; no new runtime roadmap copies are kept here.
-- Saved configurations reference roadmap files directly; regenerated roadmaps still require explicit re-import when their hashes change.
-- CAD files referenced by a roadmap stay beside that roadmap in its `source/` directory.
-- Drop Sim has a separate geometry copy and does not need these roadmaps.
+Both control applications read finished JSON/YAML exports from the sibling
+`BiBaZu_StableComponentenRoadmaps_grouped` directory. `BIBAZU_ROADMAPS_DIR` selects
+another external catalogue; explicitly selected main-branch exports also remain readable.
+
+The grouped roadmap application owns geometry verification, member/capture analysis,
+connectivity, route search, stable route identities, and preview-segment construction.
+Big Boi loads those records, displays them, assigns calibrated profiles and executes
+eligible exported routes. It has no generation package or bundled production roadmaps.
+Generic mesh rendering and the licensed CAD/STEP display assets remain local.
+
+Historical bundled roadmaps now live in the external catalogue under
+`legacy_catalogue/originals/`. Their original bytes and hashes are preserved.
+`legacy_catalogue/path_migrations.json` resolves exact old paths with a SHA-256 check;
+no lookup substitutes grouped poses for ungrouped IDs. Offline-produced `.consumer.json`
+sidecars supply legacy route choices without changing the historical roadmap hash.
+A mismatched sidecar requires an offline upgrade.
+
+Saved configurations and profiles remain operator data. A genuinely changed roadmap
+still requires explicit reimport and review of class, target and profile mappings.
+Saved profile assignments for absent derived routes survive loading and resaving; an
+offline upgrade restores them by their exact exported ID. They remain unavailable for
+execution until then. Missing routes are never reconstructed by the control applications.
 
 ## Existing configurations requiring attention
 

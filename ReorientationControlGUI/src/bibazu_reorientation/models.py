@@ -73,6 +73,10 @@ class TransitionSpec:
     flip_count: int = 1
     via_pose_ids: tuple[int, ...] = ()
     component_edge_ids: tuple[str, ...] = ()
+    commands: tuple[dict, ...] = ()
+    evidence_status: str = ""
+    member_context: dict | None = None
+    covered_source_member_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -93,6 +97,10 @@ class PartDefinition:
     roadmap_removed_pose_ids: tuple[int, ...] = ()
     roadmap_added_edge_ids: tuple[str, ...] = ()
     roadmap_removed_edge_ids: tuple[str, ...] = ()
+    member_states: tuple[dict, ...] = ()
+    execution_routes: tuple[dict, ...] = ()
+    unavailable_transition_profiles: tuple[tuple[str, Path | None], ...] = ()
+    unavailable_transition_source_coverage: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def is_roadmap_configuration(self) -> bool:

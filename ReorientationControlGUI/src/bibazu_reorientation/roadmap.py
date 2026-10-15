@@ -7,15 +7,21 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from bibazu_reorientation.resources import local_geometry_path
+from bibazu_reorientation.export_records import (
+    read_export,
+    validate_transfer,
+    with_consumer_sidecar,
+)
+from bibazu_reorientation.resources import external_roadmap_path, local_geometry_path
 
 ALLOWED_STABILITIES = {"robust", "metastable"}
-ALLOWED_TRANSITION_KINDS = {"actuated", "passive_tip"}
+ALLOWED_TRANSITION_KINDS = {"actuated", "passive_tip", "multi_reorientation", "member_transfer"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +55,13 @@ class RoadmapTransition:
     flip_count: int = 1
     via_pose_ids: tuple[int, ...] = ()
     component_edge_ids: tuple[str, ...] = ()
+    commands: tuple[dict, ...] = ()
+    evidence_status: str = ""
+    member_context: dict | None = None
+    preview_segments: tuple[dict, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PoseRoadmap:
     path: Path
     sha256: str
@@ -62,12 +72,17 @@ class PoseRoadmap:
     cad_status: str
     poses: tuple[RoadmapPose, ...]
     transitions: tuple[RoadmapTransition, ...]
+    member_states: tuple[dict, ...] = ()
+    member_route_data: tuple[dict, ...] = ()
+    representative_members: tuple[tuple[int, str], ...] = ()
+    exported_choices: tuple[RoadmapTransition, ...] = ()
+    execution_routes: tuple[dict, ...] = ()
 
-    @property
+    @cached_property
     def robust_poses(self) -> tuple[RoadmapPose, ...]:
         return tuple(pose for pose in self.poses if pose.is_robust)
 
-    @property
+    @cached_property
     def profile_transitions(self) -> tuple[RoadmapTransition, ...]:
         robust_ids = {pose.pose_id for pose in self.robust_poses}
         return tuple(
@@ -78,22 +93,52 @@ class PoseRoadmap:
             and edge.to_pose in robust_ids
         )
 
-    @property
+    @cached_property
     def multi_reorientation_transitions(self) -> tuple[RoadmapTransition, ...]:
-        """Synthetic direct-profile choices backed by 2/3-edge roadmap paths.
+        """Calibration macros supplied by the external exporter."""
+        return tuple(
+            e
+            for e in self.exported_choices
+            if e.transition_kind == "multi_reorientation" and not e.edge_id.startswith("composite:")
+        )
 
-        These do not modify the geometry roadmap. They let an operator calibrate one
-        empirical pressure profile for a complete multi-flip transfer.
-        """
-        return _build_multi_reorientation_transitions(self.profile_transitions)
+    @cached_property
+    def composite_transitions(self) -> tuple[RoadmapTransition, ...]:
+        return tuple(edge for edge in self.transitions if edge.edge_id.startswith("composite:"))
 
-    @property
+    @cached_property
+    def member_transitions(self) -> tuple[RoadmapTransition, ...]:
+        return tuple(e for e in self.transitions if e.transition_kind == "member_transfer")
+
+    def route_options(self, start: int, target: int) -> tuple[RoadmapTransition, ...]:
+        """Look up finished choices; legacy files expose explicit transitions only."""
+        return tuple(
+            e for e in self.calibratable_transitions if e.from_pose == start and e.to_pose == target
+        )
+
+    @cached_property
     def calibratable_transitions(self) -> tuple[RoadmapTransition, ...]:
-        return self.profile_transitions + self.multi_reorientation_transitions
+        return tuple(
+            {
+                e.edge_id: e
+                for e in (
+                    self.profile_transitions
+                    + self.composite_transitions
+                    + self.member_transitions
+                    + self.multi_reorientation_transitions
+                    + self.exported_choices
+                )
+            }.values()
+        )
 
-    @property
+    @cached_property
     def informational_transitions(self) -> tuple[RoadmapTransition, ...]:
-        profile_ids = {edge.edge_id for edge in self.profile_transitions}
+        profile_ids = {
+            edge.edge_id
+            for edge in self.profile_transitions
+            + self.composite_transitions
+            + self.member_transitions
+        }
         return tuple(edge for edge in self.transitions if edge.edge_id not in profile_ids)
 
     def pose(self, pose_id: int) -> RoadmapPose:
@@ -112,68 +157,6 @@ class PoseRoadmap:
 # Kept for source compatibility with the first target-pose dialog implementation.
 StableRoadmapPose = RoadmapPose
 StablePoseRoadmap = PoseRoadmap
-
-
-def _build_multi_reorientation_transitions(
-    transitions: tuple[RoadmapTransition, ...],
-) -> tuple[RoadmapTransition, ...]:
-    """Return deterministic simple paths of exactly two or three actuated flips."""
-    adjacency: dict[int, list[RoadmapTransition]] = {}
-    for edge in transitions:
-        adjacency.setdefault(edge.from_pose, []).append(edge)
-    for edges in adjacency.values():
-        edges.sort(key=lambda edge: (edge.to_pose, edge.edge_id))
-
-    candidates: list[tuple[tuple[int, ...], tuple[RoadmapTransition, ...]]] = []
-
-    def walk(
-        pose_ids: tuple[int, ...],
-        edges: tuple[RoadmapTransition, ...],
-    ) -> None:
-        if len(edges) in {2, 3}:
-            candidates.append((pose_ids, edges))
-        if len(edges) == 3:
-            return
-        for edge in adjacency.get(pose_ids[-1], []):
-            if edge.to_pose in pose_ids:
-                continue
-            walk(pose_ids + (edge.to_pose,), edges + (edge,))
-
-    for start in sorted(adjacency):
-        walk((start,), ())
-
-    candidates.sort(
-        key=lambda item: (
-            len(item[1]),
-            item[0],
-            tuple(edge.edge_id for edge in item[1]),
-        )
-    )
-    base_counts: dict[str, int] = {}
-    result: list[RoadmapTransition] = []
-    for pose_ids, edges in candidates:
-        flip_count = len(edges)
-        base_id = f"multi{flip_count}:" + "->".join(map(str, pose_ids))
-        option = base_counts.get(base_id, 0) + 1
-        base_counts[base_id] = option
-        edge_id = base_id if option == 1 else f"{base_id}:option{option}"
-        result.append(
-            RoadmapTransition(
-                edge_id=edge_id,
-                from_pose=pose_ids[0],
-                to_pose=pose_ids[-1],
-                directed=True,
-                transition_kind="multi_reorientation",
-                actuation=f"multiple_reorientation_{flip_count}",
-                signed_angle_deg=None,
-                geometric_score=None,
-                experimental_status="experimental_non_preferred",
-                flip_count=flip_count,
-                via_pose_ids=pose_ids[1:-1],
-                component_edge_ids=tuple(edge.edge_id for edge in edges),
-            )
-        )
-    return tuple(result)
 
 
 def _required_mapping(value: Any, label: str) -> dict[str, Any]:
@@ -259,18 +242,87 @@ def _normalize_json(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
             )
         )
     raw_edges = _required_list(payload.get("edges"), "edges")
-    transitions = tuple(_json_edge(raw) for raw in raw_edges)
+    transitions = tuple(_json_edge(raw) for raw in raw_edges) + _composite_edges(payload, poses)
     mesh = _mesh_path(source, payload.get("source"))
     part_name = mesh.stem if mesh is not None else source.stem.replace("_roadmap", "")
-    return _build(
-        source,
-        "internal_json",
-        part_name,
-        mesh,
-        str(payload.get("geometry_status", "unknown")),
-        poses,
-        transitions,
+    return _attach_members(
+        _build(
+            source,
+            "internal_json",
+            part_name,
+            mesh,
+            str(payload.get("geometry_status", "unknown")),
+            poses,
+            transitions,
+        ),
+        payload,
     )
+
+
+def _exported_transition(record):
+    commands = tuple(record.get("commands", []))
+    return RoadmapTransition(
+        edge_id=record["edge_id"],
+        from_pose=record["source"],
+        to_pose=record["target"],
+        directed=record.get("directed", True),
+        transition_kind=record.get("transition_kind", "member_transfer"),
+        actuation=record.get("actuation", ""),
+        signed_angle_deg=record.get("signed_angle_deg"),
+        geometric_score=record.get("geometric_score"),
+        experimental_status=record.get("experimental_status", "untested"),
+        flip_count=record.get("actuation_count", len(commands) or 1),
+        via_pose_ids=tuple(record.get("via_pose_ids", [])),
+        component_edge_ids=tuple(record.get("component_edge_ids", [])),
+        commands=commands,
+        evidence_status=record.get("evidence_status", "geometry_only"),
+        member_context=record if record.get("source_member_ids") else None,
+        preview_segments=tuple(record.get("preview_segments", [])),
+    )
+
+
+def _attach_members(roadmap, payload):
+    states, records, routes = read_export(payload)
+    choices = tuple(_exported_transition(r) for r in records)
+    by_id = {e.edge_id: e for e in choices}
+    transitions = tuple(by_id.get(e.edge_id, e) for e in roadmap.transitions)
+    existing = {e.edge_id for e in transitions}
+    transitions += tuple(
+        e for e in choices if e.transition_kind == "member_transfer" and e.edge_id not in existing
+    )
+    return replace(
+        roadmap,
+        transitions=transitions,
+        member_states=states,
+        exported_choices=choices,
+        execution_routes=routes,
+    )
+
+
+def _composite_edges(payload, poses):
+    known = {p.pose_id: p.quaternion_xyzw for p in poses}
+    result = []
+    for raw in _required_list(payload.get("composite_transfers", []), "composite_transfers"):
+        commands = validate_transfer(raw, known)
+        result.append(
+            RoadmapTransition(
+                str(raw["edge_id"]),
+                int(raw["source"]),
+                int(raw["target"]),
+                True,
+                "multi_reorientation",
+                f"multiple_reorientation_{len(commands)}",
+                None,
+                None,
+                "untested",
+                len(commands),
+                (),
+                (),
+                commands,
+                "geometry_only",
+            )
+        )
+    return tuple(result)
 
 
 def _json_edge(raw: Any) -> RoadmapTransition:
@@ -331,7 +383,7 @@ def _normalize_handover(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
         )
     transitions = tuple(
         _handover_edge(raw) for raw in _required_list(payload.get("transitions"), "transitions")
-    )
+    ) + _composite_edges(payload, poses)
     roadmap = _build(
         source,
         str(payload["format"]),
@@ -341,7 +393,7 @@ def _normalize_handover(source: Path, payload: dict[str, Any]) -> PoseRoadmap:
         poses,
         transitions,
     )
-    return _enrich_thumbnails(roadmap)
+    return _enrich_thumbnails(_attach_members(roadmap, payload))
 
 
 def _handover_edge(raw: Any) -> RoadmapTransition:
@@ -433,7 +485,7 @@ def _enrich_thumbnails(roadmap: PoseRoadmap) -> PoseRoadmap:
 
 
 def load_pose_roadmap(path: str | Path, *, enrich_thumbnails: bool = True) -> PoseRoadmap:
-    source = Path(path).expanduser().resolve()
+    source = external_roadmap_path(path)
     if source.suffix.lower() not in {".yaml", ".yml", ".json"}:
         raise ValueError("Roadmap must be a .yaml, .yml, or .json file")
     if not source.is_file():
@@ -442,11 +494,14 @@ def load_pose_roadmap(path: str | Path, *, enrich_thumbnails: bool = True) -> Po
         payload = (
             json.loads(source.read_text(encoding="utf-8"))
             if source.suffix.lower() == ".json"
-            else yaml.safe_load(source.read_text(encoding="utf-8"))
+            else yaml.load(
+                source.read_text(encoding="utf-8"),
+                Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader),
+            )
         )
     except (json.JSONDecodeError, yaml.YAMLError) as exc:
         raise ValueError(f"Invalid roadmap: {exc}") from exc
-    payload = _required_mapping(payload, "Roadmap")
+    payload = with_consumer_sidecar(_required_mapping(payload, "Roadmap"), source)
     if "nodes" in payload or "edges" in payload:
         return _normalize_json(source, payload)
     result = _normalize_handover(source, payload)
@@ -469,7 +524,7 @@ def load_stable_pose_roadmap(path: str | Path) -> PoseRoadmap:
         roadmap = load_pose_roadmap(path)
         return replace(roadmap, poses=roadmap.robust_poses)
     except ValueError as strict_error:
-        source = Path(path).expanduser().resolve()
+        source = external_roadmap_path(path)
         if source.suffix.lower() != ".json" or not source.is_file():
             raise strict_error
         try:

@@ -4,7 +4,7 @@ Fixed-batch control from one frozen production snapshot. When **Start production
 run** is pressed, the latest Baumer/YOLO frame establishes every workpiece, its
 initial pose and its physical left-to-right queue order. Legacy schema-v1 projects
 support Pose 1/2; schema-v2 roadmap projects resolve either a direct transition or
-one unique path with up to two intermediate poses and combine its active PressureControl
+one unique simple path through up to `pose_count - 1` assigned transfers and combine its active PressureControl
 arrays into one immutable PLC queue record per part.
 All operator-facing labels, dialogs, status messages, and validation errors in the
 application are in English.
@@ -16,9 +16,9 @@ motor setup and belt calibration must be verified before motion is enabled.
 
 ## Installation and start
 
-- Geometry code is bundled in `vendor/bibazu_chute_pose`; no sibling geometry repository is required.
+- Roadmap generation, geometry analysis, and route construction belong to the external grouped roadmap application.
 - CAD/STEP pairs are bundled in `src/bibazu_reorientation/assets/geometry`.
-- Roadmaps come directly from the sibling `BiBaZu_StableComponentenRoadmaps` checkout; `BIBAZU_ROADMAPS_DIR` can select another local path.
+- Roadmaps come directly from the sibling `BiBaZu_StableComponentenRoadmaps_grouped` checkout; `BIBAZU_ROADMAPS_DIR` can select another local path.
 - See [standalone geometry](docs/standalone-geometry.md) for source versions and older configuration limits.
 
 Python 3.12 and the Baumer Camera Explorer/GenTL producer are required. Close
@@ -62,12 +62,44 @@ restarted. If CAD rendering is unavailable, the dialog keeps the roadmap's start
 and target images with a direction arrow. This is an orientation aid, not a
 simulation of the physical trajectory through the chute.
 
-The setup dialog also derives optional **MULTIPLE REORIENTATION** choices from every
-simple roadmap path containing two or three actuated flips. These choices are marked
-experimental and non-preferred because they are empirical direct profiles rather than
-new geometry edges. If such a profile is assigned, execution uses that one profile for
-the complete start-to-target transfer and overrides composition of its individual flip
-profiles. For Df1a this includes `multi2:60->9->35`.
+The setup dialog reads optional **MULTIPLE REORIENTATION** choices from the finished
+`consumer_export` records. The external roadmap application constructs their commands,
+preview segments, component IDs and legacy identities. A calibrated profile may cover
+a complete exported transfer; an exported execution route may instead name its
+individual calibrated profiles.
+
+Grouped roadmap exports can additionally contain `composite_transfers`: separate
+geometry-only Y/Z rotation candidates between fixed representative poses. Setup
+shows their ordered commands and transient orientation previews. These candidates
+have no verified contact/settling model and require calibration of a complete
+transfer profile. They become runtime route legs only after a pressure profile is
+explicitly assigned. Optional exported `routes` and `connectivity` describe
+orientation-level reachability and do not assert hardware feasibility.
+
+Legacy two/three-flip route IDs and saved assignments remain supported through the
+external export. Control applications do not search the graph or invent missing
+routes. Saved assignments for choices absent from an older export are retained
+for later recovery, without making them executable. If no exported choice has the required profiles and coverage, calibration
+or an offline roadmap upgrade is required. Parallel assigned choices retain ambiguity
+errors. Older files expose their explicit transitions without derived routes.
+
+Member-enabled grouped roadmaps retain representative images and expose all
+member-conditioned transfer choices. Previews show actual member endpoints,
+sampled capture intervals and downhill settling segments. The extra **Tested
+source members** column accepts member IDs separated by commas; `*` explicitly
+declares all members of the source group have been tested with that profile.
+Matching Pressure Control metadata can supply the same declaration. It is saved
+as `transition_source_coverage`; missing coverage leaves a candidate available
+for calibration but excludes it from execution. Existing profiles are retained
+without automatic group-wide coverage.
+
+The exporter records requirements starting with every possible member of the detected
+group. Runtime checks these exported requirements. Each next profile must cover
+every possible source member. A profile calibrated for additional starts beyond
+its geometric witness conservatively leaves all target-group members possible.
+This prevents routes from silently switching between different members. No new
+recognition model is required. Capture intervals remain unverified geometry;
+physical settling and reliability require calibration.
 
 ### Bauteil, YOLO-Modell und Pressure-Profil auswählen
 

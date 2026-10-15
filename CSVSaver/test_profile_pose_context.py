@@ -33,6 +33,14 @@ class ProfilePoseContextTests(unittest.TestCase):
                 "source": source, "target": target, "transition_kind": "actuated",
                 "actuation": action, "signed_angle_deg": angle,
             })
+        payload["consumer_export"] = dict(version=1, execution_routes=[], calibration_choices=[
+            dict(edge_id="multi2:1->2->4", source=1, target=4, transition_kind="multi_reorientation",
+                 actuation="multiple_reorientation_2", actuation_count=2, via_pose_ids=[2],
+                 component_edge_ids=["a0:1->2:free_y", "step:2->4:free_z"], commands=[], evidence_status=""),
+            dict(edge_id="multi3:1->2->4->5", source=1, target=5, transition_kind="multi_reorientation",
+                 actuation="multiple_reorientation_3", actuation_count=3, via_pose_ids=[2,4],
+                 component_edge_ids=["a0:1->2:free_y", "step:2->4:free_z", "step:4->5:wall_main_pos_x"],
+                 commands=[], evidence_status="")])
         return payload
 
     def select_multi_flip_path(self, document, target):

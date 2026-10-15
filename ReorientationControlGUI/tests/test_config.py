@@ -66,6 +66,8 @@ def test_transition_resolver_supports_one_unique_intermediate_pose(tmp_path: Pat
         model_path=tmp_path / "best.pt",
         poses=tuple(PoseDefinition(index, f"Pose {index}", index) for index in (2, 3, 4)),
         target_pose=4,
+        execution_routes=(dict(source=2, target=4, profile_edge_ids=["edge-2-3", "edge-3-4"],
+            steps=[dict(edge_id=k) for k in ("edge-2-3", "edge-3-4")], priority=[2, 2]),),
         transitions=(
             TransitionSpec(2, 3, profile_a, "edge-2-3"),
             TransitionSpec(3, 4, profile_b, "edge-3-4"),
@@ -90,6 +92,8 @@ def test_transition_resolver_rejects_ambiguous_two_step_path(tmp_path: Path) -> 
             TransitionSpec(1, 3, profile, "c"),
             TransitionSpec(3, 4, profile, "d"),
         ),
+        execution_routes=tuple(dict(source=1, target=4, profile_edge_ids=keys,
+            steps=[dict(edge_id=k) for k in keys], priority=[2, 2]) for keys in (["a", "b"], ["c", "d"])),
     )
     with pytest.raises(ValueError, match="No unique path"):
         TransitionResolver(definition).plan(1)
@@ -138,6 +142,8 @@ def test_transition_resolver_supports_three_individual_flips(tmp_path: Path) -> 
             TransitionSpec(2, 3, profile, "b"),
             TransitionSpec(3, 4, profile, "c"),
         ),
+        execution_routes=(dict(source=1, target=4, profile_edge_ids=["a", "b", "c"],
+            steps=[dict(edge_id=k) for k in ("a", "b", "c")], priority=[2, 3]),),
     )
 
     assert [edge.edge_id for edge in TransitionResolver(definition).plan(1)] == ["a", "b", "c"]

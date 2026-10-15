@@ -7,13 +7,23 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import yaml
+from export_records import (
+    read_export,
+    relocated_path,
+    source_coverage,
+    validate_commands,
+    validate_transfer,
+    with_consumer_sidecar,
+)
+from orientation_animation import command_frame, preview_frame
 from pose_preview import render_mesh_preview
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QBrush, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -21,8 +31,10 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
+    QSlider,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -55,6 +67,11 @@ class RoadmapTransition:
     flip_count: int = 1
     via_pose_ids: tuple[int, ...] = ()
     component_edge_ids: tuple[str, ...] = ()
+    commands: tuple[dict, ...] = ()
+    evidence_status: str = ""
+    member_context: dict | None = None
+    covered_source_member_ids: tuple[str, ...] = ()
+    preview_segments: tuple[dict, ...] = ()
 
     @property
     def display_name(self) -> str:
@@ -62,14 +79,16 @@ class RoadmapTransition:
 
     @property
     def calibratable(self) -> bool:
-        return self.transition_kind in {"actuated", "multi_reorientation"}
+        return self.transition_kind in {"actuated", "multi_reorientation", "member_transfer"}
 
     @property
     def is_multi_reorientation(self) -> bool:
-        return self.transition_kind == "multi_reorientation"
+        return self.transition_kind in {"multi_reorientation", "member_transfer"}
 
     @property
     def category_label(self) -> str:
+        if self.evidence_status == "geometry_only":
+            return "Composite candidate · geometry only · calibration required"
         if self.is_multi_reorientation:
             return f"Multiple reorientation ({self.flip_count}×) · experimental"
         if self.transition_kind == "actuated":
@@ -85,12 +104,34 @@ class RoadmapDocument:
     cad_status: str
     poses: tuple[RoadmapPose, ...]
     transitions: tuple[RoadmapTransition, ...]
+    member_states: tuple[dict, ...] = ()
+    member_route_data: tuple[dict, ...] = ()
+
+    @property
+    def overview_transitions(self):
+        if not self.member_states:
+            return self.transitions
+        by_pair = {}
+        for edge in sorted(self.transitions, key=lambda e: e.edge_id):
+            if (
+                edge.transition_kind == "member_transfer"
+                and edge.source_pose_id != edge.target_pose_id
+            ):
+                by_pair.setdefault((edge.source_pose_id, edge.target_pose_id), edge)
+        return tuple(by_pair.values())
 
     def pose(self, pose_id: int) -> RoadmapPose:
         for pose in self.poses:
             if pose.pose_id == pose_id:
                 return pose
         raise KeyError(pose_id)
+
+    def route_options(self, start, target):
+        return tuple(
+            e
+            for e in self.transitions
+            if e.calibratable and e.source_pose_id == start and e.target_pose_id == target
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +150,8 @@ class SelectedRoadmapTransition:
             f"{self.transition.source_pose_id}-{self.transition.target_pose_id}_"
             f"{self.transition.actuation}"
         )
+        if self.transition.evidence_status:
+            raw += "_" + self.transition.edge_id.rsplit(":", 1)[-1]
         return re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
 
 
@@ -116,7 +159,7 @@ def default_roadmap_directory() -> Path:
     override = os.environ.get("BIBAZU_ROADMAPS_DIR")
     if override:
         return Path(override).expanduser().resolve()
-    return Path(__file__).resolve().parents[2] / "BiBaZu_StableComponentenRoadmaps"
+    return Path(__file__).resolve().parents[2] / "BiBaZu_StableComponentenRoadmaps_grouped"
 
 
 def roadmap_transition_metadata(selection: SelectedRoadmapTransition) -> dict[str, Any]:
@@ -135,6 +178,13 @@ def roadmap_transition_metadata(selection: SelectedRoadmapTransition) -> dict[st
         "flip_count": transition.flip_count,
         "via_pose_ids": list(transition.via_pose_ids),
         "component_edge_ids": list(transition.component_edge_ids),
+        "commands": list(transition.commands),
+        "preview_segments": list(transition.preview_segments),
+        "evidence_status": transition.evidence_status,
+        "member_context": transition.member_context,
+        "covered_source_member_ids": list(transition.covered_source_member_ids),
+        "source_quaternion_xyzw": list(selection.source_pose.quaternion_xyzw),
+        "target_quaternion_xyzw": list(selection.target_pose.quaternion_xyzw),
         "component_flips": [
             {
                 "edge_id": flip.edge_id,
@@ -159,7 +209,7 @@ def selection_from_roadmap_transition_metadata(
     if not isinstance(value, dict):
         return None
     try:
-        roadmap_path = Path(str(value["roadmap_path"])).expanduser().resolve()
+        roadmap_path = relocated_path(value["roadmap_path"], default_roadmap_directory())
         edge_id = str(value["edge_id"])
         source_id = int(value["source_pose_id"])
         target_id = int(value["target_pose_id"])
@@ -170,24 +220,34 @@ def selection_from_roadmap_transition_metadata(
             transition_kind=str(value.get("transition_kind", "actuated")),
             actuation=str(value["actuation"]),
             signed_angle_deg=(
-                None
-                if value.get("signed_angle_deg") is None
-                else float(value["signed_angle_deg"])
+                None if value.get("signed_angle_deg") is None else float(value["signed_angle_deg"])
             ),
             capture_width_deg=None,
             geometric_score=None,
             flip_count=int(value.get("flip_count", 1)),
             via_pose_ids=tuple(int(item) for item in value.get("via_pose_ids", [])),
-            component_edge_ids=tuple(
-                str(item) for item in value.get("component_edge_ids", [])
-            ),
+            component_edge_ids=tuple(str(item) for item in value.get("component_edge_ids", [])),
+            commands=validate_commands(value.get("commands", [])),
+            preview_segments=tuple(value.get("preview_segments", [])),
+            evidence_status=str(value.get("evidence_status", "")),
+            member_context=value.get("member_context"),
+            covered_source_member_ids=tuple(value.get("covered_source_member_ids", [])),
         )
-        source_pose = RoadmapPose(
-            source_id, (source_id,), "robust", "unknown", "unknown", None
-        )
-        target_pose = RoadmapPose(
-            target_id, (target_id,), "robust", "unknown", "unknown", None
-        )
+        if transition.member_context is not None:
+            context = transition.member_context
+            if not isinstance(context, dict) or not all(
+                isinstance(context.get(k), list)
+                and context[k]
+                and all(isinstance(m, str) for m in context[k])
+                for k in ("source_member_ids", "possible_target_member_ids")
+            ):
+                raise ValueError("Invalid saved member context")
+            source_coverage(
+                transition.covered_source_member_ids,
+                context.get("source_group_member_ids", context["source_member_ids"]),
+            )
+        source_pose = RoadmapPose(source_id, (source_id,), "robust", "unknown", "unknown", None)
+        target_pose = RoadmapPose(target_id, (target_id,), "robust", "unknown", "unknown", None)
         document = None
         try:
             document = load_roadmap_document(roadmap_path)
@@ -195,6 +255,17 @@ def selection_from_roadmap_transition_metadata(
             target_pose = document.pose(target_id)
         except (KeyError, OSError, TypeError, ValueError):
             pass
+        if transition.member_context:
+            source_pose = replace(
+                source_pose,
+                quaternion_xyzw=_quaternion(value.get("source_quaternion_xyzw")),
+                thumbnail_png=None,
+            )
+            target_pose = replace(
+                target_pose,
+                quaternion_xyzw=_quaternion(value.get("target_quaternion_xyzw")),
+                thumbnail_png=None,
+            )
         return SelectedRoadmapTransition(
             roadmap_path=roadmap_path,
             part_name=str(value.get("part_name", roadmap_path.stem)),
@@ -225,7 +296,8 @@ def _restore_component_flips(
                     transition_kind="actuated",
                     actuation=str(value["actuation"]),
                     signed_angle_deg=(
-                        None if value.get("signed_angle_deg") is None
+                        None
+                        if value.get("signed_angle_deg") is None
                         else float(value["signed_angle_deg"])
                     ),
                     capture_width_deg=None,
@@ -277,16 +349,18 @@ def selection_from_pressure_profile(
             roadmap_path = candidates[0]
             break
     multi = actuation.startswith("multiple_reorientation_")
-    return selection_from_roadmap_transition_metadata({
-        "roadmap_path": str(roadmap_path),
-        "part_name": part_name,
-        "edge_id": f"legacy:{profile_path.stem}",
-        "source_pose_id": int(source_id),
-        "target_pose_id": int(target_id),
-        "transition_kind": "multi_reorientation" if multi else "actuated",
-        "actuation": actuation,
-        "flip_count": int(actuation.rsplit("_", 1)[1]) if multi else 1,
-    })
+    return selection_from_roadmap_transition_metadata(
+        {
+            "roadmap_path": str(roadmap_path),
+            "part_name": part_name,
+            "edge_id": f"legacy:{profile_path.stem}",
+            "source_pose_id": int(source_id),
+            "target_pose_id": int(target_id),
+            "transition_kind": "multi_reorientation" if multi else "actuated",
+            "actuation": actuation,
+            "flip_count": int(actuation.rsplit("_", 1)[1]) if multi else 1,
+        }
+    )
 
 
 def _decode_thumbnail(value: Any) -> bytes | None:
@@ -333,8 +407,48 @@ def _optional_float(value: Any, field: str) -> float | None:
 
 
 def load_roadmap_document(path: str | Path) -> RoadmapDocument:
-    source = Path(path).expanduser().resolve()
-    payload = json.loads(source.read_text(encoding="utf-8"))
+    source = relocated_path(path, default_roadmap_directory())
+    raw_text = source.read_text(encoding="utf-8")
+    payload = with_consumer_sidecar(
+        yaml.load(raw_text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+        if source.suffix.lower() in {".yaml", ".yml"}
+        else json.loads(raw_text),
+        source,
+    )
+    if payload.get("format") == "bibazu_pose_roadmap_handover":
+        part = payload["part"]
+        payload = dict(
+            payload,
+            source=part.get("mesh_source"),
+            part_name=part.get("name"),
+            geometry_status=part.get("cad_status", "unknown"),
+            nodes=[
+                dict(
+                    n,
+                    node_id=n["id"],
+                    pose_ids=n.get("equivalent_catalog_pose_ids", [n["id"]]),
+                    kind=n["stability"],
+                    representative_quaternion_xyzw=n["orientation_quaternion_xyzw"],
+                    floor_contact_topology=n.get("contacts", {}).get("floor", "unknown"),
+                    wall_contact_topology=n.get("contacts", {}).get("wall", "unknown"),
+                )
+                for n in payload["poses"]
+            ],
+            edges=[
+                dict(
+                    e,
+                    edge_id=e["id"],
+                    source=e["from_pose"],
+                    target=e["to_pose"],
+                    transition_kind=e["type"],
+                    actuation=e.get("action", {}).get("name", ""),
+                    signed_angle_deg=e.get("action", {}).get("commanded_angle_deg"),
+                    capture_width_deg=e.get("geometry", {}).get("capture_width_deg"),
+                    geometric_score=e.get("geometry", {}).get("geometric_score"),
+                )
+                for e in payload["transitions"]
+            ],
+        )
     if int(payload.get("schema_version", 0)) != 1:
         raise ValueError("Unsupported roadmap schema version")
     raw_nodes = payload.get("nodes")
@@ -380,24 +494,43 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
                 target_pose_id=target_id,
                 transition_kind=str(edge["transition_kind"]),
                 actuation=str(edge["actuation"]),
-                signed_angle_deg=float(edge["signed_angle_deg"]),
-                capture_width_deg=_optional_float(edge.get("capture_width_deg"), "capture_width_deg"),
+                signed_angle_deg=_optional_float(edge.get("signed_angle_deg"), "signed_angle_deg"),
+                capture_width_deg=_optional_float(
+                    edge.get("capture_width_deg"), "capture_width_deg"
+                ),
                 geometric_score=_optional_float(edge.get("geometric_score"), "geometric_score"),
             )
         )
 
-    robust_ids = {pose.pose_id for pose in poses if pose.stability == "robust"}
-    direct_robust = tuple(
-        edge
-        for edge in transitions
-        if edge.transition_kind == "actuated"
-        and edge.source_pose_id in robust_ids
-        and edge.target_pose_id in robust_ids
-    )
-    transitions.extend(_build_multi_reorientation_transitions(direct_robust))
+    known = {p.pose_id: p.quaternion_xyzw for p in poses}
+    for raw in payload.get("composite_transfers", []):
+        commands = validate_transfer(raw, known)
+        transitions.append(
+            RoadmapTransition(
+                raw["edge_id"],
+                int(raw["source"]),
+                int(raw["target"]),
+                "multi_reorientation",
+                f"multiple_reorientation_{len(commands)}",
+                None,
+                None,
+                None,
+                len(commands),
+                (),
+                (),
+                commands,
+                "geometry_only",
+            )
+        )
 
+    states, records, routes = read_export(payload)
+    by_id = {e.edge_id: e for e in transitions}
+    by_id.update({r["edge_id"]: _exported_choice(r) for r in records})
+    transitions = list(by_id.values())
     mesh_source = str(payload.get("source", source.stem))
-    part_name = str(payload.get("part_name") or Path(mesh_source).stem or source.stem.replace("_roadmap", ""))
+    part_name = str(
+        payload.get("part_name") or Path(mesh_source).stem or source.stem.replace("_roadmap", "")
+    )
     return RoadmapDocument(
         path=source,
         part_name=part_name,
@@ -405,63 +538,30 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
         cad_status=str(payload.get("geometry_status", "unknown")),
         poses=tuple(poses),
         transitions=tuple(transitions),
+        member_states=states,
+        member_route_data=routes,
     )
 
 
-def _build_multi_reorientation_transitions(
-    transitions: tuple[RoadmapTransition, ...],
-) -> tuple[RoadmapTransition, ...]:
-    adjacency: dict[int, list[RoadmapTransition]] = {}
-    for edge in transitions:
-        adjacency.setdefault(edge.source_pose_id, []).append(edge)
-    for edges in adjacency.values():
-        edges.sort(key=lambda edge: (edge.target_pose_id, edge.edge_id))
-
-    candidates: list[tuple[tuple[int, ...], tuple[RoadmapTransition, ...]]] = []
-
-    def walk(pose_ids: tuple[int, ...], edges: tuple[RoadmapTransition, ...]) -> None:
-        if len(edges) in {2, 3}:
-            candidates.append((pose_ids, edges))
-        if len(edges) == 3:
-            return
-        for edge in adjacency.get(pose_ids[-1], []):
-            if edge.target_pose_id in pose_ids:
-                continue
-            walk(pose_ids + (edge.target_pose_id,), edges + (edge,))
-
-    for start in sorted(adjacency):
-        walk((start,), ())
-    candidates.sort(
-        key=lambda item: (
-            len(item[1]),
-            item[0],
-            tuple(edge.edge_id for edge in item[1]),
-        )
+def _exported_choice(record):
+    commands = tuple(record.get("commands", []))
+    return RoadmapTransition(
+        edge_id=record["edge_id"],
+        source_pose_id=record["source"],
+        target_pose_id=record["target"],
+        transition_kind=record.get("transition_kind", "member_transfer"),
+        actuation=record.get("actuation", ""),
+        signed_angle_deg=record.get("signed_angle_deg"),
+        capture_width_deg=record.get("capture_width_deg"),
+        geometric_score=record.get("geometric_score"),
+        flip_count=record.get("actuation_count", len(commands) or 1),
+        via_pose_ids=tuple(record.get("via_pose_ids", [])),
+        component_edge_ids=tuple(record.get("component_edge_ids", [])),
+        commands=commands,
+        evidence_status=record.get("evidence_status", "geometry_only"),
+        member_context=record if record.get("source_member_ids") else None,
+        preview_segments=tuple(record.get("preview_segments", [])),
     )
-    base_counts: dict[str, int] = {}
-    result: list[RoadmapTransition] = []
-    for pose_ids, edges in candidates:
-        flip_count = len(edges)
-        base_id = f"multi{flip_count}:" + "->".join(map(str, pose_ids))
-        option = base_counts.get(base_id, 0) + 1
-        base_counts[base_id] = option
-        edge_id = base_id if option == 1 else f"{base_id}:option{option}"
-        result.append(
-            RoadmapTransition(
-                edge_id=edge_id,
-                source_pose_id=pose_ids[0],
-                target_pose_id=pose_ids[-1],
-                transition_kind="multi_reorientation",
-                actuation=f"multiple_reorientation_{flip_count}",
-                signed_angle_deg=None,
-                capture_width_deg=None,
-                geometric_score=None,
-                flip_count=flip_count,
-                via_pose_ids=pose_ids[1:-1],
-                component_edge_ids=tuple(edge.edge_id for edge in edges),
-            )
-        )
-    return tuple(result)
 
 
 def pose_pixmap(pose: RoadmapPose, width: int, height: int) -> QPixmap:
@@ -501,6 +601,8 @@ _ACTION_LABELS = {
 
 
 def action_display_label(actuation: str) -> str:
+    if actuation.startswith("multiple_reorientation_"):
+        return f"Multiple reorientation · {actuation.rsplit('_', 1)[-1]} rotations"
     return _ACTION_LABELS.get(actuation, actuation)
 
 
@@ -511,9 +613,7 @@ class RoadmapMap(QWidget):
         super().__init__()
         self.document = document
         self.on_pose_clicked = on_pose_clicked
-        self.poses = tuple(
-            pose for pose in document.poses if pose.stability == "robust"
-        )
+        self.poses = tuple(pose for pose in document.poses if pose.stability == "robust")
         self.start_pose_id: int | None = None
         self.end_pose_id: int | None = None
         self._pixmaps = {pose.pose_id: self._thumbnail(pose) for pose in self.poses}
@@ -531,10 +631,7 @@ class RoadmapMap(QWidget):
 
     @property
     def layout_summary(self) -> str:
-        return (
-            f"Layout: {self._rows} row(s) × {self._columns} column(s) "
-            "· path distance optimized"
-        )
+        return f"Layout: {self._rows} row(s) × {self._columns} column(s) · path distance optimized"
 
     def _optimised_grid_slots(self) -> tuple[dict[int, tuple[int, int]], int, int]:
         """Place robust poses on a compact grid and shorten all visible paths.
@@ -556,14 +653,13 @@ class RoadmapMap(QWidget):
         _, columns, rows = min(candidates)
         pose_ids = [pose.pose_id for pose in self.poses]
         slots = {
-            pose_id: (index % columns, index // columns)
-            for index, pose_id in enumerate(pose_ids)
+            pose_id: (index % columns, index // columns) for index, pose_id in enumerate(pose_ids)
         }
         robust_ids = set(pose_ids)
         weights: dict[tuple[int, int], int] = {}
-        for edge in self.document.transitions:
+        for edge in self.document.overview_transitions:
             if (
-                edge.is_multi_reorientation
+                (edge.is_multi_reorientation and edge.transition_kind != "member_transfer")
                 or not edge.calibratable
                 or edge.source_pose_id not in robust_ids
                 or edge.target_pose_id not in robust_ids
@@ -574,9 +670,7 @@ class RoadmapMap(QWidget):
 
         def distance(left: int, right: int) -> float:
             left_slot, right_slot = slots[left], slots[right]
-            return math.hypot(
-                left_slot[0] - right_slot[0], left_slot[1] - right_slot[1]
-            )
+            return math.hypot(left_slot[0] - right_slot[0], left_slot[1] - right_slot[1])
 
         # The grid is deliberately fixed; only which pose occupies a cell moves.
         # Greedy best-improvement is stable and practical for roadmap sizes here.
@@ -590,9 +684,13 @@ class RoadmapMap(QWidget):
                         for (source, target), weight in weights.items()
                         if left in {source, target} or right in {source, target}
                     ]
-                    before = sum(weight * distance(source, target) for source, target, weight in affected)
+                    before = sum(
+                        weight * distance(source, target) for source, target, weight in affected
+                    )
                     slots[left], slots[right] = slots[right], slots[left]
-                    after = sum(weight * distance(source, target) for source, target, weight in affected)
+                    after = sum(
+                        weight * distance(source, target) for source, target, weight in affected
+                    )
                     slots[left], slots[right] = slots[right], slots[left]
                     if before - after > best_gain:
                         best_gain = before - after
@@ -615,7 +713,8 @@ class RoadmapMap(QWidget):
         rect = self.contentsRect().adjusted(26, 22, -26, -22)
         return {
             pose.pose_id: (
-                rect.left() + (self._grid_slots[pose.pose_id][0] + 0.5) * rect.width() / self._columns,
+                rect.left()
+                + (self._grid_slots[pose.pose_id][0] + 0.5) * rect.width() / self._columns,
                 rect.top() + (self._grid_slots[pose.pose_id][1] + 0.5) * rect.height() / self._rows,
             )
             for pose in self.poses
@@ -627,9 +726,9 @@ class RoadmapMap(QWidget):
         painter.fillRect(self.rect(), QColor("#fbfdff"))
         positions = self._positions()
         card_width, card_height = self._card_size()
-        for edge in self.document.transitions:
+        for edge in self.document.overview_transitions:
             if (
-                edge.is_multi_reorientation
+                (edge.is_multi_reorientation and edge.transition_kind != "member_transfer")
                 or not edge.calibratable
                 or edge.source_pose_id not in positions
                 or edge.target_pose_id not in positions
@@ -637,9 +736,13 @@ class RoadmapMap(QWidget):
                 continue
             start, end = positions[edge.source_pose_id], positions[edge.target_pose_id]
             color = QColor(
-                "#d62728"
+                "#0e827b"
+                if edge.member_context
+                else "#d62728"
                 if edge.actuation.endswith("_x")
-                else "#2ca02c" if edge.actuation == "free_y" else "#1f77b4"
+                else "#2ca02c"
+                if edge.actuation == "free_y"
+                else "#1f77b4"
             )
             painter.setPen(QPen(color, 2.4, Qt.PenStyle.SolidLine))
             painter.drawLine(round(start[0]), round(start[1]), round(end[0]), round(end[1]))
@@ -658,11 +761,15 @@ class RoadmapMap(QWidget):
             painter.drawRect(left - 3, top - 3, width + 6, height + 6)
             if pixmap.isNull():
                 painter.setPen(QPen(QColor("#374151")))
-                painter.drawText(left, top, width, height, Qt.AlignmentFlag.AlignCenter, f"Pose {pose_id}")
+                painter.drawText(
+                    left, top, width, height, Qt.AlignmentFlag.AlignCenter, f"Pose {pose_id}"
+                )
             else:
                 painter.drawPixmap(left, top, width, height, pixmap)
             painter.setPen(QPen(QColor("#111827")))
-            painter.drawText(left, top + height + 4, width, 18, Qt.AlignmentFlag.AlignCenter, f"Pose {pose_id}")
+            painter.drawText(
+                left, top + height + 4, width, 18, Qt.AlignmentFlag.AlignCenter, f"Pose {pose_id}"
+            )
 
     def mousePressEvent(self, event) -> None:
         positions = self._positions()
@@ -709,7 +816,15 @@ class RoadmapTransitionDialog(QDialog):
             "They are ordered from one flip to multi-flip alternatives."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("background:#eef6ff;border:1px solid #7aa7d9;border-radius:5px;padding:8px;")
+        if self.document.member_states:
+            hint.setText(
+                hint.text()
+                + " Transfers depend on the listed source members. Capture intervals describe "
+                "sampled downhill geometry; declare tested source coverage before runtime use."
+            )
+        hint.setStyleSheet(
+            "background:#eef6ff;border:1px solid #7aa7d9;border-radius:5px;padding:8px;"
+        )
         layout.addWidget(hint)
         map_box = QGroupBox("Pose roadmap")
         map_layout = QVBoxLayout(map_box)
@@ -735,7 +850,9 @@ class RoadmapTransitionDialog(QDialog):
         self.path_hint.setWordWrap(True)
         transition_layout.addWidget(self.path_hint)
         self.transition_table = QTableWidget(0, 4)
-        self.transition_table.setHorizontalHeaderLabels(["Path", "Flips", "Flip axis / angle", "Saved profile"])
+        self.transition_table.setHorizontalHeaderLabels(
+            ["Path", "Flips", "Flip axis / angle", "Saved profile"]
+        )
         self.transition_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.transition_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.transition_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -747,9 +864,27 @@ class RoadmapTransitionDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.transition_table.itemSelectionChanged.connect(self._on_transition_selection_changed)
-        self.transition_table.cellDoubleClicked.connect(lambda _row, _column: self._accept_selected_transition())
+        self.transition_table.cellDoubleClicked.connect(
+            lambda _row, _column: self._accept_selected_transition()
+        )
         transition_layout.addWidget(self.transition_table)
         layout.addWidget(transition_box, 1)
+
+        self.command_preview = QLabel()
+        self.command_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.command_preview.setVisible(False)
+        layout.addWidget(self.command_preview)
+        self.command_slider = QSlider(Qt.Orientation.Horizontal)
+        self.command_slider.setRange(0, 1000)
+        self.command_slider.setVisible(False)
+        self.command_slider.valueChanged.connect(self._preview_command)
+        layout.addWidget(self.command_slider)
+        self.coverage_edit = QLineEdit()
+        self.coverage_edit.setPlaceholderText(
+            "Explicitly tested source member IDs, comma separated; blank = calibration only"
+        )
+        self.coverage_edit.setVisible(bool(self.document.member_states))
+        layout.addWidget(self.coverage_edit)
 
         self.selection_label = QLabel("No path selected")
         footer = QHBoxLayout()
@@ -757,7 +892,9 @@ class RoadmapTransitionDialog(QDialog):
         footer.addStretch(1)
         self.use_button = QPushButton("Use selected path")
         self.use_button.setEnabled(False)
-        self.use_button.setStyleSheet("QPushButton:enabled {background:#1677c8;color:white;font-weight:600;padding:7px 14px;}")
+        self.use_button.setStyleSheet(
+            "QPushButton:enabled {background:#1677c8;color:white;font-weight:600;padding:7px 14px;}"
+        )
         self.use_button.clicked.connect(self._accept_selected_transition)
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.reject)
@@ -776,32 +913,33 @@ class RoadmapTransitionDialog(QDialog):
             except (OSError, ValueError, UnicodeDecodeError):
                 continue
             metadata = payload.get("roadmap_transition") if isinstance(payload, dict) else None
-            for transition in self.document.transitions:
+            for transition in self._transitions_by_id.values():
                 matches_metadata = False
                 if isinstance(metadata, dict):
                     try:
-                        matches_metadata = (
-                            str(metadata.get("edge_id", "")) == transition.edge_id
-                            or (
-                                int(metadata.get("source_pose_id", -1))
-                                == transition.source_pose_id
-                                and int(metadata.get("target_pose_id", -1))
-                                == transition.target_pose_id
-                                and str(metadata.get("actuation", ""))
-                                == transition.actuation
-                                and int(metadata.get("flip_count", 1))
-                                == transition.flip_count
-                            )
+                        matches_metadata = str(
+                            metadata.get("edge_id", "")
+                        ) == transition.edge_id or (
+                            not transition.evidence_status
+                            and int(metadata.get("source_pose_id", -1)) == transition.source_pose_id
+                            and int(metadata.get("target_pose_id", -1)) == transition.target_pose_id
+                            and str(metadata.get("actuation", "")) == transition.actuation
+                            and int(metadata.get("flip_count", 1)) == transition.flip_count
                         )
                     except (TypeError, ValueError):
                         pass
                 name_stem = SelectedRoadmapTransition(
-                    self.document.path, self.document.part_name, transition,
-                    self.document.pose(transition.source_pose_id), self.document.pose(transition.target_pose_id),
+                    self.document.path,
+                    self.document.part_name,
+                    transition,
+                    self.document.pose(transition.source_pose_id),
+                    self.document.pose(transition.target_pose_id),
                 ).profile_name_stem
-                if matches_metadata or path.stem in {
-                    name_stem, name_stem.replace("_Transition_", "_Uebergang_", 1)
-                }:
+                if matches_metadata or (
+                    not transition.evidence_status
+                    and path.stem
+                    in {name_stem, name_stem.replace("_Transition_", "_Uebergang_", 1)}
+                ):
                     found.setdefault(transition.edge_id, []).append(path)
         return {edge_id: tuple(paths) for edge_id, paths in found.items()}
 
@@ -809,8 +947,16 @@ class RoadmapTransitionDialog(QDialog):
         if self.start_pose_id is None or self.end_pose_id is not None:
             self.start_pose_id, self.end_pose_id = pose_id, None
         elif pose_id == self.start_pose_id:
-            self.pose_selection_label.setText(f"Start: Pose {pose_id}    End: choose a different pose")
-            return
+            if any(
+                e.member_context and e.source_pose_id == pose_id and e.target_pose_id == pose_id
+                for e in self.document.transitions
+            ):
+                self.end_pose_id = pose_id
+            else:
+                self.pose_selection_label.setText(
+                    f"Start: Pose {pose_id}    End: choose a different pose"
+                )
+                return
         else:
             self.end_pose_id = pose_id
         self._refresh_paths()
@@ -833,6 +979,8 @@ class RoadmapTransitionDialog(QDialog):
         self.transition_table.setRowCount(0)
         self.use_button.setEnabled(False)
         self.selection_label.setText("No path selected")
+        self.command_preview.setVisible(False)
+        self.command_slider.setVisible(False)
         if self.start_pose_id is None:
             self.pose_selection_label.setText("Start: —    End: —")
             self.path_hint.setText("Select a start and end pose on the map.")
@@ -841,10 +989,16 @@ class RoadmapTransitionDialog(QDialog):
             self.pose_selection_label.setText(f"Start: Pose {self.start_pose_id}    End: —")
             self.path_hint.setText("Now click the desired end pose.")
             return
-        self.pose_selection_label.setText(f"Start: Pose {self.start_pose_id}    End: Pose {self.end_pose_id}")
+        self.pose_selection_label.setText(
+            f"Start: Pose {self.start_pose_id}    End: Pose {self.end_pose_id}"
+        )
+        for route in self.document.route_options(self.start_pose_id, self.end_pose_id):
+            self._transitions_by_id.setdefault(route.edge_id, route)
+        self._saved_profiles_by_edge = self._find_saved_profiles()
         options = sorted(
             (
-                item for item in self.document.transitions
+                item
+                for item in self._transitions_by_id.values()
                 if item.calibratable
                 and item.source_pose_id == self.start_pose_id
                 and item.target_pose_id == self.end_pose_id
@@ -854,13 +1008,38 @@ class RoadmapTransitionDialog(QDialog):
         if not options:
             self.path_hint.setText("No calibratable path was found for these two poses.")
             return
-        self.path_hint.setText(f"{len(options)} path option(s), ordered by required reorientations.")
+        self.path_hint.setText(
+            f"{len(options)} path option(s), ordered by required reorientations."
+        )
         for transition in options:
             self._add_transition_row(transition)
 
     def _step_summary(self, transition: RoadmapTransition) -> str:
+        member = transition.member_context
+        prefix = ""
+        if member:
+            prefix = (
+                "From "
+                + ", ".join(member["source_member_ids"])
+                + " → possible "
+                + ", ".join(member["possible_target_member_ids"])
+                + " · "
+            )
+            if member.get("capture_interval_deg") is not None:
+                prefix += f"capture {member['capture_interval_deg']}° · "
+        if transition.commands:
+            prefix += (
+                "Geometry only · calibration required · " if transition.evidence_status else ""
+            )
+            return prefix + " → ".join(
+                f"{c['axis'].upper()} {c['signed_angle_deg']:+.1f}°" for c in transition.commands
+            )
         if not transition.is_multi_reorientation:
-            angle = "angle not specified" if transition.signed_angle_deg is None else f"{transition.signed_angle_deg:+.1f}°"
+            angle = (
+                "angle not specified"
+                if transition.signed_angle_deg is None
+                else f"{transition.signed_angle_deg:+.1f}°"
+            )
             return f"{action_display_label(transition.actuation)} ({angle})"
         steps: list[str] = []
         for edge_id in transition.component_edge_ids:
@@ -913,20 +1092,89 @@ class RoadmapTransitionDialog(QDialog):
             self.selection_label.setText(
                 f"Selected: {transition.flip_count} flip(s) · {self._step_summary(transition)}"
             )
+        show = bool(transition and transition.commands)
+        self.coverage_edit.setText(
+            ", ".join(transition.covered_source_member_ids) if transition else ""
+        )
+        if transition and transition.member_context:
+            self.coverage_edit.setToolTip(
+                "Source group members: "
+                + ", ".join(transition.member_context.get("source_group_member_ids", []))
+            )
+        self.command_slider.setVisible(show)
+        self.command_preview.setVisible(show)
+        if show:
+            self._preview_command(self.command_slider.value())
+
+    def _preview_command(self, value):
+        transition = self._selected_table_transition()
+        if transition is None or not transition.commands:
+            return
+        q = (
+            preview_frame(transition.preview_segments, value / 1000)
+            if transition.preview_segments
+            else None
+        ) or command_frame(transition.commands, value / 1000)
+        if self.document.mesh_path and self.document.mesh_path.is_file():
+            try:
+                pixmap = render_mesh_preview(
+                    self.document.mesh_path,
+                    500,
+                    220,
+                    quaternion_xyzw=q,
+                    caption="Transient orientation · geometry only"
+                    if transition.evidence_status
+                    else "Route orientation",
+                )
+                self.command_preview.setPixmap(pixmap)
+                return
+            except (ImportError, OSError, ValueError):
+                pass
+        self.command_preview.setText(
+            "Transient orientation xyzw: " + ", ".join(f"{v:.4f}" for v in q)
+        )
 
     def _accept_selected_transition(self) -> None:
         transition = self._selected_table_transition()
         if transition is None:
             return
+        if self.document.member_states:
+            allowed = {
+                s["member_id"]
+                for s in self.document.member_states
+                if s["retained"] and s["group_id"] == transition.source_pose_id
+            }
+            try:
+                declared = (
+                    list(allowed)
+                    if self.coverage_edit.text().strip() == "*"
+                    else [s.strip() for s in self.coverage_edit.text().split(",") if s.strip()]
+                )
+                coverage = source_coverage(declared, allowed)
+            except ValueError as error:
+                QMessageBox.warning(self, "Source member coverage", str(error))
+                return
+            transition = replace(transition, covered_source_member_ids=coverage)
+        source_pose = self.document.pose(transition.source_pose_id)
+        target_pose = self.document.pose(transition.target_pose_id)
+        if transition.member_context:
+            states = {s["member_id"]: s for s in self.document.member_states}
+            a = transition.member_context["source_member_ids"][0]
+            b = transition.member_context["possible_target_member_ids"][0]
+            source_pose = replace(
+                source_pose, quaternion_xyzw=tuple(states[a]["quaternion_xyzw"]), thumbnail_png=None
+            )
+            target_pose = replace(
+                target_pose, quaternion_xyzw=tuple(states[b]["quaternion_xyzw"]), thumbnail_png=None
+            )
         self.selected_transition = SelectedRoadmapTransition(
             roadmap_path=self.document.path,
             part_name=self.document.part_name,
             transition=transition,
-            source_pose=self.document.pose(transition.source_pose_id),
-            target_pose=self.document.pose(transition.target_pose_id),
+            source_pose=source_pose,
+            target_pose=target_pose,
             component_flips=tuple(
-                self._transitions_by_id[edge_id]
-                for edge_id in transition.component_edge_ids
+                self._transitions_by_id[edge_id] for edge_id in transition.component_edge_ids
             ),
         )
         self.accept()

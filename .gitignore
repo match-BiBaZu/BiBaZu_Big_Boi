@@ -10,3 +10,7 @@ __pycache__/
 /CSVSaver/TwinCAT Projekt3 - Kopie/TwinCAT Projekt3/*.bak
 /CSVSaver/TwinCAT Projekt3 - Kopie/TwinCAT Projekt3/Untitled1/POUs/*.codex-backup-*
 /CSVSaver/TwinCAT Projekt3 - Kopie/UpgradeLog.htm
+
+# Test artifacts belong outside the control repository.
+**/.pytest*/
+**/.ruff_cache/

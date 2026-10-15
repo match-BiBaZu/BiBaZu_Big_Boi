@@ -38,7 +38,7 @@ def test_df1a_builds_direct_and_multi_reorientation_profile_rows(qtbot) -> None:
         if dialog.profile_table.cellWidget(row, 6).toolTip() == "multi2:3->1->2"
     )
     assert "MULTIPLE REORIENTATION" in dialog.profile_table.item(multi_row, 4).text()
-    assert "at most two intermediate poses" in dialog.readiness.text()
+    assert "execution uses eligible exported routes" in dialog.readiness.text()
     assert all(
         dialog.profile_table.cellWidget(row, 5).text() == "Preview …"
         for row in range(dialog.profile_table.rowCount())

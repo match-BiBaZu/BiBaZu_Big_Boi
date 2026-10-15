@@ -3828,7 +3828,7 @@ class PressureControlWindow(QMainWindow):
         self.write_all_button = QPushButton("Write All Values")
         self.load_roadmap_button = QPushButton("Load Pose Roadmap")
         self.load_roadmap_button.setToolTip(
-            "Load a chute-pose roadmap JSON and select a transition to calibrate"
+            "Load a finished roadmap export and select a transition to calibrate"
         )
 
         button_layout.addWidget(self.reconnect_button)
@@ -4355,7 +4355,7 @@ class PressureControlWindow(QMainWindow):
             self,
             "Load Pose Roadmap",
             str(start_directory),
-            "Pose Roadmap JSON (*_roadmap.json *.json)",
+            "Pose Roadmap (*.json *.yaml *.yml)",
         )
         if not path:
             return
@@ -4406,7 +4406,23 @@ class PressureControlWindow(QMainWindow):
             f"{angle}</span>{via}"
         )
         flip_lines = []
-        if transition.is_multi_reorientation:
+        if transition.member_context:
+            context = transition.member_context
+            flip_lines.append('<b>Required source members:</b> ' + ', '.join(context['source_member_ids']))
+            flip_lines.append('<b>Possible arrival members:</b> ' + ', '.join(context['possible_target_member_ids']))
+            flip_lines.append('<b>Explicitly tested source coverage:</b> ' + (', '.join(transition.covered_source_member_ids) or 'none — calibration only'))
+            if context.get('capture_interval_deg') is not None:
+                flip_lines.append(f"<b>Sampled capture interval:</b> {context['capture_interval_deg']}°")
+            for leg in context.get('legs', [context]):
+                for segment in leg.get('settling_segments', []):
+                    flip_lines.append('<b>Candidate downhill settling:</b> landing orientation → ' + segment['target_member_id'])
+        if transition.commands:
+            if transition.evidence_status == "geometry_only":
+                flip_lines.append("<b>Geometry-only candidate:</b> contact and settling feasibility unverified. Calibrate a complete transfer profile.")
+            for index, command in enumerate(transition.commands):
+                flip_lines.append(f"<b>Rotation {index + 1}:</b> {command['axis'].upper()} · "
+                                  f"<b>{command['signed_angle_deg']:+.1f}°</b> · transient orientation")
+        elif transition.is_multi_reorientation:
             flips_by_id = {flip.edge_id: flip for flip in selection.component_flips}
             pose_ids = (
                 transition.source_pose_id, *transition.via_pose_ids, transition.target_pose_id
@@ -4431,7 +4447,7 @@ class PressureControlWindow(QMainWindow):
                     "Select the path again to restore them."
                 )
         self.transition_flips_text.setText("<br>".join(flip_lines))
-        self.transition_flips_text.setVisible(transition.is_multi_reorientation)
+        self.transition_flips_text.setVisible(transition.is_multi_reorientation or bool(transition.member_context))
         self._set_transition_pose_image(
             self.transition_source_image,
             selection.source_pose,

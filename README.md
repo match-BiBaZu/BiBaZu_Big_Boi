@@ -14,6 +14,11 @@
 - **UR16e integration** (`CSVSaver/UR16e/`): robot programs and RTDE tools for chute-angle adjustment and calibration.
 - **AutoTune integration**: launch the separate AutoTune utility and expose array settings through a local [Pressure Control API](docs/pressure-control-api.md).
 
+Roadmap generation and route construction live in the separate
+`BiBaZu_StableComponentenRoadmaps_grouped` application. Both GUIs read its final
+exports directly (`BIBAZU_ROADMAPS_DIR` overrides the catalogue). Big Boi stores
+calibration profiles and runtime configuration, and selects only exported routes.
+
 ## Hardware and connections
 
 - **TwinCAT controller**: AMS Net ID `10.145.4.14.1.1`, ADS port `851`; PLC task runs every `1 ms`.
@@ -33,7 +38,7 @@
 
 - [`CSVSaver/`](CSVSaver/): pressure/conveyor GUIs, ADS communication, calibration, logging, and hardware helpers.
 - [`CSVSaver/TwinCAT Projekt3 - Kopie/`](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/): TwinCAT solution, I/O mappings, and PLC control logic.
-- [`ReorientationControlGUI/`](ReorientationControlGUI/): packaged Qt application, part YAMLs, pose roadmaps, hardware adapters, and tests.
+- [`ReorientationControlGUI/`](ReorientationControlGUI/): packaged Qt application, part YAMLs, external-roadmap readers, hardware adapters, and tests.
 - [`pressure_profiles/`](pressure_profiles/): saved experiment settings.
 - [`WindowsLaunchers/`](WindowsLaunchers/): Desktop/Start menu shortcuts and application icons.
 - [`docs/`](docs/): integration documentation; tests also live beside the tools in `CSVSaver/`.
