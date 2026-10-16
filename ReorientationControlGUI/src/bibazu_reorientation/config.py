@@ -213,7 +213,11 @@ def _load_v2(
     raw_profiles = payload.get("transition_profiles")
     if not isinstance(raw_profiles, dict):
         raise ValueError("transition_profiles must map edge_id to a path or null")
-    required_edge_ids = {edge.edge_id for edge in roadmap.profile_transitions}
+    required_edge_ids = (
+        set()
+        if roadmap.consumer_export_version == 2
+        else {edge.edge_id for edge in roadmap.profile_transitions}
+    )
     valid_edges = {edge.edge_id: edge for edge in roadmap.calibratable_transitions}
     previous_edge_ids = set(raw_profiles)
     previous_raw_edge_ids = {
@@ -243,6 +247,9 @@ def _load_v2(
         (key, source_coverage(coverage_map[key], coverage_map[key]))
         for key in sorted(unavailable_ids & set(coverage_map))
     )
+    group_coverage_map = payload.get("transition_group_coverage", {})
+    if not isinstance(group_coverage_map, dict) or set(group_coverage_map) - set(valid_edges):
+        raise ValueError("Group calibration references unknown transfers")
     for edge_id, edge in valid_edges.items():
         raw_profile = raw_profiles.get(edge_id)
         profile_path = _resolve_optional(
@@ -267,6 +274,19 @@ def _load_v2(
             if roadmap.member_states
             else ()
         )
+        group_qualification = group_coverage_map.get(edge_id, "")
+        if not group_qualification and profile_path is not None:
+            metadata = json.loads(profile_path.read_text(encoding="utf-8")).get(
+                "roadmap_transition", {}
+            )
+            if isinstance(metadata, dict) and metadata.get("edge_id") == edge_id:
+                group_qualification = metadata.get("calibrated_source_group_key", "")
+        if group_qualification and group_qualification != edge.source_group_key:
+            if not changed:
+                raise ValueError(
+                    "Pressure profile group calibration does not match the exported source group"
+                )
+            group_qualification = ""
         transitions.append(
             TransitionSpec(
                 from_pose=edge.from_pose,
@@ -285,6 +305,8 @@ def _load_v2(
                 evidence_status=edge.evidence_status,
                 member_context=edge.member_context,
                 covered_source_member_ids=covered,
+                source_group_key=edge.source_group_key,
+                calibrated_source_group_key=group_qualification,
             )
         )
     return PartDefinition(
@@ -296,6 +318,7 @@ def _load_v2(
         transitions=tuple(transitions),
         member_states=roadmap.member_states,
         execution_routes=roadmap.execution_routes,
+        planning_semantics="group_union" if roadmap.consumer_export_version == 2 else "",
         unavailable_transition_profiles=unavailable_profiles,
         unavailable_transition_source_coverage=unavailable_coverage,
         mesh_path=mesh_path,
@@ -396,6 +419,7 @@ def save_roadmap_part_definition(
     target_pose: int,
     transition_profiles: Mapping[str, Path | None],
     transition_source_coverage: Mapping[str, tuple[str, ...]] | None = None,
+    transition_group_coverage: Mapping[str, str] | None = None,
     unavailable_transition_profiles: Mapping[str, Path | None] | None = None,
     unavailable_transition_source_coverage: Mapping[str, tuple[str, ...]] | None = None,
 ) -> PartDefinition:
@@ -413,7 +437,11 @@ def save_roadmap_part_definition(
         raise ValueError("Model classes must be unique and non-negative")
     if target_pose not in robust_ids:
         raise ValueError("The target pose must be robust")
-    required_edge_ids = {edge.edge_id for edge in roadmap.profile_transitions}
+    required_edge_ids = (
+        set()
+        if roadmap.consumer_export_version == 2
+        else {edge.edge_id for edge in roadmap.profile_transitions}
+    )
     edge_ids = {edge.edge_id for edge in roadmap.calibratable_transitions}
     if not required_edge_ids.issubset(transition_profiles) or not set(transition_profiles).issubset(
         edge_ids
@@ -445,6 +473,7 @@ def save_roadmap_part_definition(
         ],
         "target_pose": int(target_pose),
         "transition_profiles": serialized_profiles,
+        "transition_group_coverage": dict(transition_group_coverage or {}),
         "transition_source_coverage": {
             key: list(value) for key, value in (transition_source_coverage or {}).items()
         },
@@ -459,6 +488,9 @@ def save_roadmap_part_definition(
             if s["retained"] and s["group_id"] == edge.from_pose
         }
         source_coverage(values, allowed)
+    for key, group_key in (transition_group_coverage or {}).items():
+        if key not in edge_ids or not group_key or roadmap.edge(key).source_group_key != group_key:
+            raise ValueError("Group calibration does not match the exported transfer/source group")
     # Preserve saved assignments missing from older exports without adding executable
     # transitions, deriving endpoints, or manufacturing a route in the consumer.
     unavailable = unavailable_transition_profiles or {}
@@ -545,7 +577,7 @@ class TransitionResolver:
         routes = self.definition.execution_routes
         # Legacy exports/configs can still execute an explicitly assigned direct
         # transition. They never acquire a synthesized multi-transfer route here.
-        if not routes:
+        if not routes and self.definition.planning_semantics != "group_union":
             routes = tuple(
                 dict(
                     source=e.from_pose,
@@ -569,18 +601,30 @@ class TransitionResolver:
                 continue
             if any(key not in by_id or by_id[key].pressure_profile is None for key in keys):
                 continue
-            if any(
+            if record.get("group_semantics"):
+                if any(
+                    not step.get("required_source_group_key")
+                    or by_id[step["edge_id"]].source_group_key != step["required_source_group_key"]
+                    or by_id[step["edge_id"]].calibrated_source_group_key
+                    != step["required_source_group_key"]
+                    for step in record["steps"]
+                ):
+                    continue
+            elif any(
                 not set(step.get("required_source_member_ids", ())).issubset(
                     by_id[step["edge_id"]].covered_source_member_ids
                 )
                 for step in record["steps"]
             ):
                 continue
-            candidates.append((tuple(record["priority"]), tuple(by_id[key] for key in keys)))
+            rank = tuple(record["priority"])
+            if record.get("group_semantics"):
+                rank += (record["tie_breaker"],)
+            candidates.append((rank, tuple(by_id[key] for key in keys)))
         if not candidates:
             raise ValueError(
                 f"No path {start_pose} → {target}: no exported route has all required "
-                "pressure profiles and source-member coverage. Calibrate an exported "
+                "pressure profiles and source-group/member coverage. Calibrate an exported "
                 "choice or upgrade the roadmap offline."
             )
         priority = min(item[0] for item in candidates)

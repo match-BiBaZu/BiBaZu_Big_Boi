@@ -8,6 +8,39 @@ import math
 from pathlib import Path
 
 
+def group_evidence_details(record):
+    """Format supplied evidence for display without establishing feasibility."""
+    if not record or not record.get("source_group_key"):
+        return ""
+    witnesses = record.get("witnesses", [])
+    models = sorted({w.get("landing_model", "unspecified").replace("_", " ") for w in witnesses})
+    outcomes = sorted(
+        {
+            f"{o['member_id']} (group {o['group_id']})"
+            if o.get("retained")
+            else f"{o['member_id']} (excluded destination)"
+            for w in witnesses
+            for o in w.get("possible_outcomes", [])
+        }
+    )
+    errors = [w["endpoint_error_deg"] for w in witnesses if w.get("endpoint_error_deg") is not None]
+    lines = [
+        "Geometry only; contact feasibility unverified.",
+        "Execution requires an assigned profile calibrated for the source group.",
+    ]
+    if witnesses:
+        lines += [f"Member witnesses: {len(witnesses)}", "Landing evidence: " + ", ".join(models)]
+    if errors:
+        lines.append(f"Endpoint error: {min(errors):.6g} to {max(errors):.6g} degrees")
+    if outcomes:
+        lines.append("Possible landing destinations: " + ", ".join(outcomes))
+    if record.get("witness_legs"):
+        lines.append(
+            "Each leg uses its exported member witnesses; intermediate members may differ."
+        )
+    return "\n".join(lines)
+
+
 def relocated_path(path, catalogue):
     """Resolve only an exact, hash-preserving entry in the external migration file."""
     source = Path(path).expanduser().resolve()
@@ -80,7 +113,7 @@ def source_coverage(raw, allowed):
 def read_export(payload):
     """Check record shape and references, leaving geometric proofs to the producer."""
     section = payload.get("consumer_export", {})
-    if section and section.get("version") != 1:
+    if section and section.get("version") not in (1, 2):
         raise ValueError("Unsupported consumer export version; upgrade the roadmap offline")
     states = payload.get("member_states", [])
     if not isinstance(states, list):
@@ -109,6 +142,7 @@ def read_export(payload):
             for record in payload.get("member_transfers", [])
         ]
     ids = set()
+    group_keys = section.get("group_keys", {})
     for record in choices:
         key = record["edge_id"]
         if (
@@ -122,6 +156,12 @@ def read_export(payload):
         if record.get("directed", True) is not True:
             raise ValueError("Calibration choices must be directed")
         validate_commands(record.get("commands", []))
+        if record.get("source_group_key") and (
+            section.get("version") != 2
+            or record["source_group_key"] != group_keys.get(str(record["source"]))
+            or record.get("target_group_key") != group_keys.get(str(record["target"]))
+        ):
+            raise ValueError("Choice has an unknown source/target group identity")
         for field, group in (
             ("source_member_ids", "source"),
             ("possible_target_member_ids", "target"),
@@ -136,6 +176,12 @@ def read_export(payload):
     by_id = {record["edge_id"]: record for record in choices}
     route_ids = set()
     for route in routes:
+        if section.get("version") == 2 and (
+            not route.get("group_semantics")
+            or not isinstance(route.get("tie_breaker"), str)
+            or not route["tie_breaker"]
+        ):
+            raise ValueError("Version-two execution requires explicit group semantics and ordering")
         key = route["route_id"]
         if not key or key in route_ids:
             raise ValueError("Duplicate execution route ID")
@@ -151,8 +197,9 @@ def read_export(payload):
         priority = route.get("priority")
         if (
             not isinstance(priority, list)
-            or len(priority) != 2
-            or any(type(v) is not int or v < 0 for v in priority)
+            or (section.get("version") == 1 and len(priority) != 2)
+            or not priority
+            or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in priority)
         ):
             raise ValueError("Invalid exported route priority")
         current = route["source"]
@@ -164,6 +211,15 @@ def read_export(payload):
                 or step.get("target") != choice["target"]
             ):
                 raise ValueError("Execution route endpoint references disagree")
+            if route.get("group_semantics"):
+                if (
+                    section.get("version") != 2
+                    or not choice.get("source_group_key")
+                    or (step.get("required_source_group_key") != choice["source_group_key"])
+                ):
+                    raise ValueError("Execution route group coverage requirements disagree")
+                current = choice["target"]
+                continue
             for field, group in (
                 ("required_source_member_ids", choice["source"]),
                 ("possible_target_member_ids", choice["target"]),

@@ -21,7 +21,14 @@ from bibazu_reorientation.export_records import (
 from bibazu_reorientation.resources import external_roadmap_path, local_geometry_path
 
 ALLOWED_STABILITIES = {"robust", "metastable"}
-ALLOWED_TRANSITION_KINDS = {"actuated", "passive_tip", "multi_reorientation", "member_transfer"}
+ALLOWED_TRANSITION_KINDS = {
+    "actuated",
+    "passive_tip",
+    "multi_reorientation",
+    "member_transfer",
+    "group_transfer",
+    "group_route",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +66,9 @@ class RoadmapTransition:
     evidence_status: str = ""
     member_context: dict | None = None
     preview_segments: tuple[dict, ...] = ()
+    display_label: str = ""
+    preference_cost: tuple[float, ...] = ()
+    source_group_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,7 @@ class PoseRoadmap:
     representative_members: tuple[tuple[int, str], ...] = ()
     exported_choices: tuple[RoadmapTransition, ...] = ()
     execution_routes: tuple[dict, ...] = ()
+    consumer_export_version: int = 1
 
     @cached_property
     def robust_poses(self) -> tuple[RoadmapPose, ...]:
@@ -113,7 +124,7 @@ class PoseRoadmap:
     def route_options(self, start: int, target: int) -> tuple[RoadmapTransition, ...]:
         """Look up finished choices; legacy files expose explicit transitions only."""
         return tuple(
-            e for e in self.calibratable_transitions if e.from_pose == start and e.to_pose == target
+            e for e in self.visible_transitions if e.from_pose == start and e.to_pose == target
         )
 
     @cached_property
@@ -130,6 +141,17 @@ class PoseRoadmap:
                 )
             }.values()
         )
+
+    @cached_property
+    def visible_transitions(self):
+        if self.consumer_export_version == 2:
+            return tuple(
+                sorted(
+                    (e for e in self.calibratable_transitions if e.source_group_key),
+                    key=lambda e: (e.preference_cost, e.edge_id),
+                )
+            )
+        return self.calibratable_transitions
 
     @cached_property
     def informational_transitions(self) -> tuple[RoadmapTransition, ...]:
@@ -268,7 +290,9 @@ def _exported_transition(record):
         directed=record.get("directed", True),
         transition_kind=record.get("transition_kind", "member_transfer"),
         actuation=record.get("actuation", ""),
-        signed_angle_deg=record.get("signed_angle_deg"),
+        signed_angle_deg=record.get(
+            "signed_angle_deg", commands[0]["signed_angle_deg"] if len(commands) == 1 else None
+        ),
         geometric_score=record.get("geometric_score"),
         experimental_status=record.get("experimental_status", "untested"),
         flip_count=record.get("actuation_count", len(commands) or 1),
@@ -278,6 +302,9 @@ def _exported_transition(record):
         evidence_status=record.get("evidence_status", "geometry_only"),
         member_context=record if record.get("source_member_ids") else None,
         preview_segments=tuple(record.get("preview_segments", [])),
+        display_label=record.get("display_name", ""),
+        preference_cost=tuple(record.get("preference_cost", [])),
+        source_group_key=record.get("source_group_key", ""),
     )
 
 
@@ -296,6 +323,7 @@ def _attach_members(roadmap, payload):
         member_states=states,
         exported_choices=choices,
         execution_routes=routes,
+        consumer_export_version=payload.get("consumer_export", {}).get("version", 1),
     )
 
 

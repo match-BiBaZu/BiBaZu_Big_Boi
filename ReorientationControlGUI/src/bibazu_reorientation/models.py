@@ -77,6 +77,8 @@ class TransitionSpec:
     evidence_status: str = ""
     member_context: dict | None = None
     covered_source_member_ids: tuple[str, ...] = ()
+    source_group_key: str = ""
+    calibrated_source_group_key: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -99,6 +101,7 @@ class PartDefinition:
     roadmap_removed_edge_ids: tuple[str, ...] = ()
     member_states: tuple[dict, ...] = ()
     execution_routes: tuple[dict, ...] = ()
+    planning_semantics: str = ""
     unavailable_transition_profiles: tuple[tuple[str, Path | None], ...] = ()
     unavailable_transition_source_coverage: tuple[tuple[str, tuple[str, ...]], ...] = ()
 

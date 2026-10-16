@@ -26,23 +26,24 @@ catalogue and support `BIBAZU_ROADMAPS_DIR`. They retain structural checks, expl
 source coverage and profile metadata. Preview interpolation is a display operation.
 Older exports expose explicit transitions; missing derived routes need an offline upgrade.
 
-## Member-conditioned group transfers
+## Whole-group reorientations (consumer-export version 2)
 
-Grouped roadmaps may also provide `member_states`, `member_transfers`,
-`member_routes`, and `capture_analysis`. Group thumbnails and numeric IDs remain
-the same; transfer previews use the actual source member and a possible arrival
-member. Commands and sampled downhill settling segments are shown separately.
-The map summarizes group connections, while individual choices list required
-source members, possible arrivals, and capture intervals. Clicking the same group
-twice permits calibration of intra-group repositioning.
+The external grouped application exports group transfers and finished routes,
+prioritizing exact ±90°/±180° chute X/Y/Z commands over other rotations. The map
+shows each directed pair's preferred reorientation; pickers retain alternatives.
+Labels show ordered rotation names. Evidence and competing outcomes remain in
+the details. Actual member endpoints and settling segments drive previews;
+intermediate legs may use different members of a group without an invented motion.
 
-Enter explicitly tested source-member IDs in the coverage field, separated by
-commas. `*` declares all source members have been tested. Blank coverage keeps the
-choice available for calibration without making it eligible for group-level
-runtime execution. Profiles retain `member_context`, endpoint quaternions, and
-`covered_source_member_ids`, including when the original roadmap is unavailable.
+For a new group choice, assign the calibrated profile and explicitly check
+**Calibrated for source group**. Metadata binds this declaration to the exported
+transfer ID and stable source-group key. A numeric group ID alone is insufficient.
+The declaration survives profile restoration, including when the roadmap is
+unavailable. The individual member-coverage field is retained for version-1
+exports. Older profiles are never automatically qualified for whole-group use.
 
-Small grouping barriers do not establish passive motion. Capture intervals are
-sampled geometric candidates and may have ambiguous or unresolved outcomes.
-Reorientation Control requires explicit profile coverage for every currently
-possible source member; it never assumes a free switch between group members.
+Group interchangeability is a planning assumption. Exact Cartesian commands may
+bypass contact/support filters during generation. Downhill landing evidence is
+sampled geometry; contact feasibility, settling reliability, and successful
+execution require calibration. Pressure Control only consumes exported records
+and renders their previews. The separate main-branch catalogue is unchanged.

@@ -4402,7 +4402,7 @@ class PressureControlWindow(QMainWindow):
             f"{selection.part_name}<br>"
             f"{transition.display_name}<br>"
             f"<span style='font-size: 13px; font-weight: 500;'>"
-            f"{action_display_label(transition.actuation)} · "
+            f"{transition.display_label or action_display_label(transition.actuation)} · "
             f"{angle}</span>{via}"
         )
         flip_lines = []
@@ -4410,7 +4410,11 @@ class PressureControlWindow(QMainWindow):
             context = transition.member_context
             flip_lines.append('<b>Required source members:</b> ' + ', '.join(context['source_member_ids']))
             flip_lines.append('<b>Possible arrival members:</b> ' + ', '.join(context['possible_target_member_ids']))
-            flip_lines.append('<b>Explicitly tested source coverage:</b> ' + (', '.join(transition.covered_source_member_ids) or 'none — calibration only'))
+            if transition.source_group_key:
+                flip_lines.append('<b>Calibrated for source group:</b> ' + ('yes' if
+                    transition.calibrated_source_group_key == transition.source_group_key else 'no'))
+            else:
+                flip_lines.append('<b>Explicitly tested source coverage:</b> ' + (', '.join(transition.covered_source_member_ids) or 'none — calibration only'))
             if context.get('capture_interval_deg') is not None:
                 flip_lines.append(f"<b>Sampled capture interval:</b> {context['capture_interval_deg']}°")
             for leg in context.get('legs', [context]):
@@ -4786,6 +4790,7 @@ class PressureControlWindow(QMainWindow):
             selection.part_name, transition.source_pose_id, transition.target_pose_id,
             transition.transition_kind, transition.actuation, transition.via_pose_ids,
             transition.component_edge_ids,
+            (transition.edge_id, transition.source_group_key) if transition.source_group_key else None,
         )
 
     def save_profile(self) -> bool | None:

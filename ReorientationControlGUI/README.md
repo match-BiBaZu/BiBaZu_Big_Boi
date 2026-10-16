@@ -83,23 +83,24 @@ for later recovery, without making them executable. If no exported choice has th
 or an offline roadmap upgrade is required. Parallel assigned choices retain ambiguity
 errors. Older files expose their explicit transitions without derived routes.
 
-Member-enabled grouped roadmaps retain representative images and expose all
-member-conditioned transfer choices. Previews show actual member endpoints,
-sampled capture intervals and downhill settling segments. The extra **Tested
-source members** column accepts member IDs separated by commas; `*` explicitly
-declares all members of the source group have been tested with that profile.
-Matching Pressure Control metadata can supply the same declaration. It is saved
-as `transition_source_coverage`; missing coverage leaves a candidate available
-for calibration but excludes it from execution. Existing profiles are retained
-without automatic group-wide coverage.
+Consumer-export **version 2** treats groups as whole member sets. The exporter
+prioritizes exact ±90°/±180° X/Y/Z commands, retaining other rotations as alternatives.
+Setup lists the exported reorientation names in that priority order. Previews
+use actual member witnesses and settling segments for each leg. Arrival and
+departure members of an intermediate group may differ under the exported
+group-interchangeability planning assumption; the preview adds no switching motion.
 
-The exporter records requirements starting with every possible member of the detected
-group. Runtime checks these exported requirements. Each next profile must cover
-every possible source member. A profile calibrated for additional starts beyond
-its geometric witness conservatively leaves all target-group members possible.
-This prevents routes from silently switching between different members. No new
-recognition model is required. Capture intervals remain unverified geometry;
-physical settling and reliability require calibration.
+Assign a pressure profile and explicitly check **Calibrated for source group**
+for each group choice used by runtime. The saved `transition_group_coverage`
+declaration binds that transfer to its stable source-group identity. Matching
+Pressure Control metadata can restore it. Older profiles and member-coverage
+declarations remain supported without automatic group qualification. Recognition
+mappings and representative thumbnails are unchanged. Geometry-only choices stay
+available for inspection and calibration until qualified.
+
+Version-1 consumer exports retain their original per-member coverage rules.
+Both versions use finished exported routes; this application performs no route
+search or geometric feasibility checks.
 
 ### Bauteil, YOLO-Modell und Pressure-Profil auswählen
 
@@ -112,7 +113,7 @@ des Kamerabildes oder das Menü **Configuration**.
    auswählbar.
 3. Für jede aktuierte Robust-zu-Robust-Kante kann optional ein Pressure-Profil
    ausgewählt werden. Passive/metastabile Kanten bleiben sichtbar, aber
-   schreibgeschützt. Df1a erzeugt sechs Profilzeilen.
+   schreibgeschützt. Gruppierte Exporte zeigen ihre fertigen Gruppenoptionen.
 4. Fehlende Profile sind als Entwurf erlaubt. Die Readiness-Anzeige nennt fehlende
    Profile, erreichbare Startposen, Mapping- und Hashstatus sowie Abweichungen bei
    Name/CAD-Pfad.
@@ -120,9 +121,8 @@ des Kamerabildes oder das Menü **Configuration**.
    **Re-import roadmap** bestätigt werden; nur identische Pose- und Kanten-IDs
    behalten ihre Zuordnungen.
 6. Schema-v1-Zwei-Posen-Dateien bleiben unverändert ladbar und ausführbar.
-   Schema-v2-Roadmaps können ausgeführt werden, sobald mindestens ein Startzustand
-   das Ziel über einen eindeutigen profilierten Pfad mit maximal einer Zwischenpose
-   erreicht. Parallele belegte Kanten werden mit ihren `edge_id` als mehrdeutig
+   Roadmaps mit Export-Routen können ausgeführt werden, sobald ein qualifizierter
+   exportierter Pfad zum Ziel vorhanden ist; es gibt keine Drei-Kanten-Grenze. Parallele belegte Kanten werden mit ihren `edge_id` als mehrdeutig
    blockiert.
 
 Mit **Edit configuration** wird die aktuell geladene YAML vollständig

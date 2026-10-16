@@ -16,13 +16,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bibazu_reorientation.export_records import group_evidence_details
 from bibazu_reorientation.mesh_preview import (
     load_mesh_triangles,
     render_triangles_preview,
     slerp_quaternion,
 )
-from bibazu_reorientation.roadmap import PoseRoadmap, RoadmapPose, RoadmapTransition
 from bibazu_reorientation.orientation_animation import command_frame, preview_frame
+from bibazu_reorientation.roadmap import PoseRoadmap, RoadmapPose, RoadmapTransition
 
 
 class TransitionPreviewDialog(QDialog):
@@ -46,13 +47,21 @@ class TransitionPreviewDialog(QDialog):
             context = transition.member_context
             self.start_pose = replace(
                 self.start_pose,
-                quaternion_xyzw=tuple(states[context["source_member_ids"][0]]["quaternion_xyzw"]),
+                quaternion_xyzw=tuple(
+                    states[
+                        context.get("preview_source_member_id", context["source_member_ids"][0])
+                    ]["quaternion_xyzw"]
+                ),
                 thumbnail_png=None,
             )
             self.end_pose = replace(
                 self.end_pose,
                 quaternion_xyzw=tuple(
-                    states[context["possible_target_member_ids"][0]]["quaternion_xyzw"]
+                    states[
+                        context.get(
+                            "preview_target_member_id", context["possible_target_member_ids"][0]
+                        )
+                    ]["quaternion_xyzw"]
                 ),
                 thumbnail_png=None,
             )
@@ -76,9 +85,10 @@ class TransitionPreviewDialog(QDialog):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        noun = "Group" if self.transition.source_group_key else "Pose"
         title = QLabel(
-            f"<b>Pose {self.transition.from_pose} → Pose {self.transition.to_pose}</b>"
-            f" · {self.transition.actuation or 'actuated transition'}"
+            f"<b>{noun} {self.transition.from_pose} → {noun} {self.transition.to_pose}</b>"
+            f" · {self.transition.display_label or self.transition.actuation or 'Reorientation'}"
         )
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size:18px;padding:6px;")
@@ -132,11 +142,14 @@ class TransitionPreviewDialog(QDialog):
             )
             if context.get("capture_interval_deg") is not None:
                 details += f"\nSampled capture interval: {context['capture_interval_deg']}°"
-            details += (
-                "\nSettling segments are sampled geometry candidates; "
-                "source coverage must be declared in the assigned profile."
+            details += "\nSettling segments are sampled geometry candidates; " + (
+                "source-group calibration must be declared in the assigned profile."
+                if self.transition.source_group_key
+                else "source coverage must be declared in the assigned profile."
             )
             members = QLabel(details)
+            if self.transition.source_group_key:
+                members.setText(details + "\n" + group_evidence_details(context))
             members.setWordWrap(True)
             layout.addWidget(members)
 
@@ -253,6 +266,13 @@ class TransitionPreviewDialog(QDialog):
     def _render_progress(self, value: int) -> None:
         progress = min(1.0, max(0.0, value / 1000.0))
         self.progress_text.setText(f"Animation progress: {progress:.0%}")
+        if self.transition.source_group_key and self.transition.preview_segments:
+            position = min(
+                int(progress * len(self.transition.preview_segments)),
+                len(self.transition.preview_segments) - 1,
+            )
+            leg = self.transition.preview_segments[position].get("leg_index", 0)
+            self.progress_text.setText(f"Reorientation {leg + 1} · {progress:.0%}")
         if self._triangles is None:
             self.animation.setText(
                 f"{self._animation_error}\nUse the start and target images above."
@@ -268,10 +288,12 @@ class TransitionPreviewDialog(QDialog):
         quaternion = (
             member_frame
             or command_frame(self.transition.commands, progress)
-            or slerp_quaternion(
-                self.start_pose.quaternion_xyzw,
-                self.end_pose.quaternion_xyzw,
-                progress,
+            or (
+                self.start_pose.quaternion_xyzw
+                if self.transition.source_group_key
+                else slerp_quaternion(
+                    self.start_pose.quaternion_xyzw, self.end_pose.quaternion_xyzw, progress
+                )
             )
         )
         frame = render_triangles_preview(
