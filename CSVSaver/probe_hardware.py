@@ -333,8 +333,19 @@ class ProbeRunner:
         self.plc.pulse_heartbeat()
         self.last_status = self.axis.status()
         self.guard()
+        if self.recording:
+            self.recording.raw(kind="position", cycle=self.cycle, direction=self.direction,
+                               time_ns=(before + after) // 2, position_mm=position, roundtrip_ns=after - before,
+                               status=(f"motor=0x{self.last_status['status_byte']:02X};"
+                                       f"system=0x{self.last_status['system_status_byte']:02X};"
+                                       f"error=0x{self.last_status['error_byte']:02X}"))
         if self.last_status["error_byte"] or self.last_status["software_limit"]:
             raise MeasurementError("Colibri meldet Fehler oder Software-Endlage.")
+        if self.direction != "home" and self.last_status.get("rotation_error"):
+            raise MeasurementError(
+                f"Colibri-Drehüberwachung hat die Fahrt bei {position:.3f} mm gestoppt "
+                f"(Systemstatus 0x{self.last_status['system_status_byte']:02X}). "
+                "Mechanik/Antrieb prüfen und danach neu referenzieren.")
         snapshot = self.plc.snapshot()
         if snapshot["fault"] or not snapshot["active"]:
             raise MeasurementError(f"SPS-Kalibrierung gestoppt (Fehler {snapshot['fault']}).")
@@ -361,9 +372,6 @@ class ProbeRunner:
                 self.recording.raw(kind="edge", cycle=self.cycle, direction=self.direction, **event)
         self.pending_events = remaining
         self._forces()
-        if self.recording:
-            self.recording.raw(kind="position", cycle=self.cycle, direction=self.direction,
-                               time_ns=(before + after) // 2, position_mm=position, roundtrip_ns=after - before)
         if time.monotonic() - self.last_ui >= 0.1:
             self.last_ui = time.monotonic()
             sample = self.forces.check(self.config.force_limit_n)
@@ -442,7 +450,10 @@ class ProbeRunner:
             self.cancel.wait(0.03)
         self.axis.set_remote()
         self.plc.pulse_heartbeat()
-        self.axis.enable()
+        # An already enabled motor needs no ENABLE command (not supported by
+        # every BAC firmware). Read the actual motor flags before issuing it.
+        if not self.axis.status()["enabled"]:
+            self.axis.enable()
         self.plc.pulse_heartbeat()
         self.set_speed(config.speed_mm_s)
 
@@ -466,13 +477,18 @@ class ProbeRunner:
         self.axis.reference()
         started = time.monotonic()
         deadline = started + 180
+        settled_since = None
         while time.monotonic() < deadline:
             self.tick()
             if time.monotonic() - started > 0.3 and self.last_status["referenced"] and not self.last_status["moving"]:
                 if abs(self.last_position) > self.config.mm_per_step * 2:
                     raise MeasurementError("Referenzfahrt beendet, aber Achse steht nicht bei 0 mm.")
-                self.wait(0.3)
-                return
+                if settled_since is None:
+                    settled_since = time.monotonic()
+                if time.monotonic() - settled_since >= 0.3:
+                    return
+            else:
+                settled_since = None
             self.cancel.wait(0.005)
         raise MeasurementError("Referenzfahrt hat Zeitlimit überschritten.")
 

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from probe_calibration import MeasurementError, ProbeConfig
 from probe_hardware import ForceStream, ProbeRunner
+from probe_vendor.colibri import ColibriController
 from test_probe_calibration import force_sample, profile, ring
 
 
@@ -69,8 +70,10 @@ class Axis:
         return round(self.position / 0.005)
 
     def status(self):
-        return {"moving": abs(self.target - self.position) > 0.001,
-                "referenced": self.referenced, "error_byte": 0, "software_limit": False}
+        motor_status = 0x68 | (0x10 if self.referenced else 0)
+        if abs(self.target - self.position) > 0.001:
+            motor_status |= 0x01
+        return ColibriController._decode_status(self, motor_status, 0, 0)
 
     def set_parameter(self, index, subindex, value, size):
         if (index, subindex) == (3, 2):

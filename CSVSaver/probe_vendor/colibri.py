@@ -70,9 +70,11 @@ class ColibriController:
 
     def status(self):
         response = self._request(self.TG_REQ_STATUS, expected_type=self.TG_STATUS)
-        if len(response) < 6:
+        if len(response) < 7:
             raise ColibriProtocolError(f"Short status response: {response.hex(' ')}")
-        return self._decode_status(response[3], response[4], response[5])
+        # This controller sends system status BEFORE motor status. Verified on
+        # COM3: motor status 0x78 -> 0x79 during motion, 0x68 during referencing.
+        return self._decode_status(response[4], response[3], response[5])
 
     def position_steps(self):
         response = self._request(self.TG_REQ_POSITION, expected_type=self.TG_POSITION)
@@ -234,14 +236,12 @@ class ColibriController:
             "moving": bool(status_byte & 0x01),
             "software_limit": bool(status_byte & 0x02),
             "ready": bool(status_byte & 0x08),
-            # The reference flag is carried in the system-status byte. During
-            # a reference run the controller reports 0x60 and changes to 0x70
-            # after setting the reference position to zero.
-            "referenced": bool(system_status_byte & 0x10),
+            "referenced": bool(status_byte & 0x10),
             "remote": bool(status_byte & 0x20),
             "enabled": bool(status_byte & 0x40),
             "password": bool(status_byte & 0x80),
             "system_status_byte": system_status_byte,
+            "rotation_error": bool(system_status_byte & 0x01),
             "error_byte": error_byte,
             "error": bool(error_byte & 0x01),
             "watchdog_error": bool(error_byte & 0x02),
