@@ -133,10 +133,10 @@ class ProbeTab(QWidget):
         self.speed = decimal(0.5, 5, 2, " mm/s", 0.5, 1)
         self.travel = decimal(1, 75, 75 if mode == "barriers" else 60, " mm")
         self.direction = QComboBox()
-        self.direction.addItem("Positiv (+): von Home zu positiven Positionen", 1)
-        self.direction.addItem("Negativ (−): von Home zu negativen Positionen", -1)
+        self.direction.addItem("Positiv (+): vom Motor weg", 1)
+        self.direction.addItem("Negativ (−): zum Motor hin", -1)
         self.direction.setCurrentIndex(max(0, self.direction.findData(
-            settings.value(f"{mode}/outward_direction", -1, type=int))))
+            settings.value(f"{mode}/outward_direction", 1, type=int))))
         form.addRow("Fahrgeschwindigkeit", self.speed)
         form.addRow("Hinfahrt ab Home", self.direction)
         form.addRow("Maximaler Weg ab Home" if mode == "barriers" else "Weg bis Wendepunkt jenseits der Lichtschranke", self.travel)

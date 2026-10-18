@@ -22,7 +22,7 @@
     false
   ],
   "sensor_spacing_12_mm": 40.0,
-  "sensor_spacing_34_mm": 40.0,
+  "sensor_spacing_34_mm": 39.930763244628906,
   "sensor_spacing_56_mm": 40.0,
   "sensor_spacing_78_mm": 40.0,
   "sensor_2_to_array_1_spacing_mm": 28.0,

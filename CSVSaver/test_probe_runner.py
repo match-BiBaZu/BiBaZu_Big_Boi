@@ -262,11 +262,13 @@ class CompleteRunnerTests(unittest.TestCase):
     def test_negative_position_does_not_bypass_controller_faults(self):
         self.plc.command(1, ProbeConfig())
         self.axis.position = self.axis.target = -0.265
-        for fault in ({"error_byte": 1}, {"software_limit": True}):
+        for fault, message in (({"error_byte": 1}, "Fehler oder Software-Endlage"),
+                               ({"software_limit": True}, "Fehler oder Software-Endlage"),
+                               ({"rotation_error": True, "system_status_byte": 0x29}, "Drehüberwachung")):
             with self.subTest(fault=fault):
                 status = {**self.axis.status(), **fault}
                 with patch.object(self.axis, "status", return_value=status):
-                    with self.assertRaisesRegex(MeasurementError, "Fehler oder Software-Endlage"):
+                    with self.assertRaisesRegex(MeasurementError, message):
                         self.runner.tick()
 
     def test_completed_home_still_requires_controller_zero(self):
