@@ -33,6 +33,7 @@ class ForcePositionPlot(QWidget):
         self.setMinimumSize(440, 240)
         self.rows = []
         self.live = []
+        self.smoothing_samples = 100
         self.setToolTip("Summenkraft: blau hin / orange zurück; Einzelkräfte: grün / violett. Senkrechte Linien: LB und Peak.")
 
     def paintEvent(self, event):
@@ -45,7 +46,8 @@ class ForcePositionPlot(QWidget):
         painter.drawText(area.left(), self.height() - 8, "Colibri-Position [mm]")
         curves = [(row["direction"], row.get("curve", [])) for row in self.rows]
         if self.live:
-            curves.append((self.live[0].get("direction", "forward"), smooth_force(self.live)))
+            curves.append((self.live[0].get("direction", "forward"),
+                           smooth_force(self.live, self.smoothing_samples)))
         all_samples = [s for _, samples in curves for s in samples]
         if not all_samples:
             painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "Kraftkurven erscheinen während der Düsenmessung")
@@ -125,11 +127,20 @@ class ProbeTab(QWidget):
             self.pressure.setSuffix(" mbar")
             self.pressure.setValue(1000)
             self.open_time = decimal(1, 300, 30, " s", 5, 1)
+            self.smoothing = QSpinBox()
+            self.smoothing.setRange(20, 2400)
+            self.smoothing.setSingleStep(20)
+            self.smoothing.setValue(100)
+            self.smoothing.setSuffix(" Rohwerte")
+            self.smoothing.setToolTip(
+                "Zentrierter Mittelwert vor der Betragssuche; 100 Werte entsprechen bei 2400 Hz etwa 42 ms. "
+                "Größere Fenster glätten stärker und verbreitern schmale Kraftspitzen.")
             form.addRow("Array / Bezugslichtschranke auf Rückfahrt", self.array)
             form.addRow("Einzelne Düse", self.nozzle)
             form.addRow("Kalibrierdruck", self.pressure)
             form.addRow("Maximale Öffnungszeit je Zyklus", self.open_time)
-            self.inputs += [self.array, self.nozzle, self.pressure, self.open_time]
+            form.addRow("Kraftglättung", self.smoothing)
+            self.inputs += [self.array, self.nozzle, self.pressure, self.open_time, self.smoothing]
         self.speed = decimal(0.5, 5, 2, " mm/s", 0.5, 1)
         self.travel = decimal(1, 75, 75 if mode == "barriers" else 60, " mm")
         self.direction = QComboBox()
@@ -211,6 +222,8 @@ class ProbeTab(QWidget):
         root.addWidget(self.path_label)
         self.plot = ForcePositionPlot() if mode == "nozzle" else None
         if self.plot:
+            self.plot.smoothing_samples = self.smoothing.value()
+            self.smoothing.valueChanged.connect(self._smoothing_changed)
             root.addWidget(self.plot, 2)
         self.update_controls()
 
@@ -221,6 +234,10 @@ class ProbeTab(QWidget):
         if self.mode == "barriers":
             text += f" · LB{self.first.currentData()} → LB{self.second.currentData()}"
         self.path_hint.setText(text)
+
+    def _smoothing_changed(self, value):
+        self.plot.smoothing_samples = value
+        self.plot.update()
 
     def required_duration(self):
         return 2 * self.travel.value() / self.speed.value() * 1.2 + 2
@@ -238,7 +255,7 @@ class ProbeTab(QWidget):
             args.update(first_sensor=self.first.currentData(), second_sensor=self.second.currentData(), runout_mm=self.runout.value())
         else:
             args.update(array=self.array.currentData(), nozzle=self.nozzle.currentData(), pressure_mbar=self.pressure.value(),
-                        max_open_s=self.open_time.value())
+                        max_open_s=self.open_time.value(), force_smoothing_samples=self.smoothing.value())
         config = ProbeConfig(**args)
         config.validate()
         return config
@@ -349,7 +366,7 @@ class ProbeCalibrationUi(QObject):
         self.bridge_path = QLineEdit(saved_bridge or (str(discovered_bridge) if discovered_bridge else ""))
         self.bridge_path.setPlaceholderText("QuantumXMonitor.exe — vollständigen Programmordner vom alten Mess-PC übernehmen")
         self.bridge_browse = QPushButton("Bridge wählen …")
-        self.profile = QPushButton("Kraftprofil laden …")
+        self.profile = QPushButton("Kraftprofil (optional) …")
         self.tare = QPushButton("Kraftsensoren tarieren")
         self.home = QPushButton("Home")
         self.move_target = decimal(AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM, 0, " mm")
@@ -357,7 +374,7 @@ class ProbeCalibrationUi(QObject):
         self.abort = QPushButton("STOPP")
         self.position = QLabel("Position: —")
         self.forces = QLabel("F1: — · F2: — · FΣ: —")
-        self.profile_label = QLabel("Kein Kraftprofil / keine Tara")
+        self.profile_label = QLabel("QuantumX-Signal · Tara erforderlich · Kraftprofil optional")
         self.state = QLabel("SPS-Kalibrierschnittstelle noch nicht geprüft.")
         self.state.setWordWrap(True)
         self.scale = decimal(0.0001, 0.1, float(self.settings.value("mm_per_step", 0.005)), " mm/Schritt", 0.0001, 6)

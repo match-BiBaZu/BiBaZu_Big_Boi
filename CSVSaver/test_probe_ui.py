@@ -35,6 +35,10 @@ class ProbeUiTests(unittest.TestCase):
         tab.suggest_duration.click()
         self.assertGreaterEqual(tab.open_time.value(), tab.required_duration())
         tab.config(0.005, 1)
+        self.assertEqual(tab.config(0.005, 1).force_smoothing_samples, 100)
+        tab.smoothing.setValue(240)
+        self.assertEqual(tab.config(0.005, 1).force_smoothing_samples, 240)
+        self.assertEqual(tab.plot.smoothing_samples, 240)
 
     def test_travel_direction_toggle_and_free_sensor_order(self):
         for mode in ("barriers", "nozzle"):

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from probe_calibration import (
     MASK, BarrierHistory, EdgeCapture, MeasurementError, PositionTimeline, ProbeConfig,
@@ -134,11 +134,64 @@ class ForceAndRecordingTests(unittest.TestCase):
             with self.assertRaises(MeasurementError):
                 force_peak(samples, noise)
 
+    def test_longer_centred_window_rejects_oscillation_as_the_main_peak(self):
+        rows = []
+        for i in range(48001):
+            seconds = i / 2400
+            position = seconds * 3
+            signal = 0.03 * math.exp(-((position - 7) / 2) ** 2)
+            vibration = 0.6 * (position / 60) * math.sin(2 * math.pi * 297 * seconds)
+            total = -(signal + vibration)
+            rows.append({"time_ns": round(seconds * 1e9), "position_mm": position,
+                         "force_1_n": total * 0.4, "force_2_n": total * 0.6, "force_total_n": total})
+        with self.assertRaisesRegex(MeasurementError, "Messrand"):
+            force_peak(rows, 0.002, window=20)
+        peaks, curve = force_peak(rows, 0.002, window=100)
+        self.assertLess(abs(peaks["force_total_n"]["position_mm"] - 7), 0.5)
+        self.assertLess(peaks["force_total_n"]["force_n"], 0)
+        self.assertEqual(len(curve), len(rows) - 99)
+
     def test_profile_applies_to_raw_and_mean_without_double_tare(self):
         stream = ForceStream()
         stream.profile = profile().with_tare(0.1, 0.2)
         result = stream.calibrated(force_sample(first=0.2, second=0.3))
         self.assertAlmostEqual(result.force_total_raw_n, 0.4)
+
+    def test_tare_without_profile_zeros_raw_and_live_values_and_can_be_repeated(self):
+        from threading import Event
+        stream = ForceStream()
+        clock = [100.0]
+        sequence = [0]
+        baseline = [0.2, -0.1]
+
+        def feed(seconds=0):
+            clock[0] += seconds
+            sequence[0] += 1
+            stream.receive(force_sample(sequence[0], int(clock[0] * 1e9), *baseline))
+
+        with patch("probe_hardware.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("probe_hardware.time.sleep", side_effect=feed):
+            feed()
+            tare = stream.zero(Event())
+            self.assertIsNone(stream.profile)
+            self.assertGreaterEqual(tare["sample_count"], 20)
+            self.assertAlmostEqual(tare["noise_total_n"], 0)
+            source = replace(force_sample(first=0.3, second=0.1),
+                             force_1_mean_20_n=0.25, force_2_mean_20_n=0,
+                             force_total_mean_20_n=0.25)
+            result = stream.calibrated(source)
+            self.assertAlmostEqual(result.force_total_raw_n, 0.3)
+            self.assertAlmostEqual(result.force_total_n, 0.3)
+            self.assertAlmostEqual(result.force_total_mean_20_n, 0.15)
+            self.assertAlmostEqual(result.uncalibrated_force_1_raw_n, 0.3)
+            self.assertIsNone(result.calibration_profile_id)
+            stream.receive(source)
+            with self.assertRaisesRegex(MeasurementError, "Kraftgrenzwert"):
+                stream.check(0.15)
+            baseline[:] = [0.4, 0.2]
+            feed()
+            stream.zero(Event())
+            self.assertAlmostEqual(stream.calibrated(stream.latest).force_total_raw_n, 0)
 
     def test_force_status_stale_overrange_and_limit(self):
         stream = ForceStream()

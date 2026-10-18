@@ -36,6 +36,7 @@ class ProbeConfig:
     force_limit_n: float = 1.0
     mm_per_step: float = 0.005
     outward_direction: int = -1
+    force_smoothing_samples: int = 100
 
     @property
     def sensors(self):
@@ -57,6 +58,9 @@ class ProbeConfig:
             raise MeasurementError("Messparameter müssen endlich sein.")
         if self.mode not in {"barriers", "nozzle"}:
             raise MeasurementError("Unbekannter Messmodus.")
+        if (type(self.force_smoothing_samples) is not int
+                or not 20 <= self.force_smoothing_samples <= 2400):
+            raise MeasurementError("Kraftglättung muss 20–2400 Rohmesswerte umfassen.")
         if not (1 <= self.first_sensor <= 8 and 1 <= self.second_sensor <= 8
                 and self.first_sensor != self.second_sensor):
             raise MeasurementError("Zwei unterschiedliche Lichtschranken von LB1 bis LB8 auswählen.")
@@ -236,9 +240,13 @@ def force_peak(samples, noise_n, window=20):
             positions = [s["position_mm"] for s in smoothed]
             if maximum < max(0.005, 5 * noise_n):
                 raise MeasurementError("Kraftpeak nicht ausreichend über dem Tara-Rauschen.")
-            if (i < window // 2 or i >= len(smoothed) - window // 2
+            if (i < 10 or i >= len(smoothed) - 10
                     or min(sample["position_mm"] - min(positions), max(positions) - sample["position_mm"]) < 0.1):
-                raise MeasurementError("Kraftpeak am Messrand; Wendepunkt/Messbereich vergrößern.")
+                raise MeasurementError(
+                    f"Kraftpeak am Messrand: {sample['position_mm']:.3f} mm, "
+                    f"|FΣ|={maximum:.4f} N, Messbereich {min(positions):.3f}–{max(positions):.3f} mm. "
+                    f"Kraftkurve und Glättung ({window} Rohwerte) prüfen; "
+                    "bei einem tatsächlichen Randpeak den Messbereich erweitern.")
     return peaks, smoothed
 
 
@@ -256,6 +264,7 @@ class ProbeRecording:
         self.config = config
         self.document = {"version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
                          "config": asdict(config), "profile": profile, "tare": tare,
+                         "force_processing": "profile_and_tare" if profile else "tare_only" if tare else "bridge",
                          "geometry": {"home_position_mm": 0.0, "outward_target_mm": config.outward_target_mm,
                                       "outward_sensor_order": list(config.sensors),
                                       "return_sensor_order": list(reversed(config.sensors)),

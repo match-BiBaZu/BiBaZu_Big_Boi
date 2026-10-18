@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -21,7 +22,7 @@ from probe_calibration import (
 )
 from probe_vendor.colibri import ColibriController
 from probe_vendor.force_sources import QuantumXTcpClient
-from probe_vendor.platform_calibration import PlatformCalibration
+from probe_vendor.platform_calibration import PlatformCalibration, utc_now_iso
 from probe_bridge import require_bridge, wait_for_bridge
 from probe_heartbeat import ProbeHeartbeat
 
@@ -223,7 +224,23 @@ class ForceStream:
     def calibrated(self, sample):
         if self.profile:
             return self.profile.apply(sample)
-        return sample
+        if not self.tare:
+            return sample
+        # Bridge values can be zeroed without an additional gain profile.
+        # Apply the same offsets to live, mean and raw channels; final peaks
+        # use the raw channels, whereas telemetry displays the live channels.
+        offsets = (self.tare["force_1_n"], self.tare["force_2_n"])
+        changes = {}
+        for suffix in ("n", "mean_20_n", "raw_n"):
+            names = (f"force_1_{suffix}", f"force_2_{suffix}", f"force_total_{suffix}")
+            first, second = (getattr(sample, name) for name in names[:2])
+            corrected = ((None, None, None) if first is None or second is None else
+                         (first - offsets[0], second - offsets[1],
+                          first - offsets[0] + second - offsets[1]))
+            changes.update(zip(names, corrected))
+            changes.update((f"uncalibrated_{name}", getattr(sample, name)) for name in names)
+        return replace(sample, **changes, raw_force=changes["force_total_raw_n"],
+                       calibration_zeroed_utc=self.tare["zeroed_utc"])
 
     def check(self, limit_n):
         with self.lock:
@@ -258,8 +275,8 @@ class ForceStream:
             self.tare = None
 
     def zero(self, cancel):
-        if not self.profile:
-            raise MeasurementError("Zuerst das TAL221-Kraftkalibrierprofil laden.")
+        with self.lock:
+            self.tare = None
         self.drain()
         deadline = time.monotonic() + 1.0
         samples = {}
@@ -276,12 +293,15 @@ class ForceStream:
         values = list(samples.values())
         tare1 = statistics.mean(s.force_1_raw_n for s in values)
         tare2 = statistics.mean(s.force_2_raw_n for s in values)
-        noise = statistics.stdev((s.force_1_raw_n + s.force_2_raw_n) * self.profile.gain for s in values)
+        gain = self.profile.gain if self.profile else 1.0
+        noise = statistics.stdev((s.force_1_raw_n + s.force_2_raw_n) * gain for s in values)
         with self.lock:
-            self.profile = self.profile.with_tare(tare1, tare2)
+            if self.profile:
+                self.profile = self.profile.with_tare(tare1, tare2)
             self.noise_n = noise
             self.tare = {"force_1_n": tare1, "force_2_n": tare2, "noise_total_n": noise,
-                         "sample_count": len(values), "zeroed_utc": self.profile.zeroed_utc}
+                         "sample_count": len(values),
+                         "zeroed_utc": self.profile.zeroed_utc if self.profile else utc_now_iso()}
         return self.tare
 
 
@@ -378,7 +398,8 @@ class ProbeRunner:
             self.update({"position_mm": position, "force_1_n": sample.force_1_n,
                          "force_2_n": sample.force_2_n, "force_total_n": sample.force_total_n,
                          "cycle": self.cycle, "direction": self.direction,
-                         "open": snapshot["open"], "force_rows": self.force_rows[-1000:]})
+                         "open": snapshot["open"],
+                         "force_rows": self.force_rows[-max(1000, 2 * self.config.force_smoothing_samples):]})
         return snapshot, ready
 
     def _forces(self):
@@ -554,8 +575,8 @@ class ProbeRunner:
 
     def run(self, config, root):
         config.validate()
-        if config.mode == "nozzle" and (not self.forces.profile or not self.forces.tare):
-            raise MeasurementError("Düsenmessung benötigt geladenes Kraftprofil und frische Tara.")
+        if config.mode == "nozzle" and not self.forces.tare:
+            raise MeasurementError("Vor der Düsenmessung die Kraftsensoren ohne Luftlast tarieren.")
         self.recording = ProbeRecording(root, config,
                                         self.forces.profile.to_dict() if self.forces.profile else None,
                                         self.forces.tare)
@@ -585,7 +606,8 @@ class ProbeRunner:
                                                   config.first_sensor, config.second_sensor, config.speed_mm_s))
                     forward_peaks = None
                 else:
-                    forward_peaks, forward_curve = force_peak(self.force_rows, self.forces.noise_n)
+                    forward_peaks, forward_curve = force_peak(
+                        self.force_rows, self.forces.noise_n, config.force_smoothing_samples)
                     # The return reference is not known yet. Keep the outbound result
                     # provisional so an abort still retains its peaks and curve.
                     self.recording.document["pending_nozzle_cycle"] = {
@@ -606,7 +628,8 @@ class ProbeRunner:
                 else:
                     self.require_open = False
                     self.plc.command(3, cancel=self.cancel)
-                    backward_peaks, backward_curve = force_peak(self.force_rows, self.forces.noise_n)
+                    backward_peaks, backward_curve = force_peak(
+                        self.force_rows, self.forces.noise_n, config.force_smoothing_samples)
                     reference = backward_edges[config.array * 2]["on"]
                     self._add_nozzle_row(cycle, "forward", forward_peaks, forward_curve,
                                          forward_edges, reference, opened["opened_ms"])
@@ -900,7 +923,7 @@ class ProbeDevices(QObject):
                 else:
                     values.update(force_1_n=None, force_2_n=None, force_total_n=None)
                 values["tare_ready"] = self.forces.tare is not None
-                values["profile_name"] = self.forces.profile.name if self.forces.profile else "Kein Profil"
+                values["profile_name"] = self.forces.profile.name if self.forces.profile else "QuantumX-Signal (Kraftprofil optional)"
                 self.forces.samples.clear()
                 self.forces.overflows = 0
             self.telemetry.emit(values)

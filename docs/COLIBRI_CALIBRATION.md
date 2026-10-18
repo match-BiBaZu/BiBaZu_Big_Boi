@@ -51,16 +51,20 @@ eines der beiden Colibri-Tabs.
 6. Die Bridge muss die TAL221 A/B auf MX440B-Kanal 3/4 liefern, einschließlich
    `force_1_raw_n`, `force_2_raw_n`, Zeitstempeln und Sequenzen. Die älteren
    KD24s-Konfigurationen auf Kanal 1/2 sind für diesen Ablauf nicht passend.
-7. Ein vorhandenes Plattform-Kraftprofil des Mini-Prüfstands laden. Es muss zu
-   Gerät `192.168.10.20` und Kanal 3/4 passen. Beide Wägezellen ohne Luftlast
-   **tarieren**. Die Tara verwendet mindestens 20 verschiedene Rohmesswerte über
-   eine Sekunde und berechnet das Summenrauschen. Das Originalprofil wird nicht
-   überschrieben; die tatsächlich verwendete Profil-/Tara-Kopie steht in der
-   Messdatei.
+7. Beide Wägezellen ohne Luftlast **tarieren**. Ein zusätzliches Kraftprofil ist
+   optional: Ohne Profil verwendet die Messung die tarierten QuantumX-Werte mit
+   Verstärkungsfaktor 1. Die Tara verwendet mindestens 20 verschiedene Rohmesswerte
+   über eine Sekunde und berechnet das Summenrauschen. Sie gilt für Livewerte und
+   Rohmesswerte der Peak-Auswertung. Ein vorhandenes Plattform-Kraftprofil des
+   Mini-Prüfstands kann weiterhin geladen werden; danach erneut tarieren.
+   In der Messdatei stehen Tara und gegebenenfalls das verwendete Profil.
+   `force_processing = tare_only` kennzeichnet die Auswertung ohne Zusatzprofil.
 
 Frische gültige Kraftdaten werden für jede Bewegung verlangt. Der einstellbare
 Grenzwert beträgt zunächst **1 N je Wägezelle**, geprüft an den Rohkräften nach
-Profilkorrektur. Die Summenkraft darf Einzelkanal-Überlastungen nicht verdecken.
+Tara und gegebenenfalls Profilkorrektur. Ohne Profil beziehen sich die Kraftwerte
+auf die Skalierung der QuantumX-Bridge. Die Summenkraft darf Einzelkanal-Überlastungen
+nicht verdecken.
 
 Die Positioniergeschwindigkeit (Parameter 3, zwei Byte) wird in **Hz / Schritte
 pro Sekunde** übertragen und zurückgelesen: bei 0,005 mm/Schritt entsprechen
@@ -127,7 +131,7 @@ separat sichtbar. Alle Ventile bleiben bei dieser Messung geschlossen.
   und kein Zurücksetzen des Öffnungszeitlimits aus.
 
 Livewerte sind die geglätteten Bridge-Kräfte. Für die endgültige Auswertung wird
-ein zentrierter gleitender Mittelwert über 20 profilkorrigierte Rohmesswerte
+ein zentrierter gleitender Mittelwert über 20 tarierte Rohmesswerte (mit optionaler Profilkorrektur)
 gebildet, getrennt je Richtung. Zeit und Position des Mittelwerts entsprechen
 der Mitte desselben Fensters. Es wird keine zusätzliche nachlaufende
 Softwarefilter-Verzögerung in die Peakposition übernommen.

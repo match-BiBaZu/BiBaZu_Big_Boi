@@ -310,6 +310,29 @@ class CompleteRunnerTests(unittest.TestCase):
             self.assertFalse(saved["accuracy_validated"])
             self.assertNotIn("pending_nozzle_cycle", saved)
 
+    def test_nozzle_series_without_profile_still_requires_tare_and_records_peaks(self):
+        self.forces.profile = None
+        self.forces.tare = None
+        config = ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(MeasurementError, "tarieren"):
+                self.runner.run(config, directory)
+            self.assertEqual(self.axis.moves, [])
+            self.assertEqual(self.plc.open_count, 0)
+            self.forces.tare = {"force_1_n": 0, "force_2_n": 0, "noise_total_n": 0.0001,
+                                "zeroed_utc": "2026-10-18T00:00:00+00:00"}
+            result = self.runner.run(config, directory)
+            self.assertTrue(result["apply_allowed"])
+            self.assertIsNone(result["profile"])
+            self.assertEqual(result["force_processing"], "tare_only")
+            self.assertEqual(len(result["rows"]), 10)
+            self.assertAlmostEqual(result["summary"]["mean_mm"], 20, delta=0.15)
+            self.assertEqual(self.plc.open_count, 5)
+            self.assertFalse(self.plc.open)
+            saved = json.loads((self.runner.recording.path / "session.json").read_text())
+            self.assertIsNone(saved["profile"])
+            self.assertEqual(saved["tare"], self.forces.tare)
+
     def test_abort_in_home_forward_and_backward_keeps_partial_data(self):
         for phase in ("home", "forward", "backward"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
