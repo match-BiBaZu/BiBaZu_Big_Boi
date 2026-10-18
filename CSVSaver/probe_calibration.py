@@ -12,6 +12,9 @@ from pathlib import Path
 
 MASK = 0xFFFFFFFF
 CYCLES = 5
+# Accepted encoder coordinates, independent of a calibration's travel distance.
+AXIS_POSITION_MIN_MM = -75.0
+AXIS_POSITION_MAX_MM = 75.0
 
 
 class MeasurementError(ValueError):

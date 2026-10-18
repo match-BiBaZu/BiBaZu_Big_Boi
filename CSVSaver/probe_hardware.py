@@ -15,7 +15,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from probe_calibration import (
-    MASK, CYCLES, BarrierHistory, EdgeCapture, MeasurementError, PositionTimeline,
+    MASK, CYCLES, AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM,
+    BarrierHistory, EdgeCapture, MeasurementError, PositionTimeline,
     ProbeConfig, ProbeRecording, barrier_row, force_peak, persist_spacing,
 )
 from probe_vendor.colibri import ColibriController
@@ -287,8 +288,10 @@ class ProbeRunner:
         steps = self.axis.position_steps()
         after = time.monotonic_ns()
         position = steps * self.config.mm_per_step
-        if position < -0.1 or position > 75.1:
-            raise MeasurementError("Colibri-Position außerhalb 0–75 mm.")
+        if not AXIS_POSITION_MIN_MM - 0.1 <= position <= AXIS_POSITION_MAX_MM + 0.1:
+            raise MeasurementError(
+                f"Colibri-Position {position:.3f} mm außerhalb "
+                f"{AXIS_POSITION_MIN_MM:g} bis {AXIS_POSITION_MAX_MM:g} mm.")
         self.last_position = position
         self.timeline.add((before + after) // 2, position, after - before)
         if self.window_start_ns == 0:
@@ -736,6 +739,10 @@ class ProbeDevices(QObject):
             self._require_connected()
             config, target = payload
             config.validate()
+            if kind == "move" and not AXIS_POSITION_MIN_MM <= target <= AXIS_POSITION_MAX_MM:
+                raise MeasurementError(
+                    f"Manuelle Zielposition muss zwischen {AXIS_POSITION_MIN_MM:g} "
+                    f"und {AXIS_POSITION_MAX_MM:g} mm liegen.")
             self.last_config = config
             runner = self._runner()
             try:

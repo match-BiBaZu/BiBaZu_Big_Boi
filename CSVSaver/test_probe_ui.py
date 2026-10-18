@@ -36,6 +36,19 @@ class ProbeUiTests(unittest.TestCase):
         self.assertGreaterEqual(tab.open_time.value(), tab.required_duration())
         tab.config(0.005, 1)
 
+    def test_manual_move_submits_negative_target(self):
+        ui = ProbeCalibrationUi("test", "127.0.0.1", 851, "unused.json")
+        try:
+            ui.move_target.setValue(-12.5)
+            with patch.object(ui, "_remember"), patch.object(ui.devices, "submit") as submit:
+                ui._manual("move")
+            kind, (config, target) = submit.call_args.args
+            self.assertEqual(kind, "move")
+            self.assertEqual(target, -12.5)
+            self.assertEqual(config.travel_mm, 75)
+        finally:
+            ui.shutdown()
+
     def test_completed_session_populates_signed_force_peaks_and_plot(self):
         from probe_calibration import force_peak
         tab = ProbeTab("nozzle")

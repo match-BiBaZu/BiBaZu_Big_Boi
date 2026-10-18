@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from probe_calibration import ProbeConfig, smooth_force
+from probe_calibration import AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM, ProbeConfig, smooth_force
 from probe_hardware import ProbeDevices
 from probe_bridge import find_bridge
 
@@ -324,7 +324,7 @@ class ProbeCalibrationUi(QObject):
         self.profile = QPushButton("Kraftprofil laden …")
         self.tare = QPushButton("Kraftsensoren tarieren")
         self.home = QPushButton("Home")
-        self.move_target = decimal(0, 75, 0, " mm")
+        self.move_target = decimal(AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM, 0, " mm")
         self.move = QPushButton("Absolut verfahren")
         self.abort = QPushButton("STOPP")
         self.position = QLabel("Position: —")

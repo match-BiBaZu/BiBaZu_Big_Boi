@@ -171,6 +171,63 @@ class CompleteRunnerTests(unittest.TestCase):
             self.assertFalse(self.plc.open)
             self.assertEqual(self.plc.open_count, 0)
 
+    def test_negative_encoder_positions_are_accepted(self):
+        self.plc.command(1, ProbeConfig())
+        for position in (-75, -10, -0.265, 0, 75):
+            with self.subTest(position=position):
+                self.axis.position = self.axis.target = position
+                self.runner.tick()
+                self.assertAlmostEqual(self.runner.last_position, position)
+
+    def test_positions_outside_signed_range_still_fail(self):
+        self.plc.command(1, ProbeConfig())
+        for position in (-75.2, 75.2):
+            with self.subTest(position=position):
+                self.axis.position = self.axis.target = position
+                with self.assertRaisesRegex(MeasurementError, "außerhalb"):
+                    self.runner.tick()
+
+    def test_home_can_pass_negative_positions_before_controller_sets_zero(self):
+        self.plc.command(1, ProbeConfig())
+        started = self.clock.now
+
+        def start_reference():
+            self.axis.position = self.axis.target = -0.265
+            self.axis.referenced = False
+
+        def finish_reference(plc):
+            if self.clock.now - started >= 0.4:
+                self.axis.position = self.axis.target = 0
+                self.axis.referenced = True
+
+        self.plc.on_snapshot = finish_reference
+        with patch.object(self.axis, "reference", side_effect=start_reference):
+            self.runner.home()
+        self.assertIn(-0.265, self.runner.timeline.positions)
+        self.assertEqual(self.runner.last_position, 0)
+        self.assertTrue(self.runner.last_status["referenced"])
+
+    def test_negative_position_does_not_bypass_controller_faults(self):
+        self.plc.command(1, ProbeConfig())
+        self.axis.position = self.axis.target = -0.265
+        for fault in ({"error_byte": 1}, {"software_limit": True}):
+            with self.subTest(fault=fault):
+                status = {**self.axis.status(), **fault}
+                with patch.object(self.axis, "status", return_value=status):
+                    with self.assertRaisesRegex(MeasurementError, "Fehler oder Software-Endlage"):
+                        self.runner.tick()
+
+    def test_completed_home_still_requires_controller_zero(self):
+        self.plc.command(1, ProbeConfig())
+
+        def incomplete_reference():
+            self.axis.position = self.axis.target = -0.265
+            self.axis.referenced = True
+
+        with patch.object(self.axis, "reference", side_effect=incomplete_reference):
+            with self.assertRaisesRegex(MeasurementError, "nicht bei 0 mm"):
+                self.runner.home()
+
     def test_five_nozzle_cycles_keep_same_forward_reference_and_close_each_cycle(self):
         with tempfile.TemporaryDirectory() as directory:
             result = self.runner.run(ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)

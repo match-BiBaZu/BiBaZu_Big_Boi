@@ -19,8 +19,11 @@ eines der beiden Colibri-Tabs.
 3. Den Colibri-USB/RS485-Port auswählen. Die übernommene BAC-Anbindung verwendet
    9600 Baud, Slave `0xFF`, Referenzfahrt negativ mit 20 % Referenzstrom und
    zunächst `0,005 mm/Schritt`. Nach Home nimmt die Position beim Ausfahren zu.
-   Der Achsmaßstab ist in der Gerätebedienung einstellbar; der Hub bleibt auf
-   0–75 mm begrenzt.
+   Der Achsmaßstab ist in der Gerätebedienung einstellbar. Negative Encoderwerte
+   sind zulässig: Positionsüberwachung und manuelle Zielpositionen erlauben
+   −75 bis +75 mm (Überwachung mit 0,1 mm Toleranz). Das ist ein Koordinatenbereich,
+   kein Nachweis eines mechanischen Hubs von 150 mm. Der maximale Verfahrweg
+   einer Kalibrierung bleibt 75 mm ab Home; Home muss weiterhin bei 0 mm enden.
 4. **Colibri verbinden** prüft auch die neue SPS-Schnittstelle. Fehlende Symbole
    sperren ausschließlich die neuen Colibri-Funktionen; die anderen Tabs bleiben
    nutzbar. Ein fehlgeschlagener Verbindungsversuch gibt den COM-Port wieder frei.
