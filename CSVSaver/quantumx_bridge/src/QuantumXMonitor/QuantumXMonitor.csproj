@@ -12,6 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="System.Configuration" />
     <Reference Include="Hbm.Api.Common">
       <HintPath>$(HbmApiRoot)\Hbm.Api.Common.dll</HintPath>
       <Private>true</Private>

@@ -9,7 +9,7 @@ namespace QuantumXMonitor
 {
     internal sealed class MonitorForm : Form
     {
-        private const string DeviceIp = "192.168.10.20";
+        private readonly string DeviceIp;
         private readonly Label _force1Value;
         private readonly Label _force2Value;
         private readonly Label _totalValue;
@@ -26,8 +26,9 @@ namespace QuantumXMonitor
         private QuantumXReader _reader;
         private bool _closing;
 
-        public MonitorForm(bool serverOnly = false)
+        public MonitorForm(bool serverOnly = false, string deviceIp = "192.168.10.20")
         {
+            DeviceIp = deviceIp;
             _force1ChannelNumber = 3;
             _force2ChannelNumber = 4;
             Text = "MX440B TAL221 Force Monitor";

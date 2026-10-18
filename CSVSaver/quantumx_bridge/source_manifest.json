@@ -1,6 +1,11 @@
 {
   "repository": "https://github.com/match-BiBaZu/BiBaZu_mini_test_stand",
   "retrieved_on": "2026-10-18",
+  "local_modifications": [
+    "Program.cs reads and validates QuantumXDeviceIp from the executable appSettings; the previous address remains the default.",
+    "MonitorForm.cs accepts the configured device address.",
+    "QuantumXMonitor.csproj references System.Configuration."
+  ],
   "files": [
     {
       "path": "quantumx_bridge/src/QuantumXMonitor/FilteredSample.cs",
