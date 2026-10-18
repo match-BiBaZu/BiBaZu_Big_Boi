@@ -22,9 +22,9 @@ eines der beiden Colibri-Tabs.
 3. Den Colibri-USB/RS485-Port auswählen. Die übernommene BAC-Anbindung verwendet
    9600 Baud, Slave `0xFF`, Referenzfahrt negativ mit 20 % Referenzstrom und
    zunächst `0,005 mm/Schritt`. Die bisherige Home-Referenzfahrt bleibt erhalten.
-   Die Mess-Hinfahrt führt von Home zu **negativen** Achspositionen; die Rückfahrt
-   führt wieder zu 0 mm. Home liegt weiter unten an der Rutsche, hinter den
-   Lichtschranken beziehungsweise hinter der Düse.
+   **Hinfahrt ab Home** ist in jedem Mess-Tab zwischen positiven und negativen
+   Achspositionen umschaltbar. Die Rückfahrt führt wieder zu 0 mm. Die Auswahl
+   wird gespeichert; die Home-Referenzrichtung wird dadurch nicht verändert.
    Der Achsmaßstab ist in der Gerätebedienung einstellbar. Negative Encoderwerte
    sind zulässig: Positionsüberwachung und manuelle Zielpositionen erlauben
    −75 bis +75 mm (Überwachung mit 0,1 mm Toleranz). Das ist ein Koordinatenbereich,
@@ -62,20 +62,27 @@ Frische gültige Kraftdaten werden für jede Bewegung verlangt. Der einstellbare
 Grenzwert beträgt zunächst **1 N je Wägezelle**, geprüft an den Rohkräften nach
 Profilkorrektur. Die Summenkraft darf Einzelkanal-Überlastungen nicht verdecken.
 
+Die Positioniergeschwindigkeit (Parameter 3, zwei Byte) wird in **Hz / Schritte
+pro Sekunde** übertragen und zurückgelesen: bei 0,005 mm/Schritt entsprechen
+2 mm/s einem Wert von **400 Hz**, 5 mm/s **1000 Hz**. Die frühere Umrechnung in
+100-Hz-Einheiten war hier falsch und ergab eine um Faktor 100 zu langsame Fahrt.
+Die im BAC-Handbuch genannten 100-Hz-Einheiten beziehen sich auf andere
+Frequenzparameter, nicht diese Maximalgeschwindigkeit. Siehe Herstellerhandbuch,
+[Maximalgeschwindigkeit](https://www.manualslib.de/manual/165134/Gunda-Colibri-34-Bac.html?page=22).
+
 ## Lichtschrankenabstand
 
-- Home liegt hinter beiden Lichtschranken; beide müssen dort frei sein. Erste
-  und zweite Lichtschranke weiterhin in **Förderrichtung** wählen. Bei der
-  Hinfahrt ab Home wird deshalb zuerst LB2 und dann LB1 durchfahren (bei anderen
-  Paaren entsprechend die höhere vor der niedrigeren Nummer). Auf der Rückfahrt
-  ist die Reihenfolge umgekehrt.
+- Beide Lichtschranken müssen an Home frei sein. **Zuerst auf der Hinfahrt** und
+  **Danach auf der Hinfahrt** sind frei wählbar, beispielsweise LB2 → LB1 oder
+  LB1 → LB2. Eine feste aufsteigende Nummernfolge ist nicht vorgeschrieben.
 - Geschwindigkeit, maximalen Verfahrweg und Nachlauf hinter der letzten
   Ausschaltflanke einstellen. Start führt zuerst Home aus und setzt den lokalen
   Ereigniscursor zurück; globale SPS-Ereignisprotokolle werden nicht gelöscht.
-- Die Achse fährt zu negativen Positionen, erfasst Ein- und Ausschalten beider
+- Die Achse fährt in der gewählten Richtung, erfasst Ein- und Ausschalten beider
   Schranken und wendet nach dem Nachlauf hinter der letzten Ausschaltflanke:
-  `Wendeposition = kleinste Ausschaltposition − Nachlauf`. Die positive
-  Wegeingabe von beispielsweise 60 mm bedeutet eine feste Grenze von −60 mm.
+  Beim negativen Vorzeichen gilt `kleinste Ausschaltposition − Nachlauf`, beim
+  positiven `größte Ausschaltposition + Nachlauf`. Die positive Wegeingabe von
+  beispielsweise 60 mm bedeutet je nach Auswahl eine Grenze von −60 oder +60 mm.
   Der maximale Verfahrweg wird auch bei fehlenden Flanken
   eingehalten. Zurück werden dieselben vier Schaltpositionen erfasst.
 - Eine Serie endet nach fünf vollständigen Zyklen an Home. Zusätzliche oder
@@ -96,13 +103,13 @@ separat sichtbar. Alle Ventile bleiben bei dieser Messung geschlossen.
 
 - Achse zwischen den Abläufen manuell versetzen. Eine Messserie benötigt danach
   keinen mechanischen Umbau. Reihenfolge von Home aus: **Düse → zweite
-  Lichtschranke → Wendepunkt**, jeweils zu negativeren Positionen. Auf der
+  Lichtschranke → Wendepunkt**, in der gewählten Achsrichtung. Auf der
   Rückfahrt: **zweite Lichtschranke → Düse → Home**.
 - Array und einzelne Düse wählen. Die Zuordnung ist Array 1 → LB2, Array 2 →
   LB4, Array 3 → LB6 und Array 4 → LB8.
 - Den Wendepunkt über die Lichtschranke hinaus setzen, sodass auch deren
   Ausschaltflanke auf der Hinfahrt erfasst wird. Die Eingabe ist der positive
-  Abstand von Home; die Zielposition hat negatives Vorzeichen. Der gesamte
+  Abstand von Home; das Vorzeichen der Zielposition wird separat gewählt. Der gesamte
   Hin-/Rückweg muss innerhalb des 75-mm-Hubs bleiben.
 - Druck startet bei **1000 mbar**. Maximale Ventilöffnungszeit startet bei
   **30 s** und kann bis 300 s eingestellt werden. **Öffnungszeit passend setzen**
@@ -133,7 +140,7 @@ deren Rändern. Andernfalls wird die Serie als ungültig beendet.
 
 **Beide Richtungen eines Zyklus verwenden den Einschaltpunkt der Rückfahrt:**
 
-`Abstand = Peakposition der jeweiligen Richtung − Einschaltposition der Rückfahrt`
+`Abstand = Betrag(Peakposition der jeweiligen Richtung − Einschaltposition der Rückfahrt)`
 
 Beispiel: Rückfahrt-Einschaltpunkt −30 mm, Kraftpeak −10 mm ergibt 20 mm Abstand.
 Die Hinfahrt-Kraftkurve wird bis zum Erfassen dieses Rückfahrt-Bezugs vorläufig
@@ -147,7 +154,7 @@ sowie Markierungen für Lichtschranke und Hauptpeak.
 
 Jede Ergebniszeile speichert `reference_direction = backward` und die tatsächlich
 verwendete Referenzflanke samt Zeit und Position. Die Serien-JSON enthält unter
-`geometry` die negative Zielposition, Sensorreihenfolge und Ventilöffnungsphase.
+`geometry` die gewählte Zielposition, Sensorreihenfolge und Ventilöffnungsphase.
 
 ## Dateien und Übernahme
 
@@ -188,7 +195,7 @@ Zusätzlich zu den bestehenden Schnittstellen gibt es die Gruppe
 | `...Command` | 1 = übernehmen, 2 = an LB scharfschalten (bestehender Modus), 3 = Ventil schließen, 4 = freigeben, 5 = Ventil an Home öffnen |
 | `...CommandSequence` | Zuletzt schreiben; je Transaktion erhöhen |
 | `ProbeCalibrationAckSequence` | Passende Quittierung abwarten |
-| `GuiProbeCalibrationHeartbeat` | Aktiver Client ändert den Zähler spätestens alle 100 ms |
+| `GuiProbeCalibrationHeartbeat` | Eigener Thread mit separater ADS-Verbindung schreibt alle 100 ms |
 | `GuiProbeCalibrationStop` | Sofortiger Abbruch mit verriegeltem Fehler |
 | `ProbeCalibrationActive`, `...Armed`, `...ValveOpen` | Zustand |
 | `ProbeCalibrationOpenedAtMs` | Tatsächlicher Öffnungszeitpunkt auf SPS-Ereignisuhr |
@@ -199,6 +206,15 @@ Die SPS übernimmt Parameter nur bei Befehl 1. Die normale Pulsbegrenzung von
 Düsenfreigaben bereits beim Eintritt und hat die letzte Entscheidung über
 Ventilausgänge und Drucksollwerte. Bestehende Betriebsfreigaben werden deaktiviert
 und nach einem Abbruch nicht wieder eingeschaltet.
+
+Der Heartbeat wartet nicht auf serielle Positions-/Statusantworten. Sein Thread
+prüft auch Abbruch, frische gültige Kräfte und Kraftgrenzen. Der Messworker muss
+ihn spätestens alle 2,5 s bedienen; dadurch läuft der Heartbeat bei einem
+hängenden Messworker nicht unbegrenzt weiter. Einzelne ADS-Schreibversuche haben
+250 ms Timeout. Bei einer Störung endet der Heartbeat und die SPS schließt
+spätestens nach ihrem bestehenden 1000-ms-Heartbeat-Timeout. Beim normalen Abbruch
+fordert die GUI zuerst unmittelbar den Ventilschluss an und beendet anschließend
+den Heartbeat. Der separate Ventilöffnungs-Timeout bleibt ebenfalls aktiv.
 
 | Fehlercode | Ursache |
 | --- | --- |

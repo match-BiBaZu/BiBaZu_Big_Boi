@@ -36,17 +36,25 @@ class ProbeUiTests(unittest.TestCase):
         self.assertGreaterEqual(tab.open_time.value(), tab.required_duration())
         tab.config(0.005, 1)
 
-    def test_unsigned_travel_displays_negative_outward_target(self):
+    def test_travel_direction_toggle_and_free_sensor_order(self):
         for mode in ("barriers", "nozzle"):
             with self.subTest(mode=mode):
                 tab = ProbeTab(mode)
                 tab.travel.setValue(40)
                 if mode == "nozzle":
                     tab.suggest_duration.click()
-                config = tab.config(0.005, 1)
-                self.assertEqual(config.travel_mm, 40)
-                self.assertEqual(config.outward_target_mm, -40)
-                self.assertIn("−40 mm", tab.path_hint.text())
+                for sign in (-1, 1):
+                    tab.direction.setCurrentIndex(tab.direction.findData(sign))
+                    config = tab.config(0.005, 1)
+                    self.assertEqual(config.travel_mm, 40)
+                    self.assertEqual(config.outward_target_mm, sign * 40)
+                    self.assertIn("−40 mm" if sign < 0 else "+40 mm", tab.path_hint.text())
+                if mode == "barriers":
+                    for first, second in ((2, 1), (1, 2)):
+                        tab.first.setCurrentIndex(tab.first.findData(first))
+                        tab.second.setCurrentIndex(tab.second.findData(second))
+                        config = tab.config(0.005, 1)
+                        self.assertEqual(config.sensors, (first, second))
 
     def test_manual_move_submits_negative_target(self):
         ui = ProbeCalibrationUi("test", "127.0.0.1", 851, "unused.json")
@@ -90,6 +98,9 @@ class ProbeUiTests(unittest.TestCase):
         tab.document = {"apply_allowed": True, "config": {"first_sensor": 1, "second_sensor": 3}}
         tab.update_controls()
         self.assertFalse(tab.apply.isEnabled())
+        tab.document = {"apply_allowed": True, "config": {"first_sensor": 2, "second_sensor": 1}}
+        tab.update_controls()
+        self.assertTrue(tab.apply.isEnabled())
 
 
 if __name__ == "__main__":

@@ -74,7 +74,12 @@ class Axis:
 
     def set_parameter(self, index, subindex, value, size):
         if (index, subindex) == (3, 2):
-            self.speed = value * 0.5
+            self.speed = value * 0.005
+
+    def parameter(self, index, subindex):
+        if (index, subindex) == (3, 2):
+            return round(self.speed / 0.005)
+        raise ValueError("Unexpected simulated parameter")
 
     def set_remote(self):
         pass
@@ -200,6 +205,28 @@ class CompleteRunnerTests(unittest.TestCase):
                 self.axis.position = self.axis.target = position
                 self.runner.tick()
                 self.assertAlmostEqual(self.runner.last_position, position)
+
+    def test_positive_direction_runs_barrier_and_nozzle_series(self):
+        for mode in ("barriers", "nozzle"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                self.setUpScenario()
+                self.forces.profile = profile()
+                self.forces.tare = {"noise_total_n": 0.0001}
+                self.forces.noise_n = 0.0001
+                read_steps = self.axis.position_steps
+                move_steps = self.axis.move_absolute_steps
+                # Same physical fixture, opposite sign of encoder coordinates.
+                with patch.object(self.axis, "position_steps", side_effect=lambda: -read_steps()), \
+                     patch.object(self.axis, "move_absolute_steps", side_effect=lambda steps: move_steps(-steps)):
+                    config = ProbeConfig(mode=mode, outward_direction=1, speed_mm_s=5,
+                                         travel_mm=65, max_open_s=40)
+                    result = self.runner.run(config, directory)
+                self.assertTrue(result["apply_allowed"])
+                self.assertAlmostEqual(result["summary"]["mean_mm"], 20, delta=0.15)
+                self.assertEqual(result["geometry"]["outward_target_mm"], 65)
+                self.assertEqual(result["geometry"]["outward_sensor_order"], [2, 1] if mode == "barriers" else [2])
+                if mode == "nozzle":
+                    self.assertGreater(result["rows"][0]["peaks"]["force_total_n"]["position_mm"], 0)
 
     def test_positions_outside_signed_range_still_fail(self):
         self.plc.command(1, ProbeConfig())

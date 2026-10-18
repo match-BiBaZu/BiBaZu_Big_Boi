@@ -220,10 +220,21 @@ class ForceAndRecordingTests(unittest.TestCase):
         with self.assertRaises(MeasurementError):
             ProbeConfig(mode="nozzle").validate()
         ProbeConfig(mode="nozzle", max_open_s=100).validate()
-        for config in (ProbeConfig(travel_mm=76), ProbeConfig(first_sensor=2, second_sensor=1),
-                       ProbeConfig(speed_mm_s=1.1), ProbeConfig(mm_per_step=float("nan"))):
+        for config in (ProbeConfig(travel_mm=76), ProbeConfig(first_sensor=1, second_sensor=1),
+                       ProbeConfig(speed_mm_s=1.1001), ProbeConfig(mm_per_step=float("nan"))):
             with self.assertRaises(MeasurementError):
                 config.validate()
+
+    def test_positioning_speed_is_sent_in_hz_and_read_back(self):
+        axis, plc = Mock(), Mock()
+        axis.parameter.return_value = 400
+        runner = ProbeRunner(axis, plc, ForceStream(), Mock())
+        runner.set_speed(2)
+        axis.set_parameter.assert_called_once_with(3, 2, 400, 2)
+        axis.parameter.assert_called_once_with(3, 2)
+        axis.parameter.return_value = 4
+        with self.assertRaisesRegex(MeasurementError, "4 statt 400 Hz"):
+            runner.set_speed(2)
 
     def test_nozzle_both_distances_use_return_on_reference(self):
         runner = ProbeRunner(Mock(), Mock(), ForceStream(), Mock())

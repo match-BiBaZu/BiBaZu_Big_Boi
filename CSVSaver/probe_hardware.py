@@ -23,6 +23,7 @@ from probe_vendor.colibri import ColibriController
 from probe_vendor.force_sources import QuantumXTcpClient
 from probe_vendor.platform_calibration import PlatformCalibration
 from probe_bridge import require_bridge, wait_for_bridge
+from probe_heartbeat import ProbeHeartbeat
 
 PREFIX = "MAIN."
 PROBE_FIELDS = ("ProbeCalibrationInterfaceVersion", "ProbeCalibrationAckSequence",
@@ -40,6 +41,9 @@ class ProbePlc:
         self.heartbeat = 0
         self.owned = False
         self.last_heartbeat = 0.0
+        self.heartbeat_guard = None
+        self.heartbeat_task = None
+        self.heartbeat_connection_factory = lambda: pyads.Connection(net_id, port, ip)
 
     def read(self, names):
         return self.connection.read_list_by_name(names, cache_symbol_info=True)
@@ -66,6 +70,9 @@ class ProbePlc:
         return values
 
     def pulse_heartbeat(self, force=False):
+        if self.heartbeat_task is not None:
+            self.heartbeat_task.service()
+            return
         if force or (self.owned and time.monotonic() - self.last_heartbeat >= 0.1):
             self.heartbeat = (self.heartbeat + 1) & MASK
             self.write({PREFIX + "GuiProbeCalibrationHeartbeat": self.heartbeat})
@@ -92,6 +99,9 @@ class ProbePlc:
             self.pulse_heartbeat(True)
             # Includes a potentially partially completed entry in cleanup.
             self.owned = True
+            self.heartbeat_task = ProbeHeartbeat(self.heartbeat_connection_factory,
+                                                 self.heartbeat_guard, self.heartbeat)
+            self.heartbeat_task.start()
         elif command == 5:
             self.check(minimum_version=2)
         self.sequence = (self.sequence + 1) & MASK
@@ -117,6 +127,7 @@ class ProbePlc:
         started = time.monotonic_ns()
         history = self.read([PREFIX + "LightBarrierEventHistory"])[PREFIX + "LightBarrierEventHistory"]
         finished = time.monotonic_ns()
+        self.pulse_heartbeat()
         values = self.read([PREFIX + f for f in PROBE_FIELDS]
                            + [f"MAIN.LightBarrierStable{s}" for s in range(1, 9)]
                            + ["MAIN.StepperPosBusy", "MAIN.ConveyorServo1TargetVelocity", "MAIN.ConveyorServo2TargetVelocity"])
@@ -164,13 +175,28 @@ class ProbePlc:
     def release(self):
         if self.owned:
             try:
+                # Request valve closure before waiting for any background I/O.
                 self.write({PREFIX + "GuiProbeCalibrationStop": True})
+            finally:
+                self.owned = False
+                self._stop_heartbeat()
+            try:
                 self.command(4)
             finally:
                 self.owned = False
 
+    def _stop_heartbeat(self):
+        if self.heartbeat_task is not None:
+            self.heartbeat_task.stop()
+            self.heartbeat = self.heartbeat_task.value
+            self.heartbeat_task = None
+
     def close(self):
-        self.connection.close()
+        try:
+            self.release()
+        finally:
+            self._stop_heartbeat()
+            self.connection.close()
 
 
 class ForceStream:
@@ -304,6 +330,7 @@ class ProbeRunner:
         self.timeline.add((before + after) // 2, position, after - before)
         if self.window_start_ns == 0:
             self.window_start_ns = self.timeline.times[0]
+        self.plc.pulse_heartbeat()
         self.last_status = self.axis.status()
         self.guard()
         if self.last_status["error_byte"] or self.last_status["software_limit"]:
@@ -404,6 +431,7 @@ class ProbeRunner:
     def enter(self, config):
         self.config = config
         self.guard()
+        self.plc.heartbeat_guard = self.guard
         self.plc.command(1, config, self.cancel)
         deadline = time.monotonic() + 8
         while not self.plc.snapshot()["belt_stopped"]:
@@ -413,17 +441,26 @@ class ProbeRunner:
                 raise MeasurementError("Förderband erreicht keinen Stillstand.")
             self.cancel.wait(0.03)
         self.axis.set_remote()
+        self.plc.pulse_heartbeat()
         self.axis.enable()
+        self.plc.pulse_heartbeat()
         self.set_speed(config.speed_mm_s)
 
     def set_speed(self, speed):
         self.plc.pulse_heartbeat()
-        setting = round(speed / (100 * self.config.mm_per_step))
+        # Parameter 3 is a frequency in Hz, not a count of 100-Hz units.
+        setting = round(speed / self.config.mm_per_step)
         self.axis.set_parameter(3, 2, setting, 2)
+        self.plc.pulse_heartbeat()
+        actual = self.axis.parameter(3, 2)
+        self.plc.pulse_heartbeat()
+        if actual != setting:
+            raise MeasurementError(f"Colibri-Geschwindigkeit nicht übernommen: {actual} statt {setting} Hz.")
 
     def home(self):
         self.progress("Referenzfahrt nach Home …")
         self.direction = "home"
+        self.plc.pulse_heartbeat()
         self.axis.configure_negative_reference()
         self.plc.pulse_heartbeat()
         self.axis.reference()
@@ -466,18 +503,20 @@ class ProbeRunner:
             if auto_turn and capture.complete and not turning:
                 # Find exit using measured position; command a bounded final absolute move.
                 exit_positions = [self.timeline.at(e["off"]["time_ns"])[0] for e in capture.edges.values()]
-                final_target = min(exit_positions) - self.config.runout_mm
-                if final_target < self.config.outward_target_mm:
+                sign = self.config.outward_direction
+                final_distance = max(sign * pos for pos in exit_positions) + self.config.runout_mm
+                final_target = sign * final_distance
+                if final_distance > self.config.travel_mm:
                     raise MeasurementError("Nachlauf hinter Lichtschranken überschreitet maximalen Verfahrweg.")
-                if self.last_position <= final_target:
+                if sign * self.last_position >= final_distance:
                     self.axis.stop()
                     final_target = self.last_position
                 else:
                     self.axis.stop()
                     self._wait_stopped(capture)
-                    if self.last_position < self.config.outward_target_mm:
+                    if sign * self.last_position > self.config.travel_mm:
                         raise MeasurementError("Achse überschreitet maximalen Verfahrweg beim Abbremsen.")
-                    final_target = min(final_target, self.last_position)
+                    final_target = sign * max(final_distance, sign * self.last_position)
                     self.axis.move_absolute_steps(round(final_target / self.config.mm_per_step))
                 turning = True
             if not self.last_status["moving"] and abs(self.last_position - final_target) <= self.config.mm_per_step * 2:
@@ -576,9 +615,9 @@ class ProbeRunner:
         return self.recording.document
 
     def _add_nozzle_row(self, cycle, direction, peaks, curve, edges, reference, opened_ms):
-        distance = peaks["force_total_n"]["position_mm"] - reference["position_mm"]
+        distance = abs(peaks["force_total_n"]["position_mm"] - reference["position_mm"])
         if distance <= 0:
-            raise MeasurementError("Kraftpeak muss hinter der auslösenden Lichtschranke liegen.")
+            raise MeasurementError("Kraftpeak und Lichtschrankenbezug liegen an derselben Position.")
         self.recording.add({"cycle": cycle, "direction": direction, "distance_mm": distance,
                             "reference_position_mm": reference["position_mm"], "peaks": peaks,
                             "reference_direction": "backward", "reference_sensor": self.config.array * 2,
@@ -798,7 +837,8 @@ class ProbeDevices(QObject):
             if not document or not document.get("apply_allowed"):
                 raise MeasurementError("Keine vollständig gültige Messserie zur Übernahme.")
             config = ProbeConfig(**document["config"])
-            key = (f"sensor_spacing_{config.first_sensor}{config.second_sensor}_mm" if config.mode == "barriers"
+            first, second = sorted(config.sensors) if config.mode == "barriers" else (0, 0)
+            key = (f"sensor_spacing_{first}{second}_mm" if config.mode == "barriers"
                    else f"sensor_{config.array*2}_to_array_{config.array}_spacing_mm")
             value = persist_spacing(settings_path, key, document["summary"]["mean_mm"], self.plc)
             document["applied"] = {"setting": key, "value_mm": value}

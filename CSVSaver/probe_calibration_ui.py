@@ -98,15 +98,17 @@ class ProbeTab(QWidget):
         controls = QHBoxLayout()
         form = QFormLayout()
         self.inputs = []
+        settings = QSettings("BiBaZu", "ColibriCalibration")
         if mode == "barriers":
             self.first = QComboBox()
             self.second = QComboBox()
             for sensor in range(1, 9):
                 self.first.addItem(f"LB {sensor}", sensor)
                 self.second.addItem(f"LB {sensor}", sensor)
-            self.second.setCurrentIndex(1)
-            form.addRow("Erste Lichtschranke in Förderrichtung", self.first)
-            form.addRow("Zweite Lichtschranke in Förderrichtung", self.second)
+            self.first.setCurrentIndex(max(0, self.first.findData(settings.value("barriers/first_sensor", 2, type=int))))
+            self.second.setCurrentIndex(max(0, self.second.findData(settings.value("barriers/second_sensor", 1, type=int))))
+            form.addRow("Zuerst auf der Hinfahrt", self.first)
+            form.addRow("Danach auf der Hinfahrt", self.second)
             self.runout = decimal(0.005, 20, 2, " mm")
             form.addRow("Nachlauf nach letzter Ausschaltflanke", self.runout)
             self.inputs += [self.first, self.second, self.runout]
@@ -130,18 +132,28 @@ class ProbeTab(QWidget):
             self.inputs += [self.array, self.nozzle, self.pressure, self.open_time]
         self.speed = decimal(0.5, 5, 2, " mm/s", 0.5, 1)
         self.travel = decimal(1, 75, 75 if mode == "barriers" else 60, " mm")
+        self.direction = QComboBox()
+        self.direction.addItem("Positiv (+): von Home zu positiven Positionen", 1)
+        self.direction.addItem("Negativ (−): von Home zu negativen Positionen", -1)
+        self.direction.setCurrentIndex(max(0, self.direction.findData(
+            settings.value(f"{mode}/outward_direction", -1, type=int))))
         form.addRow("Fahrgeschwindigkeit", self.speed)
+        form.addRow("Hinfahrt ab Home", self.direction)
         form.addRow("Maximaler Weg ab Home" if mode == "barriers" else "Weg bis Wendepunkt jenseits der Lichtschranke", self.travel)
         self.path_hint = QLabel()
         self.path_hint.setWordWrap(True)
         form.addRow("Fahrtrichtung", self.path_hint)
         self.travel.valueChanged.connect(self.update_path)
+        self.direction.currentIndexChanged.connect(self.update_path)
+        if mode == "barriers":
+            self.first.currentIndexChanged.connect(self.update_path)
+            self.second.currentIndexChanged.connect(self.update_path)
         self.update_path()
         form.addRow("Messumfang", QLabel("5 × hin und zurück; Home = 0 mm"))
-        self.inputs += [self.speed, self.travel]
+        self.inputs += [self.speed, self.travel, self.direction]
         controls.addLayout(form)
         description = QLabel(
-            "Home liegt hinter beiden Lichtschranken. Hinfahrt: zweite, dann erste Lichtschranke; Rückfahrt umgekehrt. "
+            "Fahrtrichtung und Lichtschrankenreihenfolge sind frei wählbar; die Rückfahrt führt nach Home. "
             "Alle Ein-/Ausschaltpositionen werden erfasst. Das Hauptergebnis ist der Abstand der Schaltmitten. "
             "Das Band bleibt stehen und alle Ventile bleiben geschlossen."
             if mode == "barriers" else
@@ -203,8 +215,12 @@ class ProbeTab(QWidget):
         self.update_controls()
 
     def update_path(self):
-        limit = "höchstens " if self.mode == "barriers" else ""
-        self.path_hint.setText(f"Hin: 0 → {limit}−{self.travel.value():g} mm; zurück: → 0 mm")
+        sign = "−" if self.direction.currentData() == -1 else "+"
+        endpoint = "Grenze" if self.mode == "barriers" else "Wendepunkt"
+        text = f"Hin: 0 → {sign}{self.travel.value():g} mm ({endpoint}); zurück: → 0 mm"
+        if self.mode == "barriers":
+            text += f" · LB{self.first.currentData()} → LB{self.second.currentData()}"
+        self.path_hint.setText(text)
 
     def required_duration(self):
         return 2 * self.travel.value() / self.speed.value() * 1.2 + 2
@@ -216,7 +232,8 @@ class ProbeTab(QWidget):
 
     def config(self, mm_per_step, force_limit):
         args = dict(mode=self.mode, speed_mm_s=self.speed.value(), travel_mm=self.travel.value(),
-                    mm_per_step=mm_per_step, force_limit_n=force_limit)
+                    mm_per_step=mm_per_step, force_limit_n=force_limit,
+                    outward_direction=self.direction.currentData())
         if self.mode == "barriers":
             args.update(first_sensor=self.first.currentData(), second_sensor=self.second.currentData(), runout_mm=self.runout.value())
         else:
@@ -295,7 +312,7 @@ class ProbeTab(QWidget):
         can_apply = self.document and self.document.get("apply_allowed")
         if can_apply and self.mode == "barriers":
             config = self.document["config"]
-            can_apply = config["second_sensor"] == config["first_sensor"] + 1
+            can_apply = abs(config["second_sensor"] - config["first_sensor"]) == 1
         self.apply.setEnabled(bool(can_apply and self.available and not self.busy))
 
 
@@ -396,6 +413,10 @@ class ProbeCalibrationUi(QObject):
         for key, value in (("port", self.port.currentText()), ("bridge_path", self.bridge_path.text()),
                            ("output", self.output.text()), ("mm_per_step", self.scale.value()), ("force_limit_n", self.limit.value())):
             self.settings.setValue(key, value)
+        for mode, tab in self.tabs.items():
+            self.settings.setValue(f"{mode}/outward_direction", tab.direction.currentData())
+        self.settings.setValue("barriers/first_sensor", self.barrier_tab.first.currentData())
+        self.settings.setValue("barriers/second_sensor", self.barrier_tab.second.currentData())
 
     def _force_connect(self):
         self._remember()

@@ -24,8 +24,8 @@ class MeasurementError(ValueError):
 @dataclass(frozen=True)
 class ProbeConfig:
     mode: str = "barriers"
-    first_sensor: int = 1
-    second_sensor: int = 2
+    first_sensor: int = 2
+    second_sensor: int = 1
     array: int = 1
     nozzle: int = 1
     speed_mm_s: float = 2.0
@@ -35,6 +35,7 @@ class ProbeConfig:
     max_open_s: float = 30.0
     force_limit_n: float = 1.0
     mm_per_step: float = 0.005
+    outward_direction: int = -1
 
     @property
     def sensors(self):
@@ -42,8 +43,7 @@ class ProbeConfig:
 
     @property
     def outward_target_mm(self):
-        # Home lies downstream; travel_mm remains an unsigned distance from Home.
-        return -self.travel_mm
+        return self.outward_direction * self.travel_mm
 
     @property
     def required_open_s(self):
@@ -57,8 +57,11 @@ class ProbeConfig:
             raise MeasurementError("Messparameter müssen endlich sein.")
         if self.mode not in {"barriers", "nozzle"}:
             raise MeasurementError("Unbekannter Messmodus.")
-        if not (1 <= self.first_sensor < self.second_sensor <= 8):
-            raise MeasurementError("Lichtschranken in Förderrichtung auswählen (erste < zweite).")
+        if not (1 <= self.first_sensor <= 8 and 1 <= self.second_sensor <= 8
+                and self.first_sensor != self.second_sensor):
+            raise MeasurementError("Zwei unterschiedliche Lichtschranken von LB1 bis LB8 auswählen.")
+        if self.outward_direction not in (-1, 1):
+            raise MeasurementError("Hinfahrt zu positiven oder negativen Positionen auswählen.")
         if not (1 <= self.array <= 4 and 1 <= self.nozzle <= 6):
             raise MeasurementError("Array/Düse außerhalb des gültigen Bereichs.")
         if not (0.5 <= self.speed_mm_s <= 5.0 and 0 < self.travel_mm <= 75):
@@ -67,9 +70,9 @@ class ProbeConfig:
             raise MeasurementError("Nachlauf muss positiv und kleiner als der Verfahrweg sein.")
         if not (0.0001 <= self.mm_per_step <= 0.1 and 0.01 <= self.force_limit_n <= 4.0):
             raise MeasurementError("Ungültiger Achsmaßstab oder Kraftgrenzwert.")
-        speed_setting = self.speed_mm_s / (100 * self.mm_per_step)
-        if abs(speed_setting - round(speed_setting)) > 1e-6:
-            raise MeasurementError("Geschwindigkeit muss zur Colibri-Auflösung (100 Hz × mm/Schritt) passen.")
+        speed_hz = self.speed_mm_s / self.mm_per_step
+        if not 1 <= speed_hz <= 20000 or abs(speed_hz - round(speed_hz)) > 1e-6:
+            raise MeasurementError("Geschwindigkeit muss einer ganzzahligen Colibri-Schrittfrequenz von 1–20000 Hz entsprechen.")
         if not (0 <= self.pressure_mbar <= 6000 and 1 <= self.max_open_s <= 300):
             raise MeasurementError("Druck 0–6000 mbar, maximale Öffnung 1–300 s.")
         if self.mode == "nozzle" and self.max_open_s < self.required_open_s:
@@ -193,9 +196,9 @@ def statistics_for(rows):
 def barrier_row(cycle, direction, edges, first, second, speed_mm_s):
     centres = {s: (e["on"]["position_mm"] + e["off"]["position_mm"]) / 2
                for s, e in edges.items()}
-    distance = centres[second] - centres[first]
+    distance = abs(centres[second] - centres[first])
     if distance <= 0:
-        raise MeasurementError("Lichtschranken liegen nicht in der ausgewählten Reihenfolge.")
+        raise MeasurementError("Die Schaltmitten beider Lichtschranken liegen an derselben Position.")
     uncertainty = sum(max(e[k]["time_uncertainty_s"] for k in ("on", "off"))
                       for e in edges.values()) * speed_mm_s
     return {"cycle": cycle, "direction": direction, "distance_mm": distance,
@@ -254,8 +257,8 @@ class ProbeRecording:
         self.document = {"version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
                          "config": asdict(config), "profile": profile, "tare": tare,
                          "geometry": {"home_position_mm": 0.0, "outward_target_mm": config.outward_target_mm,
-                                      "outward_sensor_order": list(reversed(config.sensors)),
-                                      "return_sensor_order": list(config.sensors),
+                                      "outward_sensor_order": list(config.sensors),
+                                      "return_sensor_order": list(reversed(config.sensors)),
                                       "nozzle_reference_direction": "backward" if config.mode == "nozzle" else None,
                                       "valve_open_phase": "home_before_outbound" if config.mode == "nozzle" else None},
                          "status": "running", "rows": [], "summary": {}, "apply_allowed": False,
