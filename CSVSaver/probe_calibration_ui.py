@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 
 from probe_calibration import ProbeConfig, smooth_force
 from probe_hardware import ProbeDevices
+from probe_bridge import find_bridge
 
 
 def decimal(low, high, value, suffix, step=0.5, digits=2):
@@ -315,8 +316,10 @@ class ProbeCalibrationUi(QObject):
         self.port.setCurrentText(str(self.settings.value("port", "")))
         self.connect = QPushButton("Colibri verbinden")
         self.force_connect = QPushButton("QuantumX verbinden")
-        self.bridge_path = QLineEdit(str(self.settings.value("bridge_path", "")))
-        self.bridge_path.setPlaceholderText("QuantumXMonitor.exe (optional bei laufender Bridge)")
+        saved_bridge = str(self.settings.value("bridge_path", ""))
+        discovered_bridge = find_bridge() if not saved_bridge else None
+        self.bridge_path = QLineEdit(saved_bridge or (str(discovered_bridge) if discovered_bridge else ""))
+        self.bridge_path.setPlaceholderText("QuantumXMonitor.exe — vollständigen Programmordner vom alten Mess-PC übernehmen")
         self.bridge_browse = QPushButton("Bridge wählen …")
         self.profile = QPushButton("Kraftprofil laden …")
         self.tare = QPushButton("Kraftsensoren tarieren")

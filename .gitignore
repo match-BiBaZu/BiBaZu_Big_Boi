@@ -15,3 +15,7 @@ __pycache__/
 **/.pytest*/
 **/.ruff_cache/
 /CSVSaver/probe_calibrations/
+/CSVSaver/quantumx_bridge/runtime/
+/CSVSaver/quantumx_bridge/logs/
+/CSVSaver/quantumx_bridge/**/bin/
+/CSVSaver/quantumx_bridge/**/obj/

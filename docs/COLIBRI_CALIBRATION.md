@@ -29,6 +29,16 @@ eines der beiden Colibri-Tabs.
    auswählen. Die GUI startet sie bei Bedarf ohne Fenster mit `--server-only`.
    Der vollständige Programmordner mit seinen HBK/.NET-Abhängigkeiten muss
    vorhanden sein. Firmware oder Gerätekonfiguration werden nicht geändert.
+   Auf einem neuen Mess-PC fehlt dieses Programm zunächst. Den vollständigen
+   `net48`-Programmordner vom bisherigen PC nach
+   `CSVSaver/quantumx_bridge/runtime` kopieren oder über **Bridge wählen …**
+   dessen EXE auswählen. Die GUI sucht außerdem im lokalen Build-Ausgabeordner
+   und in einem benachbarten Mini-Prüfstand-Repository. Nur die EXE zu kopieren
+   reicht nicht; fehlende HBK-DLLs werden vor dem Start gemeldet. Alternativ
+   liegen Quellcode und `Build-QuantumXBridge.ps1` unter `CSVSaver/quantumx_bridge`.
+   Der lokale Build benötigt HBM Common API, .NET SDK und .NET Framework 4.8
+   Developer Pack. Details: [QuantumX-Bridge](../CSVSaver/quantumx_bridge/README.md).
+   Startfehler werden mit dem Pfad `quantumx_bridge/logs/bridge.log` gemeldet.
 6. Die Bridge muss die TAL221 A/B auf MX440B-Kanal 3/4 liefern, einschließlich
    `force_1_raw_n`, `force_2_raw_n`, Zeitstempeln und Sequenzen. Die älteren
    KD24s-Konfigurationen auf Kanal 1/2 sind für diesen Ablauf nicht passend.

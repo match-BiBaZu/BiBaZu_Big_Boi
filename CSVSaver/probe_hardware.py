@@ -21,6 +21,7 @@ from probe_calibration import (
 from probe_vendor.colibri import ColibriController
 from probe_vendor.force_sources import QuantumXTcpClient
 from probe_vendor.platform_calibration import PlatformCalibration
+from probe_bridge import require_bridge, wait_for_bridge
 
 PREFIX = "MAIN."
 PROBE_FIELDS = ("ProbeCalibrationInterfaceVersion", "ProbeCalibrationAckSequence",
@@ -590,6 +591,7 @@ class ProbeDevices(QObject):
         self.forces = ForceStream()
         self.force_client = None
         self.bridge_process = None
+        self.bridge_log_file = None
         self.axis = None
         self.plc = None
         self.last_result = None
@@ -682,18 +684,30 @@ class ProbeDevices(QObject):
         elif kind == "force_connect":
             if self.force_client:
                 self.force_client.stop()
+                self.force_client = None
             host, port, executable = payload
             try:
                 with socket.create_connection((host, port), timeout=0.3):
                     pass
             except OSError:
-                if host not in {"127.0.0.1", "localhost"} or not executable:
-                    raise MeasurementError("QuantumX-Bridge nicht erreichbar; Bridge-Programm auswählen oder starten.")
-                executable = Path(executable)
-                if not executable.is_file() or executable.suffix.lower() != ".exe":
-                    raise MeasurementError("QuantumXMonitor.exe auswählen.")
-                self.bridge_process = subprocess.Popen([str(executable), "--server-only"], cwd=executable.parent,
-                                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if host not in {"127.0.0.1", "localhost"}:
+                    raise MeasurementError(f"QuantumX-Bridge auf {host}:{port} nicht erreichbar. Bridge auf dem Zielrechner starten.")
+                executable = require_bridge(executable)
+                log_path = Path(__file__).resolve().parent / "quantumx_bridge/logs/bridge.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                if self.bridge_log_file:
+                    self.bridge_log_file.close()
+                self.bridge_log_file = log_path.open("ab")
+                self.status.emit("QuantumXMonitor wird gestartet …")
+                try:
+                    self.bridge_process = subprocess.Popen(
+                        [str(executable), "--server-only"], cwd=executable.parent,
+                        stdout=self.bridge_log_file, stderr=subprocess.STDOUT,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    wait_for_bridge(host, port, self.bridge_process, self.cancel)
+                except Exception as exc:
+                    self._disconnect_force()
+                    raise MeasurementError(f"{exc}\nBridge-Protokoll: {log_path}") from exc
             self.forces.drain()
             self.forces.overflows = 0
             self.forces.tare = None
@@ -782,6 +796,10 @@ class ProbeDevices(QObject):
     def _idle_telemetry(self):
         values = {}
         try:
+            if self.bridge_process is not None and self.bridge_process.poll() is not None:
+                code = self.bridge_process.returncode
+                self._disconnect_force()
+                self.status.emit(f"QuantumXMonitor wurde beendet (Exitcode {code}). Bridge-Protokoll unter quantumx_bridge/logs prüfen.")
             if self.axis:
                 values["position_mm"] = self.axis.position_steps() * self.last_config.mm_per_step
             with self.forces.lock:
@@ -827,3 +845,6 @@ class ProbeDevices(QObject):
         if self.bridge_process and self.bridge_process.poll() is None:
             self.bridge_process.terminate()
         self.bridge_process = None
+        if self.bridge_log_file:
+            self.bridge_log_file.close()
+            self.bridge_log_file = None
