@@ -41,6 +41,11 @@ class ProbeConfig:
         return (self.first_sensor, self.second_sensor) if self.mode == "barriers" else (self.array * 2,)
 
     @property
+    def outward_target_mm(self):
+        # Home lies downstream; travel_mm remains an unsigned distance from Home.
+        return -self.travel_mm
+
+    @property
     def required_open_s(self):
         # Conservative: entire round trip, acceleration, turnaround and communication.
         return 2.0 * self.travel_mm / self.speed_mm_s * 1.2 + 2.0
@@ -248,6 +253,11 @@ class ProbeRecording:
         self.config = config
         self.document = {"version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
                          "config": asdict(config), "profile": profile, "tare": tare,
+                         "geometry": {"home_position_mm": 0.0, "outward_target_mm": config.outward_target_mm,
+                                      "outward_sensor_order": list(reversed(config.sensors)),
+                                      "return_sensor_order": list(config.sensors),
+                                      "nozzle_reference_direction": "backward" if config.mode == "nozzle" else None,
+                                      "valve_open_phase": "home_before_outbound" if config.mode == "nozzle" else None},
                          "status": "running", "rows": [], "summary": {}, "apply_allowed": False,
                          "accuracy_validated": False}
         self.file = (self.path / "raw.csv").open("w", newline="", encoding="utf-8")

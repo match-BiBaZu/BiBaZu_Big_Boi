@@ -73,17 +73,77 @@ class ProbePlcTests(unittest.TestCase):
 
     def test_each_array_nozzle_maps_to_exactly_one_physical_output(self):
         physical = [1, 2, 3, 4, 17, 18, 5, 6, 7, 8, 19, 20, 9, 10, 11, 12, 21, 22, 13, 14, 15, 16, 23, 24]
-        for index, valve in enumerate(physical):
-            array, nozzle = index // 6 + 1, index % 6 + 1
-            self.enter(array=array, nozzle=nozzle)
-            self.command(2)
-            self.assertEqual(self.opened(), [])
-            self.scan(**{f"LightBarrier{array*2}FallingEdge": True})
-            self.assertEqual(self.opened(), [valve])
-            self.assertEqual(self.sim.values["ProbeCalibrationOpenedAtMs"], self.clock)
-            self.command(3)
-            self.assertEqual(self.opened(), [])
-            self.command(4)
+        for opening_command in (2, 5):
+            for index, valve in enumerate(physical):
+                with self.subTest(command=opening_command, valve=valve):
+                    array, nozzle = index // 6 + 1, index % 6 + 1
+                    self.enter(array=array, nozzle=nozzle)
+                    self.command(opening_command)
+                    if opening_command == 2:
+                        self.assertEqual(self.opened(), [])
+                        self.scan(**{f"LightBarrier{array*2}FallingEdge": True})
+                    self.assertEqual(self.opened(), [valve])
+                    self.assertEqual(self.sim.values["ProbeCalibrationOpenedAtMs"], self.clock)
+                    self.command(3)
+                    self.assertEqual(self.opened(), [])
+                    self.command(4)
+
+    def test_home_open_has_no_barrier_retrigger_and_latches_payload(self):
+        self.enter(nozzle=5)
+        self.command(5)
+        self.assertEqual(self.opened(), [17])
+        opened_at = self.sim.values["ProbeCalibrationOpenedAtMs"]
+        self.scan(elapsed=200, GuiProbeCalibrationHeartbeat=2, LightBarrier2FallingEdge=True,
+                  GuiProbeCalibrationNozzle=1, GuiProbeCalibrationPressureMbar=5000)
+        self.assertEqual(self.opened(), [17])
+        self.assertEqual(self.sim.values["PresValueV02"], 1000)
+        self.assertEqual(self.sim.values["ProbeCalibrationOpenedAtMs"], opened_at)
+        self.command(3)
+        self.scan(LightBarrier2FallingEdge=True)
+        self.assertEqual(self.opened(), [])
+
+    def test_home_open_timeout_and_heartbeat_remain_independent_of_gui(self):
+        for reason, max_open, heartbeat, expected_fault in (("heartbeat", 10000, 1, 2),
+                                                          ("open_timeout", 1000, 2, 3)):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.enter(GuiProbeCalibrationMaxOpenMs=max_open)
+                self.command(5)
+                self.assertEqual(self.opened(), [1])
+                values = self.scan(elapsed=1001, GuiProbeCalibrationHeartbeat=heartbeat)
+                self.assertEqual(values["ProbeCalibrationFaultCode"], expected_fault)
+                self.assertEqual(self.opened(), [])
+                self.scan(GuiProbeCalibrationHeartbeat=3, LightBarrier2FallingEdge=True)
+                self.assertEqual(self.opened(), [])
+
+    def test_home_open_stop_and_vtem_error_close_on_same_scan(self):
+        for fault in ({"GuiProbeCalibrationStop": True}, {"ErrorCode0": 1},
+                      {"GuiReorientationControlActive": True}):
+            with self.subTest(fault=fault):
+                self.setUp()
+                self.enter()
+                self.command(5)
+                self.assertEqual(self.opened(), [1])
+                self.scan(**fault)
+                self.assertEqual(self.opened(), [])
+
+    def test_home_open_rejects_barrier_mode_blocked_beam_and_reopen(self):
+        self.enter(mode=1)
+        self.command(5)
+        self.assertEqual(self.opened(), [])
+        self.assertEqual(self.sim.values["ProbeCalibrationFaultCode"], 1)
+        self.command(4)
+        self.enter()
+        self.command(5, LightBarrierStable2=False)
+        self.assertEqual(self.opened(), [])
+        self.command(4, LightBarrierStable2=True)
+        self.enter()
+        self.command(5)
+        opened_at = self.sim.values["ProbeCalibrationOpenedAtMs"]
+        self.command(5)
+        self.assertEqual(self.opened(), [])
+        self.assertEqual(self.sim.values["ProbeCalibrationFaultCode"], 1)
+        self.assertEqual(self.sim.values["ProbeCalibrationOpenedAtMs"], opened_at)
 
     def test_valve_stays_open_on_return_without_retrigger(self):
         self.enter()

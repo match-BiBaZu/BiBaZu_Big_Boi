@@ -50,10 +50,14 @@ class Axis:
         self.sequence = 0
         self.referenced = False
         self.stops = 0
+        self.moves = []
+        self.air_available = None
         self.sample()
 
     def sample(self):
-        total = 0.1 * math.exp(-((self.position - 50) / 2) ** 2)
+        total = 0.1 * math.exp(-((self.position + 10) / 2) ** 2)
+        if self.air_available is not None and not self.air_available():
+            total = 0.0
         self.sequence += 1
         self.forces.receive(force_sample(self.sequence, self.clock.time_ns(), total * 0.6, total * 0.4))
 
@@ -87,6 +91,7 @@ class Axis:
 
     def move_absolute_steps(self, steps):
         self.target = steps * 0.005
+        self.moves.append(self.target)
 
     def stop(self):
         self.target = self.position
@@ -101,6 +106,8 @@ class Plc:
         self.active = self.armed = self.open = False
         self.opened_ms = 0
         self.open_count = 0
+        self.open_positions = []
+        self.edges = []
         self.config = None
         self.on_snapshot = None
         self.fault = 0
@@ -113,6 +120,11 @@ class Plc:
             self.armed = True
         elif command == 3:
             self.open = self.armed = False
+        elif command == 5:
+            self.open = True
+            self.opened_ms = round(self.clock.now * 1000) & 0xFFFFFFFF
+            self.open_count += 1
+            self.open_positions.append(self.axis.position)
 
     def pulse_heartbeat(self):
         pass
@@ -120,13 +132,14 @@ class Plc:
     def snapshot(self):
         stamp = round(self.clock.now * 1000) & 0xFFFFFFFF
         self.history[2] = stamp
-        for sensor, start in ((1, 10), (2, 30)):
+        for sensor, start in ((1, -50), (2, -30)):
             clear = not start <= self.axis.position <= start + 2
             if clear != self.clear[sensor]:
                 self.clear[sensor] = clear
                 self.history[1] += 1
                 slot = 3 + (self.history[1] % 256) * 3
                 self.history[slot:slot + 3] = [self.history[1], stamp, sensor * 2 + int(clear)]
+                self.edges.append((sensor, clear, self.axis.position))
                 if sensor == 2 and not clear and self.armed:
                     self.open = True
                     self.armed = False
@@ -156,6 +169,7 @@ class CompleteRunnerTests(unittest.TestCase):
         self.forces.noise_n = 0.0001
         self.axis = Axis(self.clock, self.forces)
         self.plc = Plc(self.clock, self.axis)
+        self.axis.air_available = lambda: self.plc.open
         self.cancel = Cancel(self.clock)
         self.updates = []
         self.runner = ProbeRunner(self.axis, self.plc, self.forces, self.cancel, update=self.updates.append)
@@ -170,6 +184,14 @@ class CompleteRunnerTests(unittest.TestCase):
             self.assertAlmostEqual(self.axis.position, 0)
             self.assertFalse(self.plc.open)
             self.assertEqual(self.plc.open_count, 0)
+            self.assertEqual(result["geometry"]["outward_target_mm"], -65)
+            self.assertEqual(result["geometry"]["outward_sensor_order"], [2, 1])
+            self.assertTrue(all(target <= 0 for target in self.axis.moves))
+            self.assertAlmostEqual(min(self.axis.moves), -65)
+            on_sensors = [sensor for sensor, clear, position in self.plc.edges if not clear]
+            self.assertEqual(on_sensors, [2, 1, 1, 2] * 5)
+            # Auto-turn follows the more negative (last) exit, then runout.
+            self.assertTrue(any(abs(target + 52) < 0.2 for target in self.axis.moves))
 
     def test_negative_encoder_positions_are_accepted(self):
         self.plc.command(1, ProbeConfig())
@@ -228,28 +250,40 @@ class CompleteRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(MeasurementError, "nicht bei 0 mm"):
                 self.runner.home()
 
-    def test_five_nozzle_cycles_keep_same_forward_reference_and_close_each_cycle(self):
+    def test_five_nozzle_cycles_use_return_reference_and_air_from_home(self):
         with tempfile.TemporaryDirectory() as directory:
             result = self.runner.run(ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)
             self.assertTrue(result["apply_allowed"])
             self.assertEqual(self.plc.open_count, 5)
+            self.assertEqual(self.plc.open_positions, [0] * 5)
             self.assertEqual(len(result["rows"]), 10)
             self.assertAlmostEqual(result["summary"]["mean_mm"], 20, delta=0.15)
             for forward, backward in zip(result["rows"][::2], result["rows"][1::2]):
                 self.assertEqual(forward["reference_position_mm"], backward["reference_position_mm"])
-                self.assertLess(abs(forward["peaks"]["force_total_n"]["position_mm"] - 50), 0.15)
+                for row in (forward, backward):
+                    self.assertEqual(row["reference_direction"], "backward")
+                    self.assertAlmostEqual(row["reference_position_mm"], -30, delta=0.15)
+                    self.assertLess(abs(row["peaks"]["force_total_n"]["position_mm"] + 10), 0.15)
+                self.assertGreater(forward["reference_edge"]["time_ns"],
+                                   forward["peaks"]["force_total_n"]["time_ns"])
+                self.assertLess(backward["reference_edge"]["time_ns"],
+                                backward["peaks"]["force_total_n"]["time_ns"])
+                # Outbound entry is the other optical edge, near -28, and must
+                # not become the reference shared by the two nozzle peaks.
+                self.assertAlmostEqual(forward["edges"][2]["on"]["position_mm"], -28, delta=0.15)
             self.assertFalse(self.plc.open)
             self.assertAlmostEqual(self.axis.position, 0)
             saved = json.loads((self.runner.recording.path / "session.json").read_text())
             self.assertTrue(saved["apply_allowed"])
             self.assertFalse(saved["accuracy_validated"])
+            self.assertNotIn("pending_nozzle_cycle", saved)
 
     def test_abort_in_home_forward_and_backward_keeps_partial_data(self):
         for phase in ("home", "forward", "backward"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 self.setUpScenario()
                 def abort(plc):
-                    if self.runner.direction == phase and (phase == "home" or plc.axis.position > 15):
+                    if self.runner.direction == phase and (phase == "home" or plc.axis.position < -15):
                         self.cancel.cancelled = True
                 self.plc.on_snapshot = abort
                 with self.assertRaises(MeasurementError):
@@ -262,10 +296,84 @@ class CompleteRunnerTests(unittest.TestCase):
                 if phase == "backward":
                     self.assertEqual(len(saved["rows"]), 1)
 
+    def test_nozzle_abort_on_return_preserves_provisional_outbound_curve(self):
+        def abort(plc):
+            if self.runner.direction == "backward" and plc.axis.position > -45:
+                self.cancel.cancelled = True
+
+        self.plc.on_snapshot = abort
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(MeasurementError, "Abgebrochen"):
+                self.runner.run(ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)
+            saved = json.loads((self.runner.recording.path / "session.json").read_text())
+            self.assertFalse(saved["apply_allowed"])
+            self.assertEqual(saved["rows"], [])
+            pending = saved["pending_nozzle_cycle"]
+            self.assertEqual(pending["reference_direction"], "backward")
+            self.assertTrue(pending["forward_curve"])
+            self.assertAlmostEqual(pending["forward_peaks"]["force_total_n"]["position_mm"], -10, delta=0.15)
+            self.assertFalse(self.plc.open)
+            self.assertGreater(self.axis.stops, 0)
+
+    def test_abort_after_home_open_closes_before_first_axis_move(self):
+        def abort(plc):
+            if plc.open:
+                self.cancel.cancelled = True
+
+        self.plc.on_snapshot = abort
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(MeasurementError, "Abgebrochen"):
+                self.runner.run(ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)
+            self.assertEqual(self.plc.open_count, 1)
+            self.assertEqual(self.axis.moves, [])
+            self.assertFalse(self.plc.open)
+            self.assertGreater(self.axis.stops, 0)
+
+    def test_nozzle_requires_air_on_both_traversals_and_does_not_resume(self):
+        for phase in ("forward", "backward"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                self.setUpScenario()
+                self.forces.profile = profile()
+                self.forces.tare = {"noise_total_n": 0.0001}
+                self.forces.noise_n = 0.0001
+
+                def close_early(plc):
+                    if self.runner.direction == phase and plc.axis.position < -20:
+                        plc.open = False
+
+                self.plc.on_snapshot = close_early
+                with self.assertRaisesRegex(MeasurementError, "vor Abschluss"):
+                    self.runner.run(ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)
+                self.assertEqual(self.plc.open_count, 1)
+                self.assertFalse(self.plc.open)
+                self.assertGreater(self.axis.stops, 0)
+
+    def test_nozzle_missing_return_edge_cannot_use_outbound_reference(self):
+        # Simulate a dead LB2 on return while preserving a valid outbound signal.
+        original_snapshot = self.plc.snapshot
+
+        def snapshot_without_return_event():
+            if self.runner.direction == "backward":
+                saved = self.plc.history[1]
+                result = original_snapshot()
+                self.plc.history[1] = saved
+                result["history"][1] = saved
+                return result
+            return original_snapshot()
+
+        with patch.object(self.plc, "snapshot", side_effect=snapshot_without_return_event):
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(MeasurementError, "Verfahrgrenze"):
+                    self.runner.run(ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)
+                self.assertEqual(self.runner.recording.document["rows"], [])
+                self.assertFalse(self.runner.recording.document["apply_allowed"])
+                self.assertFalse(self.plc.open)
+
     def setUpScenario(self):
         self.forces = ForceStream()
         self.axis = Axis(self.clock, self.forces)
         self.plc = Plc(self.clock, self.axis)
+        self.axis.air_available = lambda: self.plc.open
         self.cancel = Cancel(self.clock)
         self.runner = ProbeRunner(self.axis, self.plc, self.forces, self.cancel)
 
@@ -273,7 +381,16 @@ class CompleteRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(MeasurementError, "Verfahrgrenze"):
                 self.runner.run(ProbeConfig(speed_mm_s=5, travel_mm=20), directory)
-            self.assertLessEqual(self.axis.position, 20.01)
+            self.assertGreaterEqual(self.axis.position, -20.01)
+            self.assertLess(self.axis.position, 0)
+            self.assertFalse(self.plc.active)
+
+    def test_runout_cannot_exceed_negative_travel_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(MeasurementError, "Nachlauf"):
+                self.runner.run(ProbeConfig(speed_mm_s=5, travel_mm=51, runout_mm=2), directory)
+            self.assertGreaterEqual(self.axis.position, -51.01)
+            self.assertTrue(all(target >= -51 for target in self.axis.moves))
             self.assertFalse(self.plc.active)
 
 

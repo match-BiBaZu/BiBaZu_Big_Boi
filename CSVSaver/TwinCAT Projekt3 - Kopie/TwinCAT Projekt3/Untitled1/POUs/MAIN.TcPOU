@@ -3,15 +3,15 @@
   <POU Name="MAIN" Id="{e80dba2a-67f9-4c18-8302-7ea92125d6c4}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
 VAR
-	// Colibri probe calibration, interface v1. Commit payload with CommandSequence last.
-	ProbeCalibrationInterfaceVersion : UINT := 1;
+	// Colibri probe calibration, interface v2. Commit payload with CommandSequence last.
+	ProbeCalibrationInterfaceVersion : UINT := 2;
 	GuiProbeCalibrationMode : UINT := 1; // 1=barrier/manual, 2=nozzle
 	GuiProbeCalibrationArray : UINT := 1;
 	GuiProbeCalibrationNozzle : UINT := 1;
 	GuiProbeCalibrationTriggerSensor : UINT := 2;
 	GuiProbeCalibrationPressureMbar : INT := 1000;
 	GuiProbeCalibrationMaxOpenMs : UDINT := 30000;
-	GuiProbeCalibrationCommand : UINT := 0; // 1=enter, 2=arm, 3=close, 4=leave
+	GuiProbeCalibrationCommand : UINT := 0; // 1=enter, 2=arm at LB, 3=close, 4=leave, 5=open at Home
 	GuiProbeCalibrationCommandSequence : UDINT := 0;
 	GuiProbeCalibrationHeartbeat : UDINT := 0;
 	GuiProbeCalibrationStop : BOOL := FALSE; // immediate latched abort; leave clears fault
@@ -1654,6 +1654,8 @@ END_IF
 
 // PROBE COMMANDS BEGIN
 // Stable TRUE = clear; falling = entering the beam, independently of pair gates.
+// Publish from executing code too, so an online change cannot retain v1 here.
+ProbeCalibrationInterfaceVersion := 2;
 ProbeCalibrationTrigger := FALSE;
 ProbeCalibrationBeamClear := FALSE;
 CASE GuiProbeCalibrationTriggerSensor OF
@@ -1705,6 +1707,16 @@ IF GuiProbeCalibrationCommandSequence <> ProbeCalibrationAckSequence THEN
 		ProbeCalibrationOpenedAtMs := 0;
 		ProbeCalibrationElapsedMs := 0;
 		ProbeCalibrationStatus := 2;
+	ELSIF (GuiProbeCalibrationCommand = 5) AND ProbeCalibrationActive
+		AND (ProbeCalibrationMode = 2) AND NOT ProbeCalibrationValveOpen
+		AND NOT ProbeCalibrationArmed AND ProbeCalibrationBeamClear
+		AND (GuiProbeCalibrationTriggerSensor = ProbeCalibrationTriggerSensor) THEN
+		// Home lies downstream of the nozzle. Both force traversals need air;
+		// the return LB edge is only a position reference and cannot retrigger.
+		ProbeCalibrationValveOpen := TRUE;
+		ProbeCalibrationOpenedAtMs := LightBarrierEventClockMs;
+		ProbeCalibrationElapsedMs := 0;
+		ProbeCalibrationStatus := 3;
 	ELSIF (GuiProbeCalibrationCommand = 3) AND ProbeCalibrationActive THEN
 		ProbeCalibrationArmed := FALSE;
 		ProbeCalibrationValveOpen := FALSE;

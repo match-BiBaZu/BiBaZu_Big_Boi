@@ -225,14 +225,17 @@ class ForceAndRecordingTests(unittest.TestCase):
             with self.assertRaises(MeasurementError):
                 config.validate()
 
-    def test_nozzle_both_distances_use_forward_on_reference(self):
+    def test_nozzle_both_distances_use_return_on_reference(self):
         runner = ProbeRunner(Mock(), Mock(), ForceStream(), Mock())
         runner.recording = Mock()
-        reference = {"position_mm": 10, "estimated_uncertainty_mm": 0.02}
-        for direction, position in (("forward", 40.2), ("backward", 39.8)):
+        reference = {"position_mm": -40, "estimated_uncertainty_mm": 0.02}
+        for direction, position in (("forward", -9.8), ("backward", -10.2)):
             runner._add_nozzle_row(1, direction, {"force_total_n": {"position_mm": position}}, [], {}, reference, 100)
         distances = [call.args[0]["distance_mm"] for call in runner.recording.add.call_args_list]
         self.assertAlmostEqual(sum(distances)/2, 30)
+        for call in runner.recording.add.call_args_list:
+            self.assertEqual(call.args[0]["reference_direction"], "backward")
+            self.assertEqual(call.args[0]["reference_edge"], reference)
 
     def test_abort_and_cleanup_close_air_before_serial_stop(self):
         from threading import Event
@@ -253,6 +256,20 @@ class ForceAndRecordingTests(unittest.TestCase):
         plc.read = Mock(side_effect=RuntimeError("symbol missing"))
         with self.assertRaisesRegex(MeasurementError, "SPS unterstützt"):
             plc.check()
+
+    def test_nozzle_v2_requirement_rejects_old_plc_before_writes(self):
+        plc = object.__new__(ProbePlc)
+        plc.read = Mock(return_value={"MAIN.ProbeCalibrationInterfaceVersion": 1,
+                                      "MAIN.ProbeCalibrationAckSequence": 7})
+        plc.write = Mock()
+        self.assertEqual(plc.check()["MAIN.ProbeCalibrationInterfaceVersion"], 1)
+        with self.assertRaisesRegex(MeasurementError, "Version 2"):
+            plc.command(1, ProbeConfig(mode="nozzle"))
+        with self.assertRaisesRegex(MeasurementError, "Version 2"):
+            plc.command(5)
+        plc.write.assert_not_called()
+        plc.read.return_value["MAIN.ProbeCalibrationInterfaceVersion"] = 2
+        self.assertEqual(plc.check(minimum_version=2)["MAIN.ProbeCalibrationInterfaceVersion"], 2)
 
     def test_spacing_symbols_cover_all_arrays_and_only_adjacent_pairs(self):
         for array in range(1, 5):

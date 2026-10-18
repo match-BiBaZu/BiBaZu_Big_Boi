@@ -14,11 +14,17 @@ eines der beiden Colibri-Tabs.
 
 2. Den geänderten `MAIN.TcPOU` im TwinCAT-Projekt bauen und den neuen SPS-Stand
    einschließlich Symbolen auf die Steuerung laden. Die GUI benötigt
-   `MAIN.ProbeCalibrationInterfaceVersion = 1`. Diese Softwareänderung allein
+   `MAIN.ProbeCalibrationInterfaceVersion = 2` für die Düsenmessung mit Luft ab
+   Home. Lichtschrankenmessung und manuelle Bedienung unterstützen weiterhin
+   Version 1; eine Düsenserie wird damit vor der ersten Bewegung gesperrt.
+   Diese Softwareänderung allein
    aktiviert oder lädt keine SPS-Konfiguration.
 3. Den Colibri-USB/RS485-Port auswählen. Die übernommene BAC-Anbindung verwendet
    9600 Baud, Slave `0xFF`, Referenzfahrt negativ mit 20 % Referenzstrom und
-   zunächst `0,005 mm/Schritt`. Nach Home nimmt die Position beim Ausfahren zu.
+   zunächst `0,005 mm/Schritt`. Die bisherige Home-Referenzfahrt bleibt erhalten.
+   Die Mess-Hinfahrt führt von Home zu **negativen** Achspositionen; die Rückfahrt
+   führt wieder zu 0 mm. Home liegt weiter unten an der Rutsche, hinter den
+   Lichtschranken beziehungsweise hinter der Düse.
    Der Achsmaßstab ist in der Gerätebedienung einstellbar. Negative Encoderwerte
    sind zulässig: Positionsüberwachung und manuelle Zielpositionen erlauben
    −75 bis +75 mm (Überwachung mit 0,1 mm Toleranz). Das ist ein Koordinatenbereich,
@@ -58,13 +64,19 @@ Profilkorrektur. Die Summenkraft darf Einzelkanal-Überlastungen nicht verdecken
 
 ## Lichtschrankenabstand
 
-- Den Aufbau so platzieren, dass Home vor beiden Lichtschranken liegt. Beide
-  müssen dort frei sein. Erste und zweite Lichtschranke in Förderrichtung wählen.
+- Home liegt hinter beiden Lichtschranken; beide müssen dort frei sein. Erste
+  und zweite Lichtschranke weiterhin in **Förderrichtung** wählen. Bei der
+  Hinfahrt ab Home wird deshalb zuerst LB2 und dann LB1 durchfahren (bei anderen
+  Paaren entsprechend die höhere vor der niedrigeren Nummer). Auf der Rückfahrt
+  ist die Reihenfolge umgekehrt.
 - Geschwindigkeit, maximalen Verfahrweg und Nachlauf hinter der letzten
   Ausschaltflanke einstellen. Start führt zuerst Home aus und setzt den lokalen
   Ereigniscursor zurück; globale SPS-Ereignisprotokolle werden nicht gelöscht.
-- Die Achse fährt aus, erfasst Ein- und Ausschalten beider Schranken und wendet
-  nach dem Nachlauf. Der maximale Verfahrweg wird auch bei fehlenden Flanken
+- Die Achse fährt zu negativen Positionen, erfasst Ein- und Ausschalten beider
+  Schranken und wendet nach dem Nachlauf hinter der letzten Ausschaltflanke:
+  `Wendeposition = kleinste Ausschaltposition − Nachlauf`. Die positive
+  Wegeingabe von beispielsweise 60 mm bedeutet eine feste Grenze von −60 mm.
+  Der maximale Verfahrweg wird auch bei fehlenden Flanken
   eingehalten. Zurück werden dieselben vier Schaltpositionen erfasst.
 - Eine Serie endet nach fünf vollständigen Zyklen an Home. Zusätzliche oder
   fehlende Flanken, Pufferüberlauf und unplausible Reihenfolge brechen sie ab.
@@ -83,23 +95,29 @@ separat sichtbar. Alle Ventile bleiben bei dieser Messung geschlossen.
 ## Düsenabstand
 
 - Achse zwischen den Abläufen manuell versetzen. Eine Messserie benötigt danach
-  keinen mechanischen Umbau. Home muss vor der auslösenden Lichtschranke liegen.
+  keinen mechanischen Umbau. Reihenfolge von Home aus: **Düse → zweite
+  Lichtschranke → Wendepunkt**, jeweils zu negativeren Positionen. Auf der
+  Rückfahrt: **zweite Lichtschranke → Düse → Home**.
 - Array und einzelne Düse wählen. Die Zuordnung ist Array 1 → LB2, Array 2 →
   LB4, Array 3 → LB6 und Array 4 → LB8.
-- Den Wendepunkt ausreichend hinter die erwartete Kraftspitze setzen. Der
-  gesamte Hin-/Rückweg muss in den 75-mm-Hub passen.
+- Den Wendepunkt über die Lichtschranke hinaus setzen, sodass auch deren
+  Ausschaltflanke auf der Hinfahrt erfasst wird. Die Eingabe ist der positive
+  Abstand von Home; die Zielposition hat negatives Vorzeichen. Der gesamte
+  Hin-/Rückweg muss innerhalb des 75-mm-Hubs bleiben.
 - Druck startet bei **1000 mbar**. Maximale Ventilöffnungszeit startet bei
   **30 s** und kann bis 300 s eingestellt werden. **Öffnungszeit passend setzen**
   übernimmt die konservative Mindestzeit:
 
-  `2 × Wendepunkt / Geschwindigkeit × 1,2 + 2 s`
+  `2 × Weg bis Wendepunkt / Geschwindigkeit × 1,2 + 2 s`
 
   Zu kurze Zeiten werden vor dem Start abgewiesen. Der Timeout zählt in der SPS
   ab dem tatsächlichen Öffnen des Ventils, separat je Zyklus.
-- Nach Home öffnet die SPS beim ersten Einschalten der ausgewählten
-  Lichtschranke ausschließlich das gewählte Ventil. Es bleibt über Wendepunkt
-  und Rückfahrt hinweg offen und schließt nach der Rückkehr nach Home. Erst im
-  nächsten Zyklus wird erneut scharfgeschaltet.
+- Nach Home öffnet die SPS mit Befehl 5 ausschließlich das gewählte Ventil,
+  bevor die Hinfahrt beginnt. Damit stehen beide Kraftkurven unter Luftlast.
+  Nach 0,2 s mit laufenden Kraft-/Sicherheitsprüfungen beginnt die Bewegung.
+  Das Ventil bleibt über Wendepunkt und Rückfahrt hinweg offen und schließt
+  nach der Rückkehr nach Home. Lichtschrankenflanken lösen kein erneutes Öffnen
+  und kein Zurücksetzen des Öffnungszeitlimits aus.
 
 Livewerte sind die geglätteten Bridge-Kräfte. Für die endgültige Auswertung wird
 ein zentrierter gleitender Mittelwert über 20 profilkorrigierte Rohmesswerte
@@ -113,14 +131,23 @@ als `max(0,005 N, 5 × Tara-Summenrauschen)` erreichen und ausreichend innerhalb
 der Kurve liegen: mindestens zehn geglättete Messpunkte und 0,1 mm Abstand zu
 deren Rändern. Andernfalls wird die Serie als ungültig beendet.
 
-**Beide Richtungen eines Zyklus verwenden den Einschaltpunkt der Hinfahrt:**
+**Beide Richtungen eines Zyklus verwenden den Einschaltpunkt der Rückfahrt:**
 
-`Abstand = Peakposition der jeweiligen Richtung − Einschaltposition der Hinfahrt`
+`Abstand = Peakposition der jeweiligen Richtung − Einschaltposition der Rückfahrt`
+
+Beispiel: Rückfahrt-Einschaltpunkt −30 mm, Kraftpeak −10 mm ergibt 20 mm Abstand.
+Die Hinfahrt-Kraftkurve wird bis zum Erfassen dieses Rückfahrt-Bezugs vorläufig
+gespeichert. Fehlt der Rückfahrt-Bezug oder wird vorher abgebrochen, bleibt sie
+unter `pending_nozzle_cycle` erhalten; sie wird nicht als gültiger Abstand gezählt.
 
 Dieser Bezug ist absichtlich nicht die Schaltmitte der Lichtschranke. Der
 Messstift und seine optische Einschaltkante beeinflussen damit den resultierenden
 Abstand. Im Plot erscheinen Summen- und Einzelkräfte, getrennte Fahrtrichtungen
 sowie Markierungen für Lichtschranke und Hauptpeak.
+
+Jede Ergebniszeile speichert `reference_direction = backward` und die tatsächlich
+verwendete Referenzflanke samt Zeit und Position. Die Serien-JSON enthält unter
+`geometry` die negative Zielposition, Sensorreihenfolge und Ventilöffnungsphase.
 
 ## Dateien und Übernahme
 
@@ -154,10 +181,11 @@ Zusätzlich zu den bestehenden Schnittstellen gibt es die Gruppe
 
 | Feld | Bedeutung |
 | --- | --- |
+| `ProbeCalibrationInterfaceVersion` | 2 für Öffnen an Home; 1 unterstützt nur die bisherigen Befehle |
 | `GuiProbeCalibrationMode` | 1 = Lichtschranken/manuell, 2 = Düse |
 | `...Array`, `...Nozzle`, `...TriggerSensor` | Array 1–4, Düse 1–6, zugehörige LB2/4/6/8 |
 | `...PressureMbar`, `...MaxOpenMs` | Gelatchte Parameter, maximal 6000 mbar / 300000 ms |
-| `...Command` | 1 = übernehmen, 2 = scharfschalten, 3 = Ventil schließen, 4 = freigeben |
+| `...Command` | 1 = übernehmen, 2 = an LB scharfschalten (bestehender Modus), 3 = Ventil schließen, 4 = freigeben, 5 = Ventil an Home öffnen |
 | `...CommandSequence` | Zuletzt schreiben; je Transaktion erhöhen |
 | `ProbeCalibrationAckSequence` | Passende Quittierung abwarten |
 | `GuiProbeCalibrationHeartbeat` | Aktiver Client ändert den Zähler spätestens alle 100 ms |
@@ -174,7 +202,7 @@ und nach einem Abbruch nicht wieder eingeschaltet.
 
 | Fehlercode | Ursache |
 | --- | --- |
-| 1 | Ungültiger Befehl/Parameter, Start bei bestehendem Fehler oder Strahl beim Scharfschalten nicht frei |
+| 1 | Ungültiger Befehl/Parameter, Start bei bestehendem Fehler, erneutes Öffnen eines offenen Ventils oder Strahl beim Öffnen/Scharfschalten nicht frei |
 | 2 | Heartbeat seit mindestens 1000 ms unverändert |
 | 3 | Maximale Öffnungszeit erreicht |
 | 4 | Andere Betriebssteuerung besitzt die SPS / verriegelter Betriebsfehler |

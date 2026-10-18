@@ -50,13 +50,18 @@ class ProbePlc:
         if failed:
             raise MeasurementError(f"ADS-Schreiben fehlgeschlagen: {failed}")
 
-    def check(self):
+    def check(self, minimum_version=1):
         try:
             values = self.read([PREFIX + f for f in PROBE_FIELDS])
         except Exception as exc:
             raise MeasurementError("SPS unterstützt Colibri-Kalibrierung noch nicht; neuen SPS-Quellstand bauen und laden.") from exc
-        if values[PREFIX + "ProbeCalibrationInterfaceVersion"] != 1:
+        version = values[PREFIX + "ProbeCalibrationInterfaceVersion"]
+        if version not in (1, 2):
             raise MeasurementError("Unbekannte SPS-Colibri-Schnittstellenversion.")
+        if version < minimum_version:
+            raise MeasurementError(
+                "Düsenmessung mit Luft ab Home benötigt SPS-Colibri-Schnittstelle Version 2; "
+                "geänderte MAIN.TcPOU bauen und laden. Lichtschrankenmessung bleibt mit Version 1 nutzbar.")
         self.sequence = int(values[PREFIX + "ProbeCalibrationAckSequence"])
         return values
 
@@ -68,7 +73,7 @@ class ProbePlc:
 
     def command(self, command, config=None, cancel=None):
         if command == 1:
-            state = self.check()
+            state = self.check(minimum_version=2 if config.mode == "nozzle" else 1)
             if state[PREFIX + "ProbeCalibrationActive"]:
                 raise MeasurementError("SPS-Colibri-Kalibrierung bereits von einem anderen Lauf belegt.")
             owners = self.read(["MAIN.GuiReorientationControlActive", "MAIN.GuiConveyorCalibrationMode",
@@ -87,6 +92,8 @@ class ProbePlc:
             self.pulse_heartbeat(True)
             # Includes a potentially partially completed entry in cleanup.
             self.owned = True
+        elif command == 5:
+            self.check(minimum_version=2)
         self.sequence = (self.sequence + 1) & MASK
         self.write({PREFIX + "GuiProbeCalibrationCommand": command})
         self.write({PREFIX + "GuiProbeCalibrationCommandSequence": self.sequence})
@@ -275,6 +282,7 @@ class ProbeRunner:
         self.last_ui = 0.0
         self.window_start_ns = 0
         self.max_uncertainty_mm = 0.0
+        self.require_open = False
 
     def guard(self):
         if self.cancel.is_set():
@@ -305,6 +313,8 @@ class ProbeRunner:
             raise MeasurementError(f"SPS-Kalibrierung gestoppt (Fehler {snapshot['fault']}).")
         if not snapshot["belt_stopped"]:
             raise MeasurementError("Förderband ist während der Colibri-Kalibrierung nicht im Stillstand.")
+        if self.require_open and not snapshot["open"]:
+            raise MeasurementError("Düsenventil vor Abschluss der Kraftmessfahrten geschlossen.")
         new = self.history.consume(snapshot["history"], snapshot["sampled_ns"], snapshot["roundtrip_ns"])
         self.pending_events.extend(e for e in new if e["time_ns"] >= self.window_start_ns)
         ready = []
@@ -456,18 +466,18 @@ class ProbeRunner:
             if auto_turn and capture.complete and not turning:
                 # Find exit using measured position; command a bounded final absolute move.
                 exit_positions = [self.timeline.at(e["off"]["time_ns"])[0] for e in capture.edges.values()]
-                final_target = max(exit_positions) + self.config.runout_mm
-                if final_target > self.config.travel_mm:
+                final_target = min(exit_positions) - self.config.runout_mm
+                if final_target < self.config.outward_target_mm:
                     raise MeasurementError("Nachlauf hinter Lichtschranken überschreitet maximalen Verfahrweg.")
-                if self.last_position >= final_target:
+                if self.last_position <= final_target:
                     self.axis.stop()
                     final_target = self.last_position
                 else:
                     self.axis.stop()
                     self._wait_stopped(capture)
-                    if self.last_position > self.config.travel_mm:
+                    if self.last_position < self.config.outward_target_mm:
                         raise MeasurementError("Achse überschreitet maximalen Verfahrweg beim Abbremsen.")
-                    final_target = max(final_target, self.last_position)
+                    final_target = min(final_target, self.last_position)
                     self.axis.move_absolute_steps(round(final_target / self.config.mm_per_step))
                 turning = True
             if not self.last_status["moving"] and abs(self.last_position - final_target) <= self.config.mm_per_step * 2:
@@ -507,21 +517,28 @@ class ProbeRunner:
                 if not all(snapshot["clear"][s] for s in config.sensors):
                     raise MeasurementError("Lichtschranken müssen an Home frei sein.")
                 if config.mode == "nozzle":
-                    self.plc.command(2, cancel=self.cancel)
-                self.move(config.travel_mm, forward, config.mode == "barriers")
+                    self.plc.command(5, cancel=self.cancel)
+                    opened = self.plc.snapshot()
+                    if not opened["open"]:
+                        raise MeasurementError("Düsenventil wurde an Home nicht geöffnet.")
+                    self.require_open = True
+                    self.wait(0.2)
+                self.move(config.outward_target_mm, forward, config.mode == "barriers")
                 forward_edges = forward.positioned(self.timeline)
                 if config.mode == "barriers":
                     self.recording.add(barrier_row(cycle, "forward", forward_edges,
                                                   config.first_sensor, config.second_sensor, config.speed_mm_s))
                     forward_peaks = None
                 else:
-                    if not self.plc.snapshot()["open"]:
-                        raise MeasurementError("Düsenventil wurde nicht durch die Lichtschranke geöffnet.")
                     forward_peaks, forward_curve = force_peak(self.force_rows, self.forces.noise_n)
-                    reference = forward_edges[config.array * 2]["on"]
-                    opened = self.plc.snapshot()
-                    self._add_nozzle_row(cycle, "forward", forward_peaks, forward_curve,
-                                         forward_edges, reference, opened["opened_ms"])
+                    # The return reference is not known yet. Keep the outbound result
+                    # provisional so an abort still retains its peaks and curve.
+                    self.recording.document["pending_nozzle_cycle"] = {
+                        "cycle": cycle, "forward_peaks": forward_peaks,
+                        "forward_curve": forward_curve[::max(1, len(forward_curve) // 500)],
+                        "forward_edges": forward_edges, "opened_ms": opened["opened_ms"],
+                        "reference_direction": "backward"}
+                    self.recording.save()
                 self.update({"document": self.recording.document, "path": str(self.recording.path)})
                 self.progress(f"Zyklus {cycle}/{CYCLES}: Rückfahrt")
                 backward = EdgeCapture(config.sensors)
@@ -532,10 +549,16 @@ class ProbeRunner:
                     self.recording.add(barrier_row(cycle, "backward", backward_edges,
                                                   config.first_sensor, config.second_sensor, config.speed_mm_s))
                 else:
+                    self.require_open = False
                     self.plc.command(3, cancel=self.cancel)
                     backward_peaks, backward_curve = force_peak(self.force_rows, self.forces.noise_n)
+                    reference = backward_edges[config.array * 2]["on"]
+                    self._add_nozzle_row(cycle, "forward", forward_peaks, forward_curve,
+                                         forward_edges, reference, opened["opened_ms"])
                     self._add_nozzle_row(cycle, "backward", backward_peaks, backward_curve,
                                          backward_edges, reference, opened["opened_ms"])
+                    self.recording.document.pop("pending_nozzle_cycle", None)
+                    self.recording.save()
                     self.wait(0.5)
                 self.update({"document": self.recording.document, "path": str(self.recording.path)})
         except Exception as exc:
@@ -558,12 +581,15 @@ class ProbeRunner:
             raise MeasurementError("Kraftpeak muss hinter der auslösenden Lichtschranke liegen.")
         self.recording.add({"cycle": cycle, "direction": direction, "distance_mm": distance,
                             "reference_position_mm": reference["position_mm"], "peaks": peaks,
+                            "reference_direction": "backward", "reference_sensor": self.config.array * 2,
+                            "reference_edge": dict(reference),
                             "edges": edges, "opened_plc_ms": opened_ms,
                             "curve": curve[::max(1, len(curve) // 500)],
                             "estimated_uncertainty_mm": self.max_uncertainty_mm + reference["estimated_uncertainty_mm"]})
 
     def stop(self):
         errors = []
+        self.require_open = False
         # Close air first; serial timeout must never delay valve closure.
         try:
             self.plc.release()

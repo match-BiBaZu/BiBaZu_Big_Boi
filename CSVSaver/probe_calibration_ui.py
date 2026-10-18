@@ -105,8 +105,8 @@ class ProbeTab(QWidget):
                 self.first.addItem(f"LB {sensor}", sensor)
                 self.second.addItem(f"LB {sensor}", sensor)
             self.second.setCurrentIndex(1)
-            form.addRow("Erste Lichtschranke", self.first)
-            form.addRow("Zweite Lichtschranke", self.second)
+            form.addRow("Erste Lichtschranke in Förderrichtung", self.first)
+            form.addRow("Zweite Lichtschranke in Förderrichtung", self.second)
             self.runout = decimal(0.005, 20, 2, " mm")
             form.addRow("Nachlauf nach letzter Ausschaltflanke", self.runout)
             self.inputs += [self.first, self.second, self.runout]
@@ -123,7 +123,7 @@ class ProbeTab(QWidget):
             self.pressure.setSuffix(" mbar")
             self.pressure.setValue(1000)
             self.open_time = decimal(1, 300, 30, " s", 5, 1)
-            form.addRow("Array / auslösende Lichtschranke", self.array)
+            form.addRow("Array / Bezugslichtschranke auf Rückfahrt", self.array)
             form.addRow("Einzelne Düse", self.nozzle)
             form.addRow("Kalibrierdruck", self.pressure)
             form.addRow("Maximale Öffnungszeit je Zyklus", self.open_time)
@@ -131,16 +131,23 @@ class ProbeTab(QWidget):
         self.speed = decimal(0.5, 5, 2, " mm/s", 0.5, 1)
         self.travel = decimal(1, 75, 75 if mode == "barriers" else 60, " mm")
         form.addRow("Fahrgeschwindigkeit", self.speed)
-        form.addRow("Maximaler Weg" if mode == "barriers" else "Wendepunkt hinter Düse", self.travel)
+        form.addRow("Maximaler Weg ab Home" if mode == "barriers" else "Weg bis Wendepunkt jenseits der Lichtschranke", self.travel)
+        self.path_hint = QLabel()
+        self.path_hint.setWordWrap(True)
+        form.addRow("Fahrtrichtung", self.path_hint)
+        self.travel.valueChanged.connect(self.update_path)
+        self.update_path()
         form.addRow("Messumfang", QLabel("5 × hin und zurück; Home = 0 mm"))
         self.inputs += [self.speed, self.travel]
         controls.addLayout(form)
         description = QLabel(
+            "Home liegt hinter beiden Lichtschranken. Hinfahrt: zweite, dann erste Lichtschranke; Rückfahrt umgekehrt. "
             "Alle Ein-/Ausschaltpositionen werden erfasst. Das Hauptergebnis ist der Abstand der Schaltmitten. "
             "Das Band bleibt stehen und alle Ventile bleiben geschlossen."
             if mode == "barriers" else
-            "Das Ventil öffnet beim Einschalten der Lichtschranke auf der Hinfahrt und bleibt bis Home offen. "
-            "Bezug für beide Peakabstände ist dieser Einschaltpunkt. Gemessen wird der Betrag der tarierten Summenkraft."
+            "Home → Düse → Bezugslichtschranke → Wendepunkt; zurück in umgekehrter Reihenfolge. "
+            "Das Ventil öffnet an Home und bleibt für beide Kraftkurven bis zur Rückkehr offen. "
+            "Bezug beider Peakabstände ist der Einschaltpunkt der Lichtschranke auf der Rückfahrt."
         )
         description.setWordWrap(True)
         controls.addWidget(description, 1)
@@ -179,7 +186,7 @@ class ProbeTab(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Zyklus", "Richtung", "Abstand [mm]", "Einschaltabstand", "Erste LB ein/aus [mm]", "Zweite LB ein/aus [mm]", "Unsicherheit [mm]"]
             if mode == "barriers" else
-            ["Zyklus", "Richtung", "Abstand [mm]", "LB-Bezug [mm]", "Peakposition [mm]", "FΣ Peak [N]", "F1/F2 Peak [N]", "Unsicherheit [mm]"]
+            ["Zyklus", "Richtung", "Abstand [mm]", "LB-Bezug Rückfahrt [mm]", "Peakposition [mm]", "FΣ Peak [N]", "F1/F2 Peak [N]", "Unsicherheit [mm]"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.setMinimumHeight(160)
@@ -194,6 +201,10 @@ class ProbeTab(QWidget):
         if self.plot:
             root.addWidget(self.plot, 2)
         self.update_controls()
+
+    def update_path(self):
+        limit = "höchstens " if self.mode == "barriers" else ""
+        self.path_hint.setText(f"Hin: 0 → {limit}−{self.travel.value():g} mm; zurück: → 0 mm")
 
     def required_duration(self):
         return 2 * self.travel.value() / self.speed.value() * 1.2 + 2
