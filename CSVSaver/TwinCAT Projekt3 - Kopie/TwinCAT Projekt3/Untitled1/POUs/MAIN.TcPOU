@@ -3,6 +3,38 @@
   <POU Name="MAIN" Id="{e80dba2a-67f9-4c18-8302-7ea92125d6c4}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
 VAR
+	// Colibri probe calibration, interface v1. Commit payload with CommandSequence last.
+	ProbeCalibrationInterfaceVersion : UINT := 1;
+	GuiProbeCalibrationMode : UINT := 1; // 1=barrier/manual, 2=nozzle
+	GuiProbeCalibrationArray : UINT := 1;
+	GuiProbeCalibrationNozzle : UINT := 1;
+	GuiProbeCalibrationTriggerSensor : UINT := 2;
+	GuiProbeCalibrationPressureMbar : INT := 1000;
+	GuiProbeCalibrationMaxOpenMs : UDINT := 30000;
+	GuiProbeCalibrationCommand : UINT := 0; // 1=enter, 2=arm, 3=close, 4=leave
+	GuiProbeCalibrationCommandSequence : UDINT := 0;
+	GuiProbeCalibrationHeartbeat : UDINT := 0;
+	GuiProbeCalibrationStop : BOOL := FALSE; // immediate latched abort; leave clears fault
+	ProbeCalibrationAckSequence : UDINT := 0;
+	ProbeCalibrationActive : BOOL := FALSE;
+	ProbeCalibrationInterlock : BOOL := FALSE;
+	ProbeCalibrationArmed : BOOL := FALSE;
+	ProbeCalibrationValveOpen : BOOL := FALSE;
+	ProbeCalibrationStatus : UINT := 0; // 0=idle, 1=ready, 2=armed, 3=open, 4=fault
+	ProbeCalibrationFaultCode : UINT := 0; // 1=payload, 2=heartbeat, 3=open timeout, 4=owner, 5=stop, 6=VTEM
+	ProbeCalibrationOpenedAtMs : UDINT := 0;
+	ProbeCalibrationElapsedMs : UDINT := 0;
+	ProbeCalibrationMode : UINT := 0;
+	ProbeCalibrationArray : UINT := 0;
+	ProbeCalibrationNozzle : UINT := 0;
+	ProbeCalibrationTriggerSensor : UINT := 0;
+	ProbeCalibrationPressureMbar : INT := 0;
+	ProbeCalibrationMaxOpenMs : UDINT := 0;
+	ProbeCalibrationLastHeartbeat : UDINT := 0;
+	ProbeCalibrationHeartbeatAtMs : UDINT := 0;
+	ProbeCalibrationHeartbeatAgeMs : UDINT := 0;
+	ProbeCalibrationTrigger : BOOL := FALSE;
+	ProbeCalibrationBeamClear : BOOL := FALSE;
 	State					: INT  := 0; //state machine to control valves and motion terminal
 	State2					: INT  := 2; //state machine for nozzle array 2
 	State3					: INT  := 0; //state machine for nozzle array 3 and second VTEM unit
@@ -733,6 +765,23 @@ END_VAR
       <ST><![CDATA[// Preserve commands before the legacy state machine consumes their one-shot flags.
 ConveyorServoStopRequested := GuiCalibrationStop;
 ConveyorServoResetRequested := GuiConveyorReset;
+// PROBE OWNERSHIP BEGIN
+// Interlock before legacy conveyor/calibration commands and paired gates execute.
+ProbeCalibrationInterlock := ProbeCalibrationActive OR (ProbeCalibrationFaultCode <> 0)
+	OR (GuiProbeCalibrationCommandSequence <> ProbeCalibrationAckSequence);
+IF ProbeCalibrationInterlock THEN
+	GuiConveyorEnabled := FALSE;
+	GuiConveyorCalibrationMode := FALSE;
+	GuiVelocityCheckMode := FALSE;
+	GuiCalibrationMoveLeft := FALSE;
+	GuiCalibrationMoveRight := FALSE;
+	GuiBarrierCalibrationStart := FALSE;
+	GuiForceDelayMeasurementEnabled := FALSE;
+	GuiArrayEnabled1 := FALSE; GuiArrayEnabled2 := FALSE;
+	GuiArrayEnabled3 := FALSE; GuiArrayEnabled4 := FALSE;
+	ConveyorServoStopRequested := TRUE;
+END_IF
+// PROBE OWNERSHIP END
 // Profiles for the old belt must not silently replace the new belt's calibration.
 GuiConveyorMmPerFullStep := ConveyorServoCalibratedMmPerFullStep;
 GuiConveyorCalibrationValid := ConveyorServoCalibratedMmPerFullStep > 0.0;
@@ -1602,6 +1651,110 @@ IF GuiCameraRecordTriggerEnabled THEN
 		8: CameraRecordTrigger := LightBarrier8FallingEdge;
 	END_CASE
 END_IF
+
+// PROBE COMMANDS BEGIN
+// Stable TRUE = clear; falling = entering the beam, independently of pair gates.
+ProbeCalibrationTrigger := FALSE;
+ProbeCalibrationBeamClear := FALSE;
+CASE GuiProbeCalibrationTriggerSensor OF
+	2: ProbeCalibrationBeamClear := LightBarrierStable2;
+	4: ProbeCalibrationBeamClear := LightBarrierStable4;
+	6: ProbeCalibrationBeamClear := LightBarrierStable6;
+	8: ProbeCalibrationBeamClear := LightBarrierStable8;
+END_CASE
+IF GuiProbeCalibrationCommandSequence <> ProbeCalibrationAckSequence THEN
+	IF GuiProbeCalibrationCommand = 4 THEN
+		ProbeCalibrationActive := FALSE;
+		ProbeCalibrationArmed := FALSE;
+		ProbeCalibrationValveOpen := FALSE;
+		ProbeCalibrationFaultCode := 0;
+		ProbeCalibrationStatus := 0;
+		GuiProbeCalibrationStop := FALSE;
+	ELSIF GuiProbeCalibrationCommand = 1 THEN
+		IF ProbeCalibrationActive OR (GuiProbeCalibrationMode < 1) OR (GuiProbeCalibrationMode > 2)
+			OR (GuiProbeCalibrationArray < 1) OR (GuiProbeCalibrationArray > 4)
+			OR (GuiProbeCalibrationNozzle < 1) OR (GuiProbeCalibrationNozzle > 6)
+			OR (GuiProbeCalibrationTriggerSensor <> GuiProbeCalibrationArray * 2)
+			OR (GuiProbeCalibrationPressureMbar < 0) OR (GuiProbeCalibrationPressureMbar > 6000)
+			OR (GuiProbeCalibrationMaxOpenMs < 1000) OR (GuiProbeCalibrationMaxOpenMs > 300000)
+			OR (ProbeCalibrationFaultCode <> 0) OR GuiProbeCalibrationStop THEN
+			ProbeCalibrationFaultCode := 1;
+		ELSIF GuiReorientationControlActive OR ReorientationSafeLatch THEN
+			ProbeCalibrationFaultCode := 4;
+		ELSE
+			ProbeCalibrationMode := GuiProbeCalibrationMode;
+			ProbeCalibrationArray := GuiProbeCalibrationArray;
+			ProbeCalibrationNozzle := GuiProbeCalibrationNozzle;
+			ProbeCalibrationTriggerSensor := GuiProbeCalibrationTriggerSensor;
+			ProbeCalibrationPressureMbar := GuiProbeCalibrationPressureMbar;
+			ProbeCalibrationMaxOpenMs := GuiProbeCalibrationMaxOpenMs;
+			ProbeCalibrationLastHeartbeat := GuiProbeCalibrationHeartbeat;
+			ProbeCalibrationHeartbeatAtMs := LightBarrierEventClockMs;
+			ProbeCalibrationActive := TRUE;
+			ProbeCalibrationArmed := FALSE;
+			ProbeCalibrationValveOpen := FALSE;
+			ProbeCalibrationOpenedAtMs := 0;
+			ProbeCalibrationElapsedMs := 0;
+			ProbeCalibrationStatus := 1;
+		END_IF
+	ELSIF (GuiProbeCalibrationCommand = 2) AND ProbeCalibrationActive
+		AND (ProbeCalibrationMode = 2) AND NOT ProbeCalibrationValveOpen
+		AND ProbeCalibrationBeamClear
+		AND (GuiProbeCalibrationTriggerSensor = ProbeCalibrationTriggerSensor) THEN
+		ProbeCalibrationArmed := TRUE;
+		ProbeCalibrationOpenedAtMs := 0;
+		ProbeCalibrationElapsedMs := 0;
+		ProbeCalibrationStatus := 2;
+	ELSIF (GuiProbeCalibrationCommand = 3) AND ProbeCalibrationActive THEN
+		ProbeCalibrationArmed := FALSE;
+		ProbeCalibrationValveOpen := FALSE;
+		ProbeCalibrationStatus := 1;
+	ELSE
+		ProbeCalibrationFaultCode := 1;
+	END_IF
+	ProbeCalibrationAckSequence := GuiProbeCalibrationCommandSequence;
+END_IF
+IF ProbeCalibrationActive THEN
+	IF GuiProbeCalibrationHeartbeat <> ProbeCalibrationLastHeartbeat THEN
+		ProbeCalibrationLastHeartbeat := GuiProbeCalibrationHeartbeat;
+		ProbeCalibrationHeartbeatAtMs := LightBarrierEventClockMs;
+	END_IF
+	ProbeCalibrationHeartbeatAgeMs := LightBarrierEventClockMs - ProbeCalibrationHeartbeatAtMs;
+	IF ProbeCalibrationHeartbeatAgeMs >= 1000 THEN ProbeCalibrationFaultCode := 2; END_IF
+	IF GuiProbeCalibrationStop THEN ProbeCalibrationFaultCode := 5; END_IF
+	IF GuiReorientationControlActive OR ReorientationSafeLatch THEN ProbeCalibrationFaultCode := 4; END_IF
+	CASE ProbeCalibrationTriggerSensor OF
+		2: ProbeCalibrationTrigger := LightBarrier2FallingEdge;
+		4: ProbeCalibrationTrigger := LightBarrier4FallingEdge;
+		6: ProbeCalibrationTrigger := LightBarrier6FallingEdge;
+		8: ProbeCalibrationTrigger := LightBarrier8FallingEdge;
+	END_CASE
+	IF (ProbeCalibrationMode = 2) THEN
+		IF ((ProbeCalibrationArray <= 2) AND (NOT Enable0 OR (ActValveMode0 <> 3) OR (ErrorCode0 <> 0)))
+			OR ((ProbeCalibrationArray >= 3) AND (NOT Enable1 OR (ActValveMode1 <> 3) OR (ErrorCode1 <> 0))) THEN
+			ProbeCalibrationFaultCode := 6;
+		END_IF
+	END_IF
+	IF ProbeCalibrationArmed AND ProbeCalibrationTrigger AND (ProbeCalibrationFaultCode = 0) THEN
+		ProbeCalibrationValveOpen := TRUE;
+		ProbeCalibrationArmed := FALSE; // Return traversal cannot re-trigger.
+		ProbeCalibrationOpenedAtMs := LightBarrierEventClockMs;
+		ProbeCalibrationStatus := 3;
+	END_IF
+	IF ProbeCalibrationValveOpen THEN
+		ProbeCalibrationElapsedMs := LightBarrierEventClockMs - ProbeCalibrationOpenedAtMs;
+		IF ProbeCalibrationElapsedMs >= ProbeCalibrationMaxOpenMs THEN ProbeCalibrationFaultCode := 3; END_IF
+	END_IF
+END_IF
+IF ProbeCalibrationFaultCode <> 0 THEN
+	ProbeCalibrationActive := FALSE;
+	ProbeCalibrationArmed := FALSE;
+	ProbeCalibrationValveOpen := FALSE;
+	ProbeCalibrationStatus := 4;
+END_IF
+// Keep the entry interlock through the leave scan so every output is closed once.
+ProbeCalibrationInterlock := ProbeCalibrationInterlock OR ProbeCalibrationActive OR (ProbeCalibrationFaultCode <> 0);
+// PROBE COMMANDS END
 
 // Alternating pair gate. A workpiece can expose more than one optical edge at
 // either barrier. After the first barrier fires, only the second barrier can
@@ -3179,6 +3332,81 @@ IF GuiConveyorCalibrationMode OR GuiVelocityCheckMode THEN
 	OpenValve24 := FALSE;
 END_IF
 
+// PROBE OUTPUTS BEGIN
+// Final output arbitration, after every legacy/batch writer and before VTEM calls.
+IF ProbeCalibrationInterlock THEN
+	GuiConveyorEnabled := FALSE;
+	Array1TriggerPending := FALSE; Array2TriggerPending := FALSE;
+	Array3TriggerPending := FALSE; Array4TriggerPending := FALSE;
+	Counter := 0; Counter2 := 0; Counter3 := 0; Counter4 := 0;
+	IF State = 3 THEN State := 2; END_IF
+	IF State2 = 3 THEN State2 := 2; END_IF
+	IF State3 = 3 THEN State3 := 2; END_IF
+	IF State4 = 3 THEN State4 := 2; END_IF
+	OpenValve1 := FALSE;
+	OpenValve2 := FALSE;
+	OpenValve3 := FALSE;
+	OpenValve4 := FALSE;
+	OpenValve5 := FALSE;
+	OpenValve6 := FALSE;
+	OpenValve7 := FALSE;
+	OpenValve8 := FALSE;
+	OpenValve9 := FALSE;
+	OpenValve10 := FALSE;
+	OpenValve11 := FALSE;
+	OpenValve12 := FALSE;
+	OpenValve13 := FALSE;
+	OpenValve14 := FALSE;
+	OpenValve15 := FALSE;
+	OpenValve16 := FALSE;
+	OpenValve17 := FALSE;
+	OpenValve18 := FALSE;
+	OpenValve19 := FALSE;
+	OpenValve20 := FALSE;
+	OpenValve21 := FALSE;
+	OpenValve22 := FALSE;
+	OpenValve23 := FALSE;
+	OpenValve24 := FALSE;
+	PresValueV02 := 0; PresValueV04 := 0; PresValueV12 := 0; PresValueV14 := 0;
+	IF ProbeCalibrationActive AND (ProbeCalibrationMode = 2) AND (ProbeCalibrationFaultCode = 0) THEN
+		CASE ProbeCalibrationArray OF
+			1: PresValueV02 := ProbeCalibrationPressureMbar;
+			2: PresValueV04 := ProbeCalibrationPressureMbar;
+			3: PresValueV12 := ProbeCalibrationPressureMbar;
+			4: PresValueV14 := ProbeCalibrationPressureMbar;
+		END_CASE
+		IF ProbeCalibrationValveOpen THEN
+			CASE (ProbeCalibrationArray - 1) * 6 + ProbeCalibrationNozzle OF
+				1: OpenValve1 := TRUE;
+				2: OpenValve2 := TRUE;
+				3: OpenValve3 := TRUE;
+				4: OpenValve4 := TRUE;
+				5: OpenValve17 := TRUE;
+				6: OpenValve18 := TRUE;
+				7: OpenValve5 := TRUE;
+				8: OpenValve6 := TRUE;
+				9: OpenValve7 := TRUE;
+				10: OpenValve8 := TRUE;
+				11: OpenValve19 := TRUE;
+				12: OpenValve20 := TRUE;
+				13: OpenValve9 := TRUE;
+				14: OpenValve10 := TRUE;
+				15: OpenValve11 := TRUE;
+				16: OpenValve12 := TRUE;
+				17: OpenValve21 := TRUE;
+				18: OpenValve22 := TRUE;
+				19: OpenValve13 := TRUE;
+				20: OpenValve14 := TRUE;
+				21: OpenValve15 := TRUE;
+				22: OpenValve16 := TRUE;
+				23: OpenValve23 := TRUE;
+				24: OpenValve24 := TRUE;
+			END_CASE
+		END_IF
+	END_IF
+END_IF
+// PROBE OUTPUTS END
+
 FBValveControlV0(
 	awBusDataFromVTEM:= Valve0_IN, 
 	awBusDataToVTEM:= Valve0_OUT, 
@@ -3304,7 +3532,7 @@ END_IF
 IF StepperPosEmergencyStop OR ConveyorServoStopRequested THEN
 	StepperPosExecute := FALSE;
 END_IF
-IF ReorientationSafeLatch OR NOT ConveyorServoCommissioned THEN
+IF ReorientationSafeLatch OR NOT ConveyorServoCommissioned OR ProbeCalibrationInterlock THEN
 	StepperControlEnable := FALSE;
 	StepperPosExecute := FALSE;
 END_IF

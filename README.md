@@ -8,6 +8,7 @@
 - **Pressure Control** (`CSVSaver/PressureControlGUI.py`): configure four nozzle arrays, pressure, pulse duration, delay, and offset.
 - **Profiles and roadmaps**: save/load pressure JSONs, select directed pose transitions, and preview CAD orientations.
 - **Conveyor Setup** (`CSVSaver/ConveyorSetupGUI.py`): control transport, calibrate travel and sensor spacing, and check part velocity.
+- **Colibri probe calibration** (two tabs in Conveyor Setup): measure light-barrier centres and individual nozzle distances using the 75 mm Colibri axis and QuantumX TAL221 channels 3/4. [Setup, operation and hardware acceptance](docs/COLIBRI_CALIBRATION.md).
 - **Reorientation Control** (`ReorientationControlGUI/`): detect poses with Baumer/YOLO and execute roadmap profiles for a fixed batch from one camera snapshot.
 - **Camera timing** (`CSVSaver/high_speed_calibration.py`): record USB high-speed video, review frames, and compare light-barrier-to-motion delays.
 - **Measurement tools**: plot light-barrier events, measure force-response delays, and export pressure, velocity, and consistency data.

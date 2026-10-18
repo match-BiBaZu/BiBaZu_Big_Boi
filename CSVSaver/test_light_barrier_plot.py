@@ -321,7 +321,7 @@ class PlcTriggerTraceTests(unittest.TestCase):
             gate = "PairedFirstBarrierFalling" if sensor % 2 else "PairedSecondBarrierFalling"
             self.assertIn(f"LightBarrierFilteredSignal[{sensor}] := {gate}[{(sensor + 1) // 2}];", st)
         self.assertLess(st.index("LightBarrierFilteredSignal[1] :="),
-                        st.index("IF NOT GuiReorientationControlActive AND PairedSecondBarrierFalling[1]"))
+                      st.index("IF NOT GuiReorientationControlActive AND PairedForwardPass[1]"))
         self.assertIn("<> LastLightBarrierFilteredSignal[LightBarrierFilteredSensor]", st)
 
 

@@ -47,12 +47,15 @@ from read_ur_tcp_pose import read_tcp_pose_from_connection
 from plc_control_lease import PlcControlLease
 from high_speed_calibration import PressureDelayTab
 from light_barrier_plot import LightBarrierPlot
+from probe_calibration_ui import ProbeCalibrationUi
 
 from PressureControlGUI import (
     ADJACENT_LIGHT_BARRIER_PAIRS,
     ADS_TIMEOUT_MS,
     AMS_NET_ID,
     PLC_IP,
+    PLC_PORT,
+    LIGHT_BARRIER_SETTINGS_FILE,
     LIGHT_BARRIER_COUNT,
     LIGHT_BARRIER_INVERT_DEFAULTS,
     LIGHT_BARRIER_PAIRS,
@@ -846,6 +849,7 @@ class ConveyorSetupWindow(QMainWindow):
         layout.setSpacing(12)
 
         conveyor_group = QGroupBox("Conveyor")
+        self.conveyor_group = conveyor_group
         conveyor_layout = QGridLayout(conveyor_group)
         self.calibration_factor = QLabel("Not calibrated")
         self.speed_conversion = QLabel("-")
@@ -865,6 +869,7 @@ class ConveyorSetupWindow(QMainWindow):
         layout.addWidget(conveyor_group)
 
         barrier_group = QGroupBox("Light Barriers")
+        self.barrier_group = barrier_group
         barrier_layout = QGridLayout(barrier_group)
         self.barrier_lamps = []
         self.barrier_labels = []
@@ -1237,6 +1242,16 @@ class ConveyorSetupWindow(QMainWindow):
 
         self.pressure_delay_tab = PressureDelayTab(self, ads_controller=self.ads)
         self.calibration_tabs.addTab(self.pressure_delay_tab, "Pressure Delay")
+        self.probe_ui = ProbeCalibrationUi(
+            AMS_NET_ID, PLC_IP, PLC_PORT, LIGHT_BARRIER_SETTINGS_FILE, self
+        )
+        self.calibration_tabs.addTab(self.probe_ui.barrier_tab, "Colibri: Lichtschranken")
+        self.calibration_tabs.addTab(self.probe_ui.nozzle_tab, "Colibri: Düsenabstand")
+        layout.addWidget(self.probe_ui.device_group)
+        self.probe_ui.device_group.setVisible(False)
+        self.probe_ui.busy_changed.connect(self._on_probe_busy)
+        self.probe_ui.spacing_applied.connect(self._on_probe_spacing_applied)
+        self.calibration_tabs.currentChanged.connect(self._on_probe_tab_changed)
         layout.addWidget(self.calibration_tabs, 1)
 
         spacing_group = QGroupBox("Velocity Sensor Spacings")
@@ -1264,6 +1279,24 @@ class ConveyorSetupWindow(QMainWindow):
         scroll.setWidget(root)
         self.setCentralWidget(scroll)
         self.setStatusBar(QStatusBar())
+
+    def _on_probe_tab_changed(self, index: int) -> None:
+        self.probe_ui.device_group.setVisible(
+            self.calibration_tabs.widget(index) in
+            (self.probe_ui.barrier_tab, self.probe_ui.nozzle_tab)
+        )
+
+    def _on_probe_busy(self, busy: bool) -> None:
+        self.conveyor_group.setEnabled(not busy)
+        self.barrier_group.setEnabled(not busy)
+        for index in range(self.calibration_tabs.count()):
+            if self.calibration_tabs.widget(index) not in (
+                self.probe_ui.barrier_tab, self.probe_ui.nozzle_tab
+            ):
+                self.calibration_tabs.setTabEnabled(index, not busy)
+
+    def _on_probe_spacing_applied(self, key: str, value: float) -> None:
+        self.statusBar().showMessage(f"{key}: {value:.3f} mm gespeichert und aus SPS zurückgelesen")
 
     def _connect_signals(self) -> None:
         self.ads.connection_changed.connect(self._on_connection_changed)
@@ -2344,6 +2377,10 @@ class ConveyorSetupWindow(QMainWindow):
         self.statusBar().showMessage(f"{context}: {message}")
 
     def closeEvent(self, event) -> None:
+        if not self.probe_ui.shutdown():
+            self.statusBar().showMessage("Colibri wird noch gestoppt; bitte Fenster erneut schließen.")
+            event.ignore()
+            return
         self.pressure_delay_tab.shutdown()
         if hasattr(self, "ur_thread") and self.ur_thread.isRunning():
             self.ur_stop_requested.emit()

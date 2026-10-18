@@ -2048,8 +2048,10 @@ class ConveyorSetupWindowTests(unittest.TestCase):
         with patch.object(gui.AdsController, "start"):
             window = setup_gui.ConveyorSetupWindow()
 
-        self.assertEqual(window.calibration_tabs.count(), 4)
+        self.assertEqual(window.calibration_tabs.count(), 6)
         self.assertEqual(window.calibration_tabs.tabText(3), "Pressure Delay")
+        self.assertEqual(window.calibration_tabs.tabText(4), "Colibri: Lichtschranken")
+        self.assertEqual(window.calibration_tabs.tabText(5), "Colibri: Düsenabstand")
         self.assertFalse(window.pressure_delay_tab.record_button.isEnabled())
         self.assertFalse(
             window.pressure_delay_tab.analyze_movement_button.isEnabled()
