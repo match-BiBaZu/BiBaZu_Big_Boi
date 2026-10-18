@@ -130,7 +130,7 @@ class ProbeTab(QWidget):
             self.smoothing = QSpinBox()
             self.smoothing.setRange(20, 2400)
             self.smoothing.setSingleStep(20)
-            self.smoothing.setValue(100)
+            self.smoothing.setValue(settings.value("nozzle/force_smoothing_samples", 100, type=int))
             self.smoothing.setSuffix(" Rohwerte")
             self.smoothing.setToolTip(
                 "Zentrierter Mittelwert vor der Betragssuche; 100 Werte entsprechen bei 2400 Hz etwa 42 ms. "
@@ -434,6 +434,7 @@ class ProbeCalibrationUi(QObject):
             self.settings.setValue(f"{mode}/outward_direction", tab.direction.currentData())
         self.settings.setValue("barriers/first_sensor", self.barrier_tab.first.currentData())
         self.settings.setValue("barriers/second_sensor", self.barrier_tab.second.currentData())
+        self.settings.setValue("nozzle/force_smoothing_samples", self.nozzle_tab.smoothing.value())
 
     def _force_connect(self):
         self._remember()

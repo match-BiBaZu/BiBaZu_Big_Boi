@@ -30,7 +30,9 @@ class ProbeUiTests(unittest.TestCase):
             plc.assert_not_called()
 
     def test_nozzle_duration_can_be_adjusted_to_predicted_round_trip(self):
-        tab = ProbeTab("nozzle")
+        with patch("probe_calibration_ui.QSettings") as settings:
+            settings.return_value.value.side_effect = lambda key, default=None, **kwargs: default
+            tab = ProbeTab("nozzle")
         self.assertLess(tab.open_time.value(), tab.required_duration())
         tab.suggest_duration.click()
         self.assertGreaterEqual(tab.open_time.value(), tab.required_duration())

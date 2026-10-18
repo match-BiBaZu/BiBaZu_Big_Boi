@@ -131,8 +131,14 @@ separat sichtbar. Alle Ventile bleiben bei dieser Messung geschlossen.
   und kein Zurücksetzen des Öffnungszeitlimits aus.
 
 Livewerte sind die geglätteten Bridge-Kräfte. Für die endgültige Auswertung wird
-ein zentrierter gleitender Mittelwert über 20 tarierte Rohmesswerte (mit optionaler Profilkorrektur)
-gebildet, getrennt je Richtung. Zeit und Position des Mittelwerts entsprechen
+ein zentrierter gleitender Mittelwert über tarierte Rohmesswerte (mit optionaler
+Profilkorrektur) gebildet, getrennt je Richtung. **Kraftglättung** stellt die
+Fensterlänge zwischen 20 und 2400 Rohwerten ein; Standard sind 100 Werte, bei
+2400 Hz etwa 42 ms. Die Auswahl wird gespeichert und steht in der Serien-JSON
+als `config.force_smoothing_samples`. Auch die Livekurve verwendet diese
+Glättung. Größere Fenster unterdrücken Schwingungen stärker und verbreitern
+schmale Kraftspitzen; die Peakposition muss weiterhin am Aufbau geprüft werden.
+Zeit und Position des Mittelwerts entsprechen
 der Mitte desselben Fensters. Es wird keine zusätzliche nachlaufende
 Softwarefilter-Verzögerung in die Peakposition übernommen.
 
