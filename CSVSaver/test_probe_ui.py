@@ -1,5 +1,6 @@
 import gc
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 
 from probe_calibration_ui import ProbeCalibrationUi, ProbeTab
+from probe_calibration import ProbeConfig, ProbeRecording
 import test_probe_calibration as test_data
 
 
@@ -74,6 +76,37 @@ class ProbeUiTests(unittest.TestCase):
             self.assertEqual(config.travel_mm, 75)
         finally:
             ui.shutdown()
+
+    def test_failed_session_can_be_loaded_after_restart_and_resumed_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recording = ProbeRecording(directory, ProbeConfig(speed_mm_s=3))
+            recording.finish("Positionsdatenlücke")
+            ui = ProbeCalibrationUi("test", "127.0.0.1", 851, "unused.json")
+            try:
+                with patch("probe_calibration_ui.QFileDialog.getOpenFileName",
+                           return_value=(str(recording.path / "session.json"), "")), \
+                        patch.object(ui.devices, "submit") as submit:
+                    ui._load_failed("barriers")
+                    submit.assert_not_called()
+                tab = ui.barrier_tab
+                self.assertFalse(tab.resume.isEnabled())
+                ui._connected(True)
+                self.assertTrue(tab.resume.isEnabled())
+                self.assertIn("0/5", tab.resume.text())
+                self.assertIn("Referenzfahrt", tab.state.text())
+                tab.speed.setValue(4)  # Resume uses the saved config, not these edited controls.
+                with patch.object(ui, "_remember"), patch.object(ui.devices, "submit") as submit:
+                    tab.resume.click()
+                    submit.assert_called_once_with("resume", (str(recording.path.resolve()), ui.output.text().strip()))
+                ui._busy(True)
+                self.assertFalse(tab.resume.isEnabled())
+                self.assertFalse(tab.load.isEnabled())
+                ui._busy(False)
+                tab.document["status"] = "complete"
+                tab.update_controls()
+                self.assertFalse(tab.resume.isEnabled())
+            finally:
+                ui.shutdown()
 
     def test_completed_session_populates_signed_force_peaks_and_plot(self):
         from probe_calibration import force_peak

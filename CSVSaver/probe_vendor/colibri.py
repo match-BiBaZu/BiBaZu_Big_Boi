@@ -11,6 +11,7 @@ COLIBRI_BAUD_RATE = 9600
 COLIBRI_SLAVE_ADDRESS = 0xFF
 COLIBRI_REFERENCE_CURRENT_PERCENT = 20
 SERIAL_WRITE_TIMEOUT = 0.3
+POLL_TIMEOUT_SECONDS = 0.1
 
 class ColibriProtocolError(Exception):
     pass
@@ -57,7 +58,7 @@ class ColibriController:
             bytesize=8,
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
-            timeout=0.08,
+            timeout=0.02,
             write_timeout=SERIAL_WRITE_TIMEOUT,
         )
         self.lock = threading.Lock()
@@ -69,7 +70,8 @@ class ColibriController:
         self.serial_port.close()
 
     def status(self):
-        response = self._request(self.TG_REQ_STATUS, expected_type=self.TG_STATUS)
+        response = self._request(self.TG_REQ_STATUS, expected_type=self.TG_STATUS,
+                                 timeout_s=POLL_TIMEOUT_SECONDS)
         if len(response) < 7:
             raise ColibriProtocolError(f"Short status response: {response.hex(' ')}")
         # This controller sends system status BEFORE motor status. Verified on
@@ -77,8 +79,9 @@ class ColibriController:
         return self._decode_status(response[4], response[3], response[5])
 
     def position_steps(self):
-        response = self._request(self.TG_REQ_POSITION, expected_type=self.TG_POSITION)
-        if len(response) < 7:
+        response = self._request(self.TG_REQ_POSITION, expected_type=self.TG_POSITION,
+                                 timeout_s=POLL_TIMEOUT_SECONDS)
+        if len(response) < 8:
             raise ColibriProtocolError(f"Short position response: {response.hex(' ')}")
         return int.from_bytes(response[3:7], byteorder="little", signed=True)
 
@@ -144,7 +147,7 @@ class ColibriController:
     def move_absolute_steps(self, steps):
         return self._request(self.TG_MOVE_ABS, *self._int32_bytes(steps), expected_type=None, retry_on_timeout=False)
 
-    def _request(self, *data, expected_type, retry_on_timeout=True):
+    def _request(self, *data, expected_type, retry_on_timeout=True, timeout_s=0.8):
         with self.lock:
             last_response = None
             last_error = None
@@ -155,7 +158,7 @@ class ColibriController:
                 self._trace(f"TX {request_frame.hex(' ')}")
                 self.serial_port.write(request_frame)
                 self.serial_port.flush()
-                deadline = time.monotonic() + 0.8
+                deadline = time.monotonic() + timeout_s
                 while time.monotonic() < deadline:
                     response = self._read_frame(deadline)
                     if response is None:
@@ -168,12 +171,15 @@ class ColibriController:
                         self._trace(f"RX ignored {exc}")
                         continue
                     last_response = response
+                    if response[2] < 0x80:
+                        self._trace("RX ignored request echo")
+                        continue
                     if len(response) >= 3 and response[2] == self.TG_ERROR and expected_type != self.TG_ERROR:
                         continue
                     if expected_type is None or (len(response) >= 3 and response[2] == expected_type):
                         return response
                 if attempt + 1 < attempts:
-                    time.sleep(0.05)
+                    time.sleep(0.005 if timeout_s <= POLL_TIMEOUT_SECONDS else 0.05)
             if last_response is not None:
                 raise ColibriProtocolError(f"Unexpected response: {last_response.hex(' ')}")
             if last_error is not None:
@@ -224,6 +230,8 @@ class ColibriController:
     def _validate_response(self, response):
         if len(response) < 4:
             raise ColibriProtocolError(f"Frame too short: {response.hex(' ')}")
+        if len(response) != response[1] + 2:
+            raise ColibriProtocolError(f"Bad frame length: {response.hex(' ')}")
         checksum = sum(response[:-1]) & 0xFF
         if checksum != response[-1]:
             raise ColibriProtocolError(

@@ -30,6 +30,11 @@ eines der beiden Colibri-Tabs.
    −75 bis +75 mm (Überwachung mit 0,1 mm Toleranz). Das ist ein Koordinatenbereich,
    kein Nachweis eines mechanischen Hubs von 150 mm. Der maximale Verfahrweg
    einer Kalibrierung bleibt 75 mm ab Home; Home muss weiterhin bei 0 mm enden.
+   Der Status wird vor der Position gelesen. Nach der Referenzmeldung darf das
+   Nullsetzen des Positionszählers noch bis zu eine Sekunde nachlaufen; für den
+   Abschluss muss die Position anschließend 0,3 s lang bei 0 mm bleiben
+   (Toleranz zwei konfigurierte Schritte). Es wird kein Software-Nullpunkt
+   erzwungen und die Home-Referenzrichtung bleibt unverändert.
 4. **Colibri verbinden** prüft auch die neue SPS-Schnittstelle. Fehlende Symbole
    sperren ausschließlich die neuen Colibri-Funktionen; die anderen Tabs bleiben
    nutzbar. Ein fehlgeschlagener Verbindungsversuch gibt den COM-Port wieder frei.
@@ -168,6 +173,29 @@ verwendete Referenzflanke samt Zeit und Position. Die Serien-JSON enthält unter
 
 ## Dateien und Übernahme
 
+Nach einem Fehler oder Abbruch kann die ausgewählte Serie mit **Messung
+fortsetzen** weitergemessen werden. Vollständige, aufeinanderfolgende
+Hin-/Rückzyklen bleiben erhalten; ein unterbrochener Zyklus wird vollständig
+wiederholt. Die Achse referenziert nach dem ausdrücklichen Klick erneut, danach
+werden nur die fehlenden Zyklen bis insgesamt fünf gefahren. Es gibt keine
+automatische Weiterfahrt nach einem Fehler. Vorher die Fehlerursache beheben
+und den mechanischen Aufbau unverändert lassen.
+
+Fortsetzen verwendet die gespeicherten Messeinstellungen, einschließlich
+Richtung, Geschwindigkeit, Weg, Düse, Druck und Glättung. Geänderte Eingabefelder
+gelten für eine neue Serie. Nach einer QuantumX-Neuverbindung ohne Luftlast neu
+tarieren; die neue Tara wird für die zusätzlichen Zyklen gespeichert. Ein
+Wechsel des Kraftkalibrierprofils erfordert eine neue Serie, sobald bereits
+vollständige Düsenzyklen vorliegen.
+
+Mit **Unterbrochene Serie laden …** lässt sich eine `session.json` auch nach
+einem GUI-Neustart laden. Dazu den passenden Colibri-Tab wählen. Laden allein
+bewegt die Achse nicht. Die Fortsetzung erhält einen neuen Messordner: `resume`
+verweist auf Fehlversuch und erhaltene Zyklen, `source_session` je Ergebniszeile
+auf den zugehörigen Ordner mit Rohdaten, Profil und Tara. Ursprüngliche CSV/JSON
+und unvollständige Messungen bleiben dort unverändert erhalten. Nur zehn
+gültige Fahrten aus fünf vollständigen Zyklen erlauben die Übernahme.
+
 Jede gestartete Serie erhält unter dem ausgewählten Messordner einen eigenen
 UTC-Zeitstempelordner mit `raw.csv` und `session.json`. Auch abgebrochene Serien
 bleiben erhalten. CSV enthält Positionen, Kraftmesssätze, Flanken, Zeitstempel,
@@ -245,11 +273,26 @@ Software keinen mechanischen Stillstand bestätigen.
 
 ## Genauigkeit und Abnahme
 
+Jede Fahrtrichtung beginnt mit einem frischen Positionspuffer und einer
+Positionsabfrage vor dem Fahrbefehl. Auswerte-/Speicherpausen am stehenden
+Wendepunkt werden dadurch nicht als Interpolationslücke der nächsten Fahrt
+behandelt. Nach abgeschlossener Rückfahrt und Speicherung beginnt auch die
+Wartephase an Home mit einem eigenen Puffer (`direction = settling`). Eine
+Auswertepause verlängert damit nicht nachträglich die Rückfahrt-Messkurve.
+Status- und Positionsabfragen warten je Versuch höchstens 100 ms auf
+eine Antwort und dürfen einmal wiederholt werden; Fahrbefehle werden nicht
+automatisch wiederholt. Telegrammlänge und Prüfsumme werden geprüft, eigene
+Sende-Echos nicht als Quittierung angenommen. CSV-Zeilen `io_timing` enthalten
+die getrennten Antwortzeiten von Status, Position und SPS in Millisekunden.
+
 Es werden tatsächliche Colibri-Positionsantworten interpoliert, keine Wege aus
 Sollgeschwindigkeit berechnet. SPS-Millisekunden einschließlich Überlauf und
 QuantumX-UTC-Messzeiten werden auf die monotone PC-Zeit bezogen. Serielle
 Antwortzeit, Abfrageabstand, ADS-Laufzeit und beobachtete Kraftdatenlatenz gehen
-in die angezeigte **geschätzte** räumliche Unsicherheit ein. Lücken über 300 ms
+in die angezeigte **geschätzte** räumliche Unsicherheit ein. Positionsintervalle
+bis 500 ms werden interpoliert; ihre volle Zeitunsicherheit bleibt erhalten.
+Mitteln über mehrere Fahrten beseitigt systematische Zuordnungsfehler nicht.
+Lücken über 500 ms
 in den Positionsdaten, fehlende Kraftdaten über 250 ms, rückläufige Sequenzen
 und PC-Zeitsprünge beenden die Messung.
 

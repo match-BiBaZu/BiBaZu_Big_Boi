@@ -37,6 +37,7 @@ class ProbeConfig:
     mm_per_step: float = 0.005
     outward_direction: int = -1
     force_smoothing_samples: int = 100
+    nozzle_layout: str = "standard"
 
     @property
     def sensors(self):
@@ -58,6 +59,8 @@ class ProbeConfig:
             raise MeasurementError("Messparameter müssen endlich sein.")
         if self.mode not in {"barriers", "nozzle"}:
             raise MeasurementError("Unbekannter Messmodus.")
+        if self.nozzle_layout not in {"standard", "vertical"}:
+            raise MeasurementError("Unbekannter Düsen-Messaufbau.")
         if (type(self.force_smoothing_samples) is not int
                 or not 20 <= self.force_smoothing_samples <= 2400):
             raise MeasurementError("Kraftglättung muss 20–2400 Rohmesswerte umfassen.")
@@ -84,7 +87,7 @@ class ProbeConfig:
 
 
 class PositionTimeline:
-    def __init__(self, max_gap_s=0.3):
+    def __init__(self, max_gap_s=0.5):
         self.times = []
         self.positions = []
         self.roundtrips = []
@@ -105,7 +108,9 @@ class PositionTimeline:
             raise MeasurementError("Kein beidseitiger Positionsbezug für Messzeitpunkt.")
         span = self.times[i] - self.times[i - 1]
         if span > self.max_gap_ns:
-            raise MeasurementError("Positionsdatenlücke größer als 300 ms.")
+            raise MeasurementError(
+                f"Positionsdatenlücke {span / 1e6:.0f} ms überschreitet "
+                f"{self.max_gap_ns / 1e6:g} ms.")
         fraction = (time_ns - self.times[i - 1]) / span
         position = self.positions[i - 1] + fraction * (self.positions[i] - self.positions[i - 1])
         uncertainty_s = (span + max(self.roundtrips[i - 1:i + 1])) / 2e9
@@ -250,14 +255,92 @@ def force_peak(samples, noise_n, window=20):
     return peaks, smoothed
 
 
+def force_center(curve, peak):
+    """Midpoint of the two interpolated half-height crossings around |F1+F2|'s peak."""
+    threshold = abs(peak["force_n"]) / 2
+    i = min(range(len(curve)), key=lambda j: abs(curve[j]["time_ns"] - peak["time_ns"]))
+    first = last = i
+    while first > 0 and abs(curve[first - 1]["force_total_n"]) >= threshold:
+        first -= 1
+    while last < len(curve) - 1 and abs(curve[last + 1]["force_total_n"]) >= threshold:
+        last += 1
+    if first == 0 or last == len(curve) - 1:
+        raise MeasurementError("Kraftmitte nicht bestimmbar: beide Flanken bei halber Peakhöhe müssen im Messbereich liegen.")
+
+    def crossing(a, b):
+        fa, fb = abs(a["force_total_n"]), abs(b["force_total_n"])
+        fraction = (threshold - fa) / (fb - fa)
+        return {key: a[key] + fraction * (b[key] - a[key]) for key in ("position_mm", "time_ns")}
+
+    entry = crossing(curve[first - 1], curve[first])
+    exit_ = crossing(curve[last], curve[last + 1])
+    return {"position_mm": (entry["position_mm"] + exit_["position_mm"]) / 2,
+            "time_ns": (entry["time_ns"] + exit_["time_ns"]) / 2,
+            "entry": entry, "exit": exit_, "half_height_abs_n": threshold,
+            "width_mm": abs(exit_["position_mm"] - entry["position_mm"]),
+            "method": "half_height_midpoint"}
+
+
+def optical_center(edges):
+    on, off = edges["on"], edges["off"]
+    return {"position_mm": (on["position_mm"] + off["position_mm"]) / 2,
+            "time_ns": (on["time_ns"] + off["time_ns"]) // 2,
+            "estimated_uncertainty_mm": (on["estimated_uncertainty_mm"] + off["estimated_uncertainty_mm"]) / 2,
+            "width_mm": abs(off["position_mm"] - on["position_mm"]),
+            "on": dict(on), "off": dict(off), "method": "switch_midpoint"}
+
+
 RAW_FIELDS = ("kind", "cycle", "direction", "time_ns", "source_utc_ns", "sequence",
               "position_mm", "roundtrip_ns", "sensor", "clear", "plc_time_ms",
               "force_1_n", "force_2_n", "force_total_n", "source_force_1_n", "source_force_2_n",
               "live_force_1_n", "live_force_2_n", "estimated_uncertainty_mm", "status", "message")
 
 
+def completed_cycle_rows(document):
+    """Keep only the consecutive prefix of complete, unambiguous round trips."""
+    result = []
+    for cycle in range(1, CYCLES + 1):
+        rows = [row for row in document.get("rows", []) if row.get("cycle") == cycle]
+        if (len(rows) != 2 or {row.get("direction") for row in rows} != {"forward", "backward"}
+                or any(not isinstance(row.get("distance_mm"), (int, float))
+                       or not math.isfinite(row["distance_mm"]) or row["distance_mm"] <= 0 for row in rows)):
+            break
+        result.extend(sorted(rows, key=lambda row: row["direction"] != "forward"))
+    return result
+
+
+def load_failed_session(path):
+    path = Path(path)
+    if path.name == "session.json":
+        path = path.parent
+    try:
+        document = json.loads((path / "session.json").read_text(encoding="utf-8"))
+        if (document.get("version") != 1 or document.get("status") != "failed"
+                or not isinstance(document.get("rows"), list)):
+            raise ValueError("Keine unterbrochene Messserie im unterstützten Format.")
+        ProbeConfig(**document["config"]).validate()
+        completed_cycle_rows(document)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise MeasurementError(f"Unterbrochene Messserie kann nicht geladen werden: {exc}") from exc
+    return path.resolve(), document
+
+
 class ProbeRecording:
-    def __init__(self, root, config, profile=None, tare=None):
+    def __init__(self, root, config, profile=None, tare=None, resume_from=None):
+        previous_path, previous, retained = None, None, []
+        if resume_from is not None:
+            previous_path, previous = load_failed_session(resume_from)
+            if ProbeConfig(**previous["config"]) != config:
+                raise MeasurementError("Fortsetzen verwendet die gespeicherten Messeinstellungen; bei Änderungen eine neue Serie starten.")
+            retained = completed_cycle_rows(previous)
+            if retained and config.mode == "nozzle":
+                # A new no-air tare is allowed after reconnecting the bridge;
+                # changing the underlying force calibration is a new series.
+                def calibration_settings(value):
+                    return {k: v for k, v in (value or {}).items()
+                            if k not in {"tare_1_n", "tare_2_n", "zeroed_utc"}}
+                if calibration_settings(profile) != calibration_settings(previous.get("profile")):
+                    raise MeasurementError("Kraftprofil geändert: ursprüngliches Profil laden oder neue Messserie starten.")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         self.path = Path(root) / f"{stamp}_{config.mode}"
         self.path.mkdir(parents=True)
@@ -268,10 +351,24 @@ class ProbeRecording:
                          "geometry": {"home_position_mm": 0.0, "outward_target_mm": config.outward_target_mm,
                                       "outward_sensor_order": list(config.sensors),
                                       "return_sensor_order": list(reversed(config.sensors)),
-                                      "nozzle_reference_direction": "backward" if config.mode == "nozzle" else None,
+                                      "nozzle_layout": config.nozzle_layout if config.mode == "nozzle" else None,
+                                      "nozzle_reference_direction": ("same_direction" if config.nozzle_layout == "vertical" else "backward") if config.mode == "nozzle" else None,
+                                      "nozzle_reference_method": ("switch_midpoint" if config.nozzle_layout == "vertical" else "on_edge") if config.mode == "nozzle" else None,
+                                      "force_position_method": ("half_height_midpoint" if config.nozzle_layout == "vertical" else "absolute_peak") if config.mode == "nozzle" else None,
+                                      "nozzle_outbound_order": (["barrier", "nozzle"] if config.nozzle_layout == "vertical" else ["nozzle", "barrier"]) if config.mode == "nozzle" else None,
                                       "valve_open_phase": "home_before_outbound" if config.mode == "nozzle" else None},
                          "status": "running", "rows": [], "summary": {}, "apply_allowed": False,
                          "accuracy_validated": False}
+        if previous is not None:
+            self.document["resume"] = {"from_session": str(previous_path),
+                                       "previous_error": previous.get("error"),
+                                       "retained_cycles": len(retained) // 2,
+                                       "discarded_partial_rows": len(previous["rows"]) - len(retained)}
+            # Copy, rather than mutate the failed session or its result snapshot.
+            self.document["rows"] = json.loads(json.dumps(retained))
+            for row in self.document["rows"]:
+                row.setdefault("source_session", str(previous_path))
+            self.document["summary"] = statistics_for(self.document["rows"])
         self.file = (self.path / "raw.csv").open("w", newline="", encoding="utf-8")
         self.writer = csv.DictWriter(self.file, fieldnames=RAW_FIELDS, extrasaction="ignore")
         self.writer.writeheader()
@@ -287,14 +384,14 @@ class ProbeRecording:
         temporary.replace(self.path / "session.json")
 
     def add(self, row):
-        self.document["rows"].append(row)
+        self.document["rows"].append({**row, "source_session": str(self.path.resolve())})
         self.document["summary"] = statistics_for(self.document["rows"])
         self.save()
 
     def finish(self, error=None):
         self.document["status"] = "failed" if error else "complete"
         self.document["error"] = error
-        self.document["apply_allowed"] = not error and len(self.document["rows"]) == CYCLES * 2
+        self.document["apply_allowed"] = not error and len(completed_cycle_rows(self.document)) == CYCLES * 2
         self.save()
         self.file.close()
 

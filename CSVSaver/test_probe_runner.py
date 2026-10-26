@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from probe_calibration import MeasurementError, ProbeConfig
+from probe_calibration import MeasurementError, ProbeConfig, force_peak
 from probe_hardware import ForceStream, ProbeRunner
 from probe_vendor.colibri import ColibriController
 from test_probe_calibration import force_sample, profile, ring
@@ -282,6 +282,41 @@ class CompleteRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(MeasurementError, "nicht bei 0 mm"):
                 self.runner.home()
 
+    def test_home_accepts_zero_arriving_after_reference_status(self):
+        self.plc.command(1, ProbeConfig())
+        started = self.clock.now
+
+        def start_reference():
+            self.axis.position = self.axis.target = -0.105
+            self.axis.referenced = True
+
+        def delayed_zero(plc):
+            if self.clock.now - started >= 0.65:
+                self.axis.position = self.axis.target = 0
+
+        self.plc.on_snapshot = delayed_zero
+        with patch.object(self.axis, "reference", side_effect=start_reference) as reference:
+            self.runner.home()
+        reference.assert_called_once()
+        self.assertIn(-0.105, self.runner.timeline.positions)
+        self.assertEqual(self.runner.last_position, 0)
+        self.assertGreaterEqual(self.clock.now - started, 0.95)
+
+    def test_turnaround_analysis_pause_is_not_a_gap_inside_the_next_traversal(self):
+        self.plc.command(1, ProbeConfig())
+        self.axis.position = self.axis.target = 60
+        self.runner.tick()
+        self.clock.sleep(0.7)
+        self.axis.sample()
+        self.runner.reset_window("backward")
+        self.assertEqual(len(self.runner.timeline.times), 1)
+        self.assertEqual(self.runner.timeline.positions, [60])
+        self.axis.target = 59
+        for _ in range(5):
+            self.runner.tick()
+        self.assertTrue(self.runner.force_rows)
+        self.assertLess(self.runner.last_position, 60)
+
     def test_five_nozzle_cycles_use_return_reference_and_air_from_home(self):
         with tempfile.TemporaryDirectory() as directory:
             result = self.runner.run(ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)
@@ -309,6 +344,31 @@ class CompleteRunnerTests(unittest.TestCase):
             self.assertTrue(saved["apply_allowed"])
             self.assertFalse(saved["accuracy_validated"])
             self.assertNotIn("pending_nozzle_cycle", saved)
+
+    def test_slow_peak_processing_at_home_does_not_extend_return_window(self):
+        pauses = []
+
+        def slow_peak(*args):
+            result = force_peak(*args)
+            self.assertFalse(self.runner.last_status["moving"])
+            if self.runner.direction == "backward":
+                self.assertEqual(self.axis.position, 0)
+                self.assertFalse(self.plc.open)
+            pauses.append(self.runner.direction)
+            self.clock.sleep(0.7)
+            self.axis.sample()
+            return result
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("probe_hardware.force_peak", side_effect=slow_peak):
+            result = self.runner.run(
+                ProbeConfig(mode="nozzle", speed_mm_s=5, travel_mm=65, max_open_s=40), directory)
+            self.assertTrue(result["apply_allowed"])
+            self.assertEqual(pauses, ["forward", "backward"] * 5)
+            self.assertEqual(len(result["rows"]), 10)
+            self.assertAlmostEqual(result["summary"]["mean_mm"], 20, delta=0.15)
+            self.assertEqual(self.runner.direction, "settling")
+            self.assertFalse(self.plc.open)
 
     def test_nozzle_series_without_profile_still_requires_tare_and_records_peaks(self):
         self.forces.profile = None
@@ -369,6 +429,81 @@ class CompleteRunnerTests(unittest.TestCase):
             self.assertAlmostEqual(pending["forward_peaks"]["force_total_n"]["position_mm"], -10, delta=0.15)
             self.assertFalse(self.plc.open)
             self.assertGreater(self.axis.stops, 0)
+
+    def test_resume_references_again_and_repeats_only_incomplete_cycles(self):
+        for mode in ("barriers", "nozzle"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                self.setUpScenario()
+                self.forces.profile = profile()
+                self.forces.tare = {"noise_total_n": 0.0001}
+                self.forces.noise_n = 0.0001
+                config = ProbeConfig(mode=mode, speed_mm_s=5, travel_mm=65, max_open_s=40)
+
+                def abort_third_return(plc):
+                    if self.runner.cycle == 3 and self.runner.direction == "backward":
+                        self.cancel.cancelled = True
+
+                self.plc.on_snapshot = abort_third_return
+                with self.assertRaisesRegex(MeasurementError, "Abgebrochen"):
+                    self.runner.run(config, directory)
+                previous = self.runner.recording.path
+                old_json = (previous / "session.json").read_bytes()
+                old_raw = (previous / "raw.csv").read_bytes()
+                old_document = json.loads(old_json)
+                self.assertFalse(old_document["apply_allowed"])
+                self.assertFalse(self.plc.open)
+
+                self.cancel.cancelled = False
+                self.plc.on_snapshot = None
+                self.runner = ProbeRunner(self.axis, self.plc, self.forces, self.cancel)
+                self.axis.sample()
+                opens_before = self.plc.open_count
+                with patch.object(self.axis, "reference", wraps=self.axis.reference) as reference:
+                    result = self.runner.run(config, directory, resume_from=previous)
+                reference.assert_called_once()
+                self.assertTrue(result["apply_allowed"])
+                self.assertEqual(result["rows"][:4], old_document["rows"][:4])
+                self.assertEqual([(row["cycle"], row["direction"]) for row in result["rows"]],
+                                 [(cycle, direction) for cycle in range(1, 6)
+                                  for direction in ("forward", "backward")])
+                self.assertEqual(result["resume"]["retained_cycles"], 2)
+                self.assertEqual(result["resume"]["discarded_partial_rows"], 1 if mode == "barriers" else 0)
+                self.assertEqual(result["resume"]["from_session"], str(previous.resolve()))
+                self.assertAlmostEqual(result["summary"]["mean_mm"], 20, delta=0.15)
+                self.assertNotIn("pending_nozzle_cycle", result)
+                self.assertNotEqual(self.runner.recording.path, previous)
+                self.assertEqual((previous / "session.json").read_bytes(), old_json)
+                self.assertEqual((previous / "raw.csv").read_bytes(), old_raw)
+                self.assertEqual(self.plc.open_count - opens_before, 3 if mode == "nozzle" else 0)
+                self.assertFalse(self.plc.open)
+
+    def test_resumed_series_can_fail_and_resume_again_without_duplicate_cycles(self):
+        config = ProbeConfig(speed_mm_s=5, travel_mm=65)
+        with tempfile.TemporaryDirectory() as directory:
+            previous = None
+            for fail_cycle in (2, 4):
+                self.runner = ProbeRunner(self.axis, self.plc, self.forces, self.cancel)
+                self.cancel.cancelled = False
+                self.axis.sample()
+
+                def abort(plc):
+                    if self.runner.cycle == fail_cycle and self.runner.direction == "forward":
+                        self.cancel.cancelled = True
+
+                self.plc.on_snapshot = abort
+                with self.assertRaisesRegex(MeasurementError, "Abgebrochen"):
+                    self.runner.run(config, directory, resume_from=previous)
+                previous = self.runner.recording.path
+                self.assertFalse(self.runner.recording.document["apply_allowed"])
+            self.cancel.cancelled = False
+            self.plc.on_snapshot = None
+            self.axis.sample()
+            self.runner = ProbeRunner(self.axis, self.plc, self.forces, self.cancel)
+            result = self.runner.run(config, directory, resume_from=previous)
+            self.assertTrue(result["apply_allowed"])
+            self.assertEqual(result["resume"]["retained_cycles"], 3)
+            self.assertEqual(len(result["rows"]), 10)
+            self.assertEqual(len({row["source_session"] for row in result["rows"]}), 3)
 
     def test_abort_after_home_open_closes_before_first_axis_move(self):
         def abort(plc):

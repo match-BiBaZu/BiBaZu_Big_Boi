@@ -12,7 +12,10 @@ from PyQt6.QtWidgets import (
     QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from probe_calibration import AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM, ProbeConfig, smooth_force
+from probe_calibration import (
+    AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM, ProbeConfig, smooth_force,
+    completed_cycle_rows, load_failed_session,
+)
 from probe_hardware import ProbeDevices
 from probe_bridge import find_bridge
 
@@ -191,9 +194,15 @@ class ProbeTab(QWidget):
             self.inputs.append(self.suggest_duration)
         buttons = QHBoxLayout()
         self.start = QPushButton("Lichtschranken messen" if mode == "barriers" else "Düsenabstand messen")
+        self.resume = QPushButton("Messung fortsetzen")
+        self.resume.setToolTip(
+            "Ausgewählte unterbrochene Serie mit ihren gespeicherten Einstellungen fortsetzen. "
+            "Die Achse referenziert erneut; der erste unvollständige Hin-/Rückzyklus wird wiederholt. "
+            "Aufbau unverändert lassen. Änderungen in den Eingabefeldern gelten für eine neue Serie.")
         self.stop = QPushButton("Abbrechen / Ventil schließen")
         self.apply = QPushButton("Abstand übernehmen" if mode == "barriers" else "Als gemeinsamen Array-Abstand übernehmen")
         buttons.addWidget(self.start)
+        buttons.addWidget(self.resume)
         buttons.addWidget(self.stop)
         buttons.addStretch()
         buttons.addWidget(self.apply)
@@ -204,7 +213,11 @@ class ProbeTab(QWidget):
         self.selection = QComboBox()
         self.selection.setToolTip("Messserien dieser Sitzung; CSV und JSON werden automatisch gespeichert.")
         self.selection.currentIndexChanged.connect(self._select)
-        root.addWidget(self.selection)
+        session_row = QHBoxLayout()
+        session_row.addWidget(self.selection, 1)
+        self.load = QPushButton("Unterbrochene Serie laden …")
+        session_row.addWidget(self.load)
+        root.addLayout(session_row)
         self.table = QTableWidget(0, 7 if mode == "barriers" else 8)
         self.table.setHorizontalHeaderLabels(
             ["Zyklus", "Richtung", "Abstand [mm]", "Einschaltabstand", "Erste LB ein/aus [mm]", "Zweite LB ein/aus [mm]", "Unsicherheit [mm]"]
@@ -311,10 +324,17 @@ class ProbeTab(QWidget):
                     text += f" · {label} {summary[key]:.3f} mm"
             text += "\nZeitliche Unsicherheit ist geschätzt. 0,1 mm Genauigkeit erst nach Hardwareabnahme bestätigt."
             self.summary.setText(text)
-        self.state.setText("Messserie vollständig." if document["status"] == "complete" else document.get("error") or "Messung läuft …")
+        else:
+            self.summary.setText("Noch keine vollständige Messfahrt.")
+        state = "Messserie vollständig." if document["status"] == "complete" else document.get("error") or "Messung läuft …"
+        if document["status"] == "failed":
+            count = len(completed_cycle_rows(document)) // 2
+            state += f"\nFortsetzen möglich: {count}/5 vollständige Zyklen bleiben erhalten; zuerst erneute Referenzfahrt."
+        self.state.setText(state)
         self.path_label.setText(str(Path(self.session_path) / "session.json"))
         if self.plot:
             self.plot.rows = rows
+            self.plot.smoothing_samples = document["config"].get("force_smoothing_samples", 100)
             if document["status"] != "running":
                 self.plot.live = []
             self.plot.update()
@@ -324,7 +344,12 @@ class ProbeTab(QWidget):
         for widget in self.inputs:
             widget.setEnabled(not self.busy)
         self.selection.setEnabled(not self.busy)
+        self.load.setEnabled(not self.busy)
         self.start.setEnabled(self.available and not self.busy)
+        resumable = self.document and self.document.get("status") == "failed"
+        count = len(completed_cycle_rows(self.document)) // 2 if resumable else 0
+        self.resume.setText(f"Messung fortsetzen ({count}/5 fertig)" if resumable else "Messung fortsetzen")
+        self.resume.setEnabled(bool(resumable and self.available and not self.busy))
         self.stop.setEnabled(self.busy)
         can_apply = self.document and self.document.get("apply_allowed")
         if can_apply and self.mode == "barriers":
@@ -415,6 +440,8 @@ class ProbeCalibrationUi(QObject):
         self.abort.clicked.connect(self.devices.abort)
         for mode, tab in self.tabs.items():
             tab.start.clicked.connect(lambda checked=False, mode=mode: self._start(mode))
+            tab.resume.clicked.connect(lambda checked=False, mode=mode: self._resume(mode))
+            tab.load.clicked.connect(lambda checked=False, mode=mode: self._load_failed(mode))
             tab.stop.clicked.connect(self.devices.abort)
             tab.apply.clicked.connect(lambda checked=False, mode=mode: self._apply(mode))
         self.devices.status.connect(self._status)
@@ -481,6 +508,30 @@ class ProbeCalibrationUi(QObject):
             return
         self.active_mode = mode
         self.devices.submit("apply", (self.settings_file, tab.session_path))
+
+    def _resume(self, mode):
+        tab = self.tabs[mode]
+        if not tab.document or tab.document.get("status") != "failed":
+            return
+        if not self.output.text().strip():
+            self._failure("Messordner auswählen.")
+            return
+        self._remember()
+        self.active_mode = mode
+        self.devices.submit("resume", (tab.session_path, self.output.text().strip()))
+
+    def _load_failed(self, mode):
+        path, _ = QFileDialog.getOpenFileName(
+            self.tabs[mode], "Unterbrochene Messserie laden", self.output.text(), "Messserie (session.json)")
+        if not path:
+            return
+        try:
+            session_path, document = load_failed_session(path)
+            if document["config"]["mode"] != mode:
+                raise ValueError("Diese Messserie gehört zum anderen Colibri-Tab.")
+            self.tabs[mode].receive({"path": str(session_path), "document": document})
+        except (ValueError, TypeError, KeyError) as exc:
+            self._failure(str(exc))
 
     def _status(self, message):
         self.state.setText(message)

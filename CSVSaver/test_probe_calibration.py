@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from probe_calibration import (
     MASK, BarrierHistory, EdgeCapture, MeasurementError, PositionTimeline, ProbeConfig,
     ProbeRecording, barrier_row, force_peak, persist_spacing, smooth_force, statistics_for,
+    completed_cycle_rows, load_failed_session,
 )
 from probe_hardware import ForceStream, ProbeRunner, ProbePlc
 from probe_vendor.force_sources import ForceSample, parse_quantumx_message
@@ -53,11 +54,24 @@ class PositionAndEdgesTests(unittest.TestCase):
     def test_position_gaps_and_nonmonotonic_times_fail(self):
         timeline = PositionTimeline()
         timeline.add(1, 0)
-        timeline.add(400_000_001, 1)
-        with self.assertRaises(MeasurementError):
+        timeline.add(600_000_001, 1)
+        with self.assertRaisesRegex(MeasurementError, "600 ms.*500 ms"):
             timeline.at(200_000_000)
         with self.assertRaises(MeasurementError):
             timeline.add(1, 1)
+
+    def test_longer_position_intervals_preserve_uncertainty(self):
+        timeline = PositionTimeline()
+        timeline.add(0, 0, 20_000_000)
+        timeline.add(400_000_000, 2, 20_000_000)
+        position, uncertainty = timeline.at(200_000_000)
+        self.assertEqual(position, 1)
+        self.assertAlmostEqual(uncertainty, 0.21)
+        strict = PositionTimeline(max_gap_s=0.3)
+        strict.add(0, 0)
+        strict.add(400_000_000, 2)
+        with self.assertRaisesRegex(MeasurementError, "400 ms.*300 ms"):
+            strict.at(200_000_000)
 
     def test_falling_edge_is_on_and_reverse_uses_same_centres(self):
         timeline = PositionTimeline(max_gap_s=1)
@@ -254,6 +268,35 @@ class ForceAndRecordingTests(unittest.TestCase):
             self.assertFalse(saved["apply_allowed"])
             self.assertEqual(len(saved["rows"]), 1)
             self.assertIn("edge", (partial.path / "raw.csv").read_text())
+
+    def test_resume_keeps_complete_prefix_and_allows_new_tare_but_not_new_settings(self):
+        rows = [{"cycle": cycle, "direction": direction, "distance_mm": 20}
+                for cycle in (1, 2) for direction in ("forward", "backward")]
+        self.assertEqual(completed_cycle_rows({"rows": rows[:3]}), rows[:2])
+        self.assertEqual(completed_cycle_rows({"rows": rows[2:]}), [])
+        self.assertEqual(completed_cycle_rows({"rows": rows + [rows[0]]}), [])
+        config = ProbeConfig(mode="nozzle", max_open_s=100)
+        with tempfile.TemporaryDirectory() as directory:
+            first = ProbeRecording(directory, config, profile().to_dict(), {"noise_total_n": 0.001})
+            for row in rows[:3]:
+                first.add(row)
+            first.finish("Testfehler")
+            retared = profile().with_tare(0.1, 0.2).to_dict()
+            new_tare = {"force_1_n": 0.1, "force_2_n": 0.2, "noise_total_n": 0.002}
+            resumed = ProbeRecording(directory, config, retared, new_tare, resume_from=first.path)
+            self.assertEqual(resumed.document["rows"], first.document["rows"][:2])
+            self.assertEqual(resumed.document["tare"], new_tare)
+            self.assertFalse(resumed.document["apply_allowed"])
+            resumed.finish("Erneuter Testfehler")
+            _, loaded = load_failed_session(first.path / "session.json")
+            self.assertEqual(len(loaded["rows"]), 3)
+            with self.assertRaisesRegex(MeasurementError, "Messeinstellungen"):
+                ProbeRecording(directory, replace(config, speed_mm_s=3), retared, new_tare, resume_from=first.path)
+            with self.assertRaisesRegex(MeasurementError, "Kraftprofil geändert"):
+                ProbeRecording(directory, config, None, new_tare, resume_from=first.path)
+            (first.path / "session.json").write_text('{"version": 1, "status": "complete", "rows": []}')
+            with self.assertRaisesRegex(MeasurementError, "unterbrochene Messserie"):
+                load_failed_session(first.path)
 
     def test_spacing_merge_and_readback_failure_preserve_file(self):
         with tempfile.TemporaryDirectory() as directory:

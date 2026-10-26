@@ -18,7 +18,8 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from probe_calibration import (
     MASK, CYCLES, AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM,
     BarrierHistory, EdgeCapture, MeasurementError, PositionTimeline,
-    ProbeConfig, ProbeRecording, barrier_row, force_peak, persist_spacing,
+    ProbeConfig, ProbeRecording, barrier_row, force_peak, force_center, optical_center,
+    persist_spacing, load_failed_session,
 )
 from probe_vendor.colibri import ColibriController
 from probe_vendor.force_sources import QuantumXTcpClient
@@ -338,6 +339,12 @@ class ProbeRunner:
     def tick(self, capture=None):
         self.guard()
         self.plc.pulse_heartbeat()
+        # Read position AFTER status: REF may become set and reset the encoder
+        # between those two telegrams at the end of a reference run.
+        status_before = time.monotonic_ns()
+        self.last_status = self.axis.status()
+        status_after = time.monotonic_ns()
+        self.plc.pulse_heartbeat()
         before = time.monotonic_ns()
         steps = self.axis.position_steps()
         after = time.monotonic_ns()
@@ -351,7 +358,6 @@ class ProbeRunner:
         if self.window_start_ns == 0:
             self.window_start_ns = self.timeline.times[0]
         self.plc.pulse_heartbeat()
-        self.last_status = self.axis.status()
         self.guard()
         if self.recording:
             self.recording.raw(kind="position", cycle=self.cycle, direction=self.direction,
@@ -366,7 +372,14 @@ class ProbeRunner:
                 f"Colibri-Drehüberwachung hat die Fahrt bei {position:.3f} mm gestoppt "
                 f"(Systemstatus 0x{self.last_status['system_status_byte']:02X}). "
                 "Mechanik/Antrieb prüfen und danach neu referenzieren.")
+        plc_before = time.monotonic_ns()
         snapshot = self.plc.snapshot()
+        if self.recording:
+            self.recording.raw(kind="io_timing", cycle=self.cycle, direction=self.direction,
+                               time_ns=time.monotonic_ns(), message=json.dumps({
+                                   "status_ms": (status_after - status_before) / 1e6,
+                                   "position_ms": (after - before) / 1e6,
+                                   "plc_ms": (time.monotonic_ns() - plc_before) / 1e6}))
         if snapshot["fault"] or not snapshot["active"]:
             raise MeasurementError(f"SPS-Kalibrierung gestoppt (Fehler {snapshot['fault']}).")
         if not snapshot["belt_stopped"]:
@@ -499,17 +512,27 @@ class ProbeRunner:
         started = time.monotonic()
         deadline = started + 180
         settled_since = None
+        nonzero_since = None
         while time.monotonic() < deadline:
             self.tick()
             if time.monotonic() - started > 0.3 and self.last_status["referenced"] and not self.last_status["moving"]:
                 if abs(self.last_position) > self.config.mm_per_step * 2:
-                    raise MeasurementError("Referenzfahrt beendet, aber Achse steht nicht bei 0 mm.")
-                if settled_since is None:
-                    settled_since = time.monotonic()
-                if time.monotonic() - settled_since >= 0.3:
-                    return
+                    settled_since = None
+                    if nonzero_since is None:
+                        nonzero_since = time.monotonic()
+                    if time.monotonic() - nonzero_since >= 1.0:
+                        raise MeasurementError(
+                            f"Referenzfahrt beendet, aber Achse steht auch nach 1 s nicht bei 0 mm "
+                            f"(Position {self.last_position:.3f} mm).")
+                else:
+                    nonzero_since = None
+                    if settled_since is None:
+                        settled_since = time.monotonic()
+                    if time.monotonic() - settled_since >= 0.3:
+                        return
             else:
                 settled_since = None
+                nonzero_since = None
             self.cancel.wait(0.005)
         raise MeasurementError("Referenzfahrt hat Zeitlimit überschritten.")
 
@@ -520,13 +543,17 @@ class ProbeRunner:
         self.pending_events = []
         self.pending_force = []
         self.forces.drain()
-        self.window_start_ns = time.monotonic_ns()
+        # A new traversal needs a fresh stationary position BEFORE its motion
+        # command. Do not bridge the CPU/file-I/O pause between traversals.
+        self.timeline = PositionTimeline()
+        self.window_start_ns = 0
         self.last_force_source_ns = None
         self.last_force_sequence = None
         # Prime history cursor from a fresh snapshot without replaying earlier motion.
         self.history = BarrierHistory()
         snapshot = self.plc.snapshot()
         self.history.consume(snapshot["history"], snapshot["sampled_ns"], snapshot["roundtrip_ns"])
+        snapshot, _ = self.tick()
         return snapshot
 
     def move(self, target, capture, auto_turn=False):
@@ -573,19 +600,22 @@ class ProbeRunner:
                 return
         raise MeasurementError("Colibri stoppt nicht.")
 
-    def run(self, config, root):
+    def run(self, config, root, resume_from=None):
         config.validate()
         if config.mode == "nozzle" and not self.forces.tare:
             raise MeasurementError("Vor der Düsenmessung die Kraftsensoren ohne Luftlast tarieren.")
         self.recording = ProbeRecording(root, config,
                                         self.forces.profile.to_dict() if self.forces.profile else None,
-                                        self.forces.tare)
+                                        self.forces.tare, resume_from=resume_from)
         self.update({"document": self.recording.document, "path": str(self.recording.path)})
         error = None
         try:
             self.enter(config)
+            retained = self.recording.document.get("resume", {}).get("retained_cycles", 0)
+            if resume_from is not None:
+                self.progress(f"Fortsetzen: {retained}/{CYCLES} Zyklen erhalten; erneut referenzieren …")
             self.home()
-            for cycle in range(1, CYCLES + 1):
+            for cycle in range(retained + 1, CYCLES + 1):
                 self.cycle = cycle
                 self.progress(f"Zyklus {cycle}/{CYCLES}: Hinfahrt")
                 forward = EdgeCapture(config.sensors)
@@ -608,13 +638,16 @@ class ProbeRunner:
                 else:
                     forward_peaks, forward_curve = force_peak(
                         self.force_rows, self.forces.noise_n, config.force_smoothing_samples)
+                    if config.nozzle_layout == "vertical":
+                        forward_peaks["force_total_n"]["center"] = force_center(forward_curve, forward_peaks["force_total_n"])
                     # The return reference is not known yet. Keep the outbound result
                     # provisional so an abort still retains its peaks and curve.
                     self.recording.document["pending_nozzle_cycle"] = {
                         "cycle": cycle, "forward_peaks": forward_peaks,
                         "forward_curve": forward_curve[::max(1, len(forward_curve) // 500)],
                         "forward_edges": forward_edges, "opened_ms": opened["opened_ms"],
-                        "reference_direction": "backward"}
+                        "reference_direction": "forward" if config.nozzle_layout == "vertical" else "backward",
+                        "reference_method": "switch_midpoint" if config.nozzle_layout == "vertical" else "on_edge"}
                     self.recording.save()
                 self.update({"document": self.recording.document, "path": str(self.recording.path)})
                 self.progress(f"Zyklus {cycle}/{CYCLES}: Rückfahrt")
@@ -631,12 +664,21 @@ class ProbeRunner:
                     backward_peaks, backward_curve = force_peak(
                         self.force_rows, self.forces.noise_n, config.force_smoothing_samples)
                     reference = backward_edges[config.array * 2]["on"]
+                    forward_reference = reference
+                    if config.nozzle_layout == "vertical":
+                        backward_peaks["force_total_n"]["center"] = force_center(backward_curve, backward_peaks["force_total_n"])
+                        forward_reference = optical_center(forward_edges[config.array * 2])
+                        reference = optical_center(backward_edges[config.array * 2])
                     self._add_nozzle_row(cycle, "forward", forward_peaks, forward_curve,
-                                         forward_edges, reference, opened["opened_ms"])
+                                         forward_edges, forward_reference, opened["opened_ms"])
                     self._add_nozzle_row(cycle, "backward", backward_peaks, backward_curve,
                                          backward_edges, reference, opened["opened_ms"])
                     self.recording.document.pop("pending_nozzle_cycle", None)
                     self.recording.save()
+                    # Return data is complete and saved. Processing may have
+                    # paused polling at Home: settling is a separate window,
+                    # never an extension of the completed backward traversal.
+                    self.reset_window("settling")
                     self.wait(0.5)
                 self.update({"document": self.recording.document, "path": str(self.recording.path)})
         except Exception as exc:
@@ -654,13 +696,23 @@ class ProbeRunner:
         return self.recording.document
 
     def _add_nozzle_row(self, cycle, direction, peaks, curve, edges, reference, opened_ms):
-        distance = abs(peaks["force_total_n"]["position_mm"] - reference["position_mm"])
+        vertical = self.config.nozzle_layout == "vertical"
+        peak = peaks["force_total_n"]
+        force_position = peak["center"]["position_mm"] if vertical else peak["position_mm"]
+        if vertical and self.config.outward_direction * (force_position - reference["position_mm"]) <= 0:
+            raise MeasurementError("Vertikaler Messaufbau: Kraftmitte muss auf der Hinfahrt hinter der Lichtschrankenmitte liegen. Aufbau und Fahrtrichtung prüfen.")
+        distance = abs(force_position - reference["position_mm"])
         if distance <= 0:
             raise MeasurementError("Kraftpeak und Lichtschrankenbezug liegen an derselben Position.")
         self.recording.add({"cycle": cycle, "direction": direction, "distance_mm": distance,
                             "reference_position_mm": reference["position_mm"], "peaks": peaks,
-                            "reference_direction": "backward", "reference_sensor": self.config.array * 2,
-                            "reference_edge": dict(reference),
+                            "force_position_mm": force_position,
+                            "force_position_method": "half_height_midpoint" if vertical else "absolute_peak",
+                            "reference_direction": direction if vertical else "backward",
+                            "reference_sensor": self.config.array * 2,
+                            "reference_method": "switch_midpoint" if vertical else "on_edge",
+                            "reference_edge": None if vertical else dict(reference),
+                            "reference_center": dict(reference) if vertical else None,
                             "edges": edges, "opened_plc_ms": opened_ms,
                             "curve": curve[::max(1, len(curve) // 500)],
                             "estimated_uncertainty_mm": self.max_uncertainty_mm + reference["estimated_uncertainty_mm"]})
@@ -832,13 +884,19 @@ class ProbeDevices(QObject):
         elif kind == "tare":
             tare = self.forces.zero(self.cancel)
             self.status.emit(f"Tara abgeschlossen; Summenrauschen σ={tare['noise_total_n']:.5f} N.")
-        elif kind == "run":
-            config, root = payload
+        elif kind in {"run", "resume"}:
             self._require_connected()
+            resume_from = None
+            if kind == "resume":
+                resume_from, root = payload
+                resume_from, document = load_failed_session(resume_from)
+                config = ProbeConfig(**document["config"])
+            else:
+                config, root = payload
             self.last_result = None
             self.last_config = config
             runner = self._runner()
-            runner.run(config, root)
+            runner.run(config, root, resume_from=resume_from)
         elif kind in {"home", "move"}:
             self._require_connected()
             config, target = payload
