@@ -88,6 +88,9 @@ class PoseRoadmap:
     exported_choices: tuple[RoadmapTransition, ...] = ()
     execution_routes: tuple[dict, ...] = ()
     consumer_export_version: int = 1
+    pose_group_keys: tuple[tuple[int, str], ...] = ()
+    pose_details: tuple[dict, ...] = ()
+    migration: dict | None = None
 
     @cached_property
     def robust_poses(self) -> tuple[RoadmapPose, ...]:
@@ -123,12 +126,20 @@ class PoseRoadmap:
 
     def route_options(self, start: int, target: int) -> tuple[RoadmapTransition, ...]:
         """Look up finished choices; legacy files expose explicit transitions only."""
-        return tuple(
-            e for e in self.visible_transitions if e.from_pose == start and e.to_pose == target
-        )
+        keys = dict(self.pose_group_keys)
+        if keys and keys.get(start) == keys.get(target):
+            return ()
+        if keys:
+            return tuple(e for e in self.visible_transitions
+                if keys.get(start) == e.source_group_key
+                and (not (e.member_context or {}).get('source_pose_specific') or start == e.from_pose)
+                and keys.get(target) == (e.member_context or {}).get('target_group_key'))
+        return tuple(e for e in self.visible_transitions if e.from_pose == start and e.to_pose == target)
 
     @cached_property
     def calibratable_transitions(self) -> tuple[RoadmapTransition, ...]:
+        if self.consumer_export_version == 3:
+            return self.exported_choices
         return tuple(
             {
                 e.edge_id: e
@@ -144,7 +155,7 @@ class PoseRoadmap:
 
     @cached_property
     def visible_transitions(self):
-        if self.consumer_export_version == 2:
+        if self.consumer_export_version in (2, 3):
             return tuple(
                 sorted(
                     (e for e in self.calibratable_transitions if e.source_group_key),
@@ -324,6 +335,9 @@ def _attach_members(roadmap, payload):
         exported_choices=choices,
         execution_routes=routes,
         consumer_export_version=payload.get("consumer_export", {}).get("version", 1),
+        pose_group_keys=tuple((int(k),v) for k,v in payload.get('consumer_export',{}).get('group_keys',{}).items()) if payload.get('consumer_export',{}).get('version') == 3 else (),
+        pose_details=tuple(payload.get('nodes',payload.get('poses',[]))),
+        migration=payload.get('migration'),
     )
 
 

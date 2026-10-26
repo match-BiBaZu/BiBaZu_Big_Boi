@@ -63,15 +63,18 @@ def test_external_roadmap_edit_still_requires_explicit_reimport(tmp_path: Path) 
     model = tmp_path / "model.pt"
     model.write_bytes(b"test model; never loaded by this test")
     config_path = tmp_path / "part.yaml"
+    keys=dict(roadmap.pose_group_keys)
+    group_classes={key:i for i,key in enumerate(sorted(set(keys.values())))}
     save_roadmap_part_definition(
         config_path,
         roadmap_path=roadmap_path,
         part_name=roadmap.part_name,
         mesh_path=roadmap.mesh_path,
         model_path=model,
-        pose_class_mapping={pose.pose_id: index for index, pose in enumerate(roadmap.robust_poses)},
+        pose_class_mapping={pose.pose_id: group_classes[keys[pose.pose_id]] if keys else index
+                            for index, pose in enumerate(roadmap.robust_poses)},
         target_pose=roadmap.robust_poses[0].pose_id,
-        transition_profiles={edge.edge_id: None for edge in roadmap.profile_transitions},
+        transition_profiles={edge.edge_id: None for edge in roadmap.calibratable_transitions},
     )
     saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert saved["roadmap_sha256"] == roadmap.sha256

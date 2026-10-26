@@ -1,8 +1,22 @@
 # BiBaZu Reorientation Control
 
-Fixed-batch control from one frozen production snapshot. When **Start production
-run** is pressed, the latest Baumer/YOLO frame establishes every workpiece, its
-initial pose and its physical left-to-right queue order. Legacy schema-v1 projects
+## Individual poses and shared group actions (consumer export v3)
+
+Exports declaring `planning_semantics: pose_to_group` instead require the exact source pose. Choice lists and previews use that pose's commands and accept any member of the destination group. Group-only recognition cannot establish an exact member of a multi-member source group, so execution remains unavailable there until an exact observation is available. Reimport the changed export explicitly; old group-shared profile assignments remain unavailable rather than acquiring new applicability.
+
+The external grouped catalogue now shows individual poses numbered by their own observed frequencies, with membership and percentages in both GUIs. Members below the configured cutoff are omitted and cannot witness transfers. Outgoing actions are shared by all displayed source members; any qualifying target-group member satisfies the target. There are no internal group moves or composite fallback bridges. Missing connectivity is reported without constructing a fallback.
+
+Recognition classes continue to identify groups. The GUI reports the possible pose set rather than claiming a particular member was recognised. Selecting a member accepts its group as the target, including zero actuator enables when already in that group. Source-group calibration and assigned pressure profiles remain required.
+
+After the catalogue changes, explicitly reimport the roadmap. Migration uses stable group keys and the exact previous export hash; old numeric group IDs are never interpreted as new individual pose numbers. Compatible assignments can be retained, while removed/composite assignments and omitted recognition groups remain unavailable. Existing exports and profile metadata remain readable. Generation and route construction remain entirely in the external grouped roadmap application.
+
+
+Continuous feed is the default production mode: start production, then
+add workpieces while it keeps running, with multiple parts in transit. Each start pose gets
+one immutable pressure-profile queue record at the movable yellow handoff line.
+**Snapshot batch** remains selectable for preloaded stationary parts; that mode
+freezes the latest Baumer/YOLO frame and its left-to-right queue order at Start.
+Legacy schema-v1 projects
 support Pose 1/2; schema-v2 roadmap projects resolve either a direct transition or
 one unique simple path through up to `pose_count - 1` assigned transfers and combine its active PressureControl
 arrays into one immutable PLC queue record per part.
@@ -13,6 +27,88 @@ The PLC source supports the two EL7201 servo motors through CoE and cyclic proce
 data using the existing conveyor ADS variables. Before using the new belt, follow
 the [tandem conveyor commissioning guide](../CSVSaver/TANDEM_CONVEYOR.md); the new
 motor setup and belt calibration must be verified before motion is enabled.
+
+## Continuous feeding and the yellow profile handoff line
+
+1. Open a part configuration, connect hardware and wait for the YOLO model to be
+   ready. Choose **Continuous feed** in Hardware.
+2. While stopped, move **Yellow profile handoff line** to the desired horizontal
+   position (5–80% of image width). There is one yellow line: it marks both the
+   end of pose recognition and commitment of the part's selected profile. Its
+   position and production mode are saved between launches.
+   **Input boundary** adjusts the ignored region at the right-hand entry side,
+   measured as a percentage from the left. The default 90% ignores the rightmost
+   10% of the image. A detection is accepted only once its whole box clears that
+   boundary; ignored detections have no box/label and never enter the profile queue.
+   The input boundary is not drawn. Set it to 100% to disable the entry region.
+   Adjust both boundaries before a run; the input boundary stays right of handoff.
+3. Press **Start production run**; parts may already be visible upstream of the
+   yellow handoff line. A fresh YOLO frame is required, with no empty-zone check. The
+   normal stopped Beckhoff preparation runs once, then the belt stays running.
+   Wait for **Belt running** before adding parts from the right, moving leftward.
+4. The current YOLO class when the part's leading edge reaches the yellow line
+   selects its profile exactly once. There is no five-frame confirmation or extra
+   tracking box; earlier classes do not lock the selection. Target, unknown or
+   unassigned poses pass without firing. The PLC applies the queued arrays when
+   that particular part reaches the light barriers. Detections during preparation
+   wait until transport is enabled rather than aborting startup.
+5. Press **Stop production run** to stop the conveyor and disable every nozzle
+   array immediately. Stop cancels pending work and releases ownership after its
+   safe-output writes complete. It does not wait for LB8, queue depth zero or PLC
+   state 40. The run is recorded as stopped, with unfinished parts not reported as
+   completed. Stop also remains available if a snapshot batch is still draining.
+
+Keep the handoff line upstream of LB1 with enough travel distance for inference
+and ADS queue acknowledgement at the selected belt speed. The line and production
+mode are locked during a run. Vision loss before all visible parts are committed,
+invalid tracking order, a full queue, an acknowledgement taking more than ten seconds
+after its ADS write completes (or a write waiting more than ten seconds),
+or a PLC fault stops continuous operation. Recoverable PLC light-barrier diagnostics
+are logged as informational notices without warning banners or conveyor stops.
+Feed subsequent parts before previous parts reach LB8; each has its own queue record.
+PLC status polling uses cached ADS Sum Reads to reduce acknowledgement delays.
+Losing an individual YOLO detection does not stop the run or show a tracking-loss
+warning. Expired tracks are discarded; a new detection at the handoff line selects
+its current class and profile without requiring uninterrupted upstream tracking.
+Once accepted parts are only draining,
+camera/YOLO loss is a warning and those frozen profiles finish.
+The existing PLC state-20 queue contract already supports this mode; no PLC source
+activation is needed for the GUI change. Run exports record the production mode.
+
+## Manual profiles without a roadmap
+
+Select **New configuration** above the camera view or from the **Configuration**
+menu, then choose **Manual configuration**. The other option is **Roadmap configuration**.
+Manual configuration assigns pressure profiles directly to YOLO start poses.
+A roadmap and CAD model are not required.
+
+1. Enter a part name and select the YOLO `.pt` model. Click **Read YOLO classes**
+   to populate the start-pose table from the model's class IDs and names. Classes
+   may also be added or removed manually; arbitrary class names and IDs are supported.
+2. Select the **Target class (pass through)**. For each other start pose that should
+   be actuated, browse to one complete pressure JSON that reorients it to this target.
+   Each start-pose class has its own assignment, reused for every workpiece in that
+   class. No roadmap route search or profile chaining takes place.
+3. Save the manual YAML. **Open configuration** restores it; **Edit configuration**
+   changes the model, classes, target and profile assignments. Blank assignments
+   are allowed in a draft. At least one non-target profile is required to run.
+4. If profile speeds disagree, select the common belt speed and press **Use machine
+   parameters**. The 200 mm/s prototype limit and every profile's lower maximum
+   still apply. Selected profiles must agree on global light-barrier settings.
+5. Connect the hardware and choose continuous feed or snapshot batch. Continuous
+   feed selects the assigned start-pose profile at the yellow handoff line as each
+   new part arrives. Snapshot batch freezes the preloaded parts at Start. Target,
+   unknown and unassigned poses pass through with all nozzle enables false.
+
+Manual configurations use schema version 3 and save portable model/profile paths.
+Manual pose IDs match the YOLO class IDs directly: Wago classes 0–7 are Pose 0–7,
+and class 0 can be the pass-through target. Older manual YAMLs with IDs offset by
+one are resolved through their saved class mapping when loaded, preserving every
+profile assignment without rewriting the original file. Saving from the editor
+writes the class IDs directly.
+Legacy two-pose and roadmap configurations remain supported. Run exports record
+manual mode and copy the selected profiles; each part records the actual assigned
+profile rather than attributing a profile to a pass-through part.
 
 ## Installation and start
 
@@ -45,7 +141,7 @@ Device settings are stored with `QSettings` under
 The former PLC address `192.168.10.23` is automatically migrated to the current
 `192.168.0.23` when the application starts.
 
-Use **Configuration → New part configuration (roadmap) …** to select a pose roadmap first.
+Use **Configuration → New configuration … → Roadmap configuration** to select a pose roadmap first.
 The dialog accepts the handover YAML (`part`, `poses`, `transitions`) and the
 internal JSON export (`source`, `nodes`, `edges`). It derives the part/CAD data,
 robust poses and directed transitions, then asks for the `.pt` model, explicit
@@ -53,6 +149,14 @@ model-class mapping, target-pose card, and optional Pressure JSON per eligible
 edge. The generated schema-v2 YAML stores all paths relative to its own location.
 Legacy pressure profiles resolve omitted machine values only after the first PLC
 baseline read. Selecting a YAML or profile never writes to the PLC.
+
+Pressure Control JSON profile versions **1–13** are supported, including the current
+WagoKlemme exports. The four arrays, six nozzle selections, pressure, delay, pulse
+and offset are read directly. Calibration, sensor-spacing snapshots and force
+response snapshots do not replace the live machine settings. The version-13
+`conveyor_velocity_delay` checkbox belongs to Pressure Control's manual offset
+calculation; Reorientation keeps its existing PLC batch calculation using measured
+light-barrier speed. Future profile versions are rejected until reviewed.
 
 Each profile-eligible transition has a **Preview …** button. The preview loads the
 selected STL/OBJ once and animates the directed change from the source-pose
@@ -107,7 +211,7 @@ search or geometric feasibility checks.
 In der Anwendung gibt es dafür zwei gleichwertige Wege: die Schaltflächen oberhalb
 des Kamerabildes oder das Menü **Configuration**.
 
-1. **New part configuration (roadmap) …** beginnt mit einer Roadmap in YAML oder JSON.
+1. **New configuration … → Roadmap configuration** beginnt mit einer Roadmap in YAML oder JSON.
 2. Name und CAD-Pfad werden übernommen, bleiben aber editierbar. Nur robuste
    Posen erhalten eine explizite, eindeutige YOLO-Klassen-ID und sind als Ziel
    auswählbar.
@@ -130,25 +234,25 @@ vorausgefüllt geöffnet. Sie kann am bisherigen Ort überschrieben oder im
 Speicherdialog unter einem neuen Namen abgelegt werden. Während eines laufenden
 Produktionslaufs sind Neu, Öffnen und Bearbeiten gesperrt.
 
-### Produktionslauf aus einem Snapshot starten
+### Snapshot batch: start a production run
 
 1. Konfiguration öffnen. Das YOLO-Modell wird automatisch in einem Worker geladen;
    **Load YOLO model** erlaubt einen manuellen Reload. Bei einer gemappten Klasse
    steht die Roadmap-Pose groß im Box/OBB-Overlay; daneben steht nur die Konfidenz
    in Prozent. Die YOLO-Klassen-ID wird im Bild nicht mehr angezeigt.
-2. Die GUI liest alle zugeordneten Transition-Profile und zeigt deren UR-Ry-Winkel
-   und Förderbandgeschwindigkeit. Stimmen beide Werte überall überein, werden die
-   Hardwarefelder automatisch gefüllt. Bei Abweichungen Werte auswählen und
-   **Use machine parameters** drücken.
-3. **Connect all components** drücken. Die Leuchten können eingeschaltet und
-   eingestellt werden; Verbindungsstatus und Zyklus-Checkboxen dienen nur noch als
-   Bedienhinweis und blockieren den Start nicht. Falls UR aktiv ist, **Apply UR angle**
-   drücken.
+2. The GUI compares conveyor speeds in all assigned transition profiles. Matching
+   valid speeds load automatically. Otherwise select a positive speed up to
+   **200 mm/s** (and within each profile's lower limit) and press **Use machine
+   parameters**. Legacy two-pose configurations also support this speed override.
+   Old UR angle metadata is ignored; no robot connection or acknowledgement is needed.
+3. Press **Connect all components**. Before manual transport or production starts,
+   the GUI automatically stops and prepares both Beckhoff motors using the existing
+   velocity-only PLC configuration. It retains the PLC acceleration setting.
+   Light settings remain operator information and do not block production start.
 4. Alle Werkstücke müssen im Kamerabild liegen. Danach **Start production run**
    drücken. Genau der zu diesem Zeitpunkt letzte frische YOLO-Frame wird kopiert;
    spätere Bilder ändern weder Reihenfolge noch Pose noch Profil.
-   Die gelbe vertikale Linie bei 10 % der Bildbreite markiert die Pose-Gültigkeits-
-   grenze. Sobald eine Bounding Box diese Linie erreicht oder links davon liegt,
+   Die verschiebbare gelbe Linie markiert die Pose-Gültigkeitsgrenze. Sobald eine Bounding Box diese Linie erreicht oder links davon liegt,
    blendet die Vorschau ihre Pose aus und die Startaufnahme ignoriert die Vorhersage.
 5. Die GUI sortiert alle Detektionen von links nach rechts (das führende Teil
    zuerst), erzeugt pro Teil genau einen unveränderlichen Queue-Datensatz und wartet
@@ -202,7 +306,7 @@ panel connections use one central serial retry sequence; individual panel reconn
 loops are disabled to prevent overlapping WinRT scans. Connect, cancel, and BLE
 shutdown work is bounded so a faulty driver cannot freeze Qt or hold the application
 open indefinitely.
-All BLE, YOLO, and UR worker results cross into the UI through QObject slots;
+All BLE, YOLO, and ADS worker results cross into the UI through QObject slots;
 worker-thread signals never call labels, dialogs, or MainWindow state through
 anonymous Python callbacks.
 
@@ -212,7 +316,23 @@ speed field. Manual start requires only ADS, an idle production run, and a posit
 speed; it explicitly selects forward travel and writes all four array enables false.
 A latched fault from the previous automatic run is reset automatically before the
 manual start. During production, manual start is locked and Stop conveyor requests
-the normal finish-and-drain path.
+the same immediate production stop.
+
+Conveyor preparation is asynchronous and leaves the Qt event loop responsive.
+Preflight allows a running conveyor; Start stops it automatically for preparation.
+Snapshot workpiece count is not a preflight requirement. At Start, an oversized
+snapshot is still rejected before PLC writes; an empty snapshot finishes without
+queue records. Use continuous feed to keep running while new parts are added.
+Preparation verifies `ConveyorServoVelocityOnly`, waits for standstill, selects two motors
+with directions -1/-1, ratio 1.0 and no extra RPM cap, then resets and verifies
+fault-free stopped status. Acceleration stays at its live PLC value (0.1–300 rpm/s);
+change it through the existing conveyor setup tools. Each wait is bounded to eight
+seconds. **Stop conveyor** and **Cancel production start** remain available during
+preparation. Cancellation, connection loss and shutdown invalidate queued start
+commands and delayed completion callbacks. No preparation step enables transport
+or nozzle arrays. Production still freezes the frame at Start and acknowledges
+the complete queue before motion. A missing prototype PLC symbol blocks connection
+or preparation instead of being replaced by a successful default.
 
 Reloading a YOLO model now retires the previous inference worker asynchronously and
 starts the requested model automatically after that worker has exited. Model readiness
@@ -229,20 +349,28 @@ panels together; the preview ran at 15 FPS without an application hang.
 ## Operating contract
 
 - Schema v1 requires exactly the model classes `0 = Pose 1`, `1 = Pose 2`.
-  Schema v2 uses the explicit class mapping from YAML; extra model classes are
-  permitted, but any detection of an unmapped class blocks consensus.
-- Start requires one fresh inference frame containing at least one workpiece and no
-  more detections than the PLC queue capacity. Every detection is queued exactly
-  once from that frame; a mapped, fully visible detection supplies its initial pose.
-- The PLC enters state 20 with the conveyor disabled. All frozen records must be
-  acknowledged before the separate conveyor-enable command is sent.
-- Camera, YOLO and legacy tracking anomalies after snapshot acceptance are warnings
-  only. They cannot mutate the queue and do not abort the fixed batch.
+  Schema v2 and v3 use the explicit class mapping from YAML. Continuous feed uses
+  the current class at the yellow line; unmapped classes pass without firing.
+- Continuous feed starts from a fresh frame and clear light barriers, then
+  queues each workpiece once at the yellow line without multi-frame confirmation.
+  Snapshot batch freezes every detection in a fresh frame at Start and checks
+  actual queue capacity before PLC writes; an empty snapshot is allowed.
+- The PLC enters state 20 with the conveyor disabled. Snapshot batch acknowledges
+  its frozen queue before conveyor enable; continuous feed enables the empty belt
+  and acknowledges each newly committed part while remaining in state 20.
+- Snapshot camera/YOLO anomalies after acceptance are warnings. Continuous feed
+  requires fresh vision until visible parts are committed; loss aborts that run.
 - Light connection, last confirmed commands, and the two operator checkboxes remain
   visible and are logged, but they no longer participate in start preflight.
-- A profile with an explicit `ur_ry_angle_deg` remains blocked until the separate
-  UR apply command returns an exact acknowledgement. No legacy profile gets an
-  implicit 18° command.
+- This application targets the Beckhoff prototype only. Legacy `ur_ry_angle_deg`
+  values are ignored during loading, comparison and execution; source profile
+  files and their hashes remain unchanged.
+- Belt calibration comes from the PLC. Profile application never writes
+  `GuiConveyorMmPerFullStep`, `GuiConveyorCalibrationValid` or marker distance.
+  Offline display uses the nominal 50 mm roller / 32:1 reduction scale; valid
+  live PLC calibration is required before motion.
+- Execution speed is positive and at most 200 mm/s, respecting lower profile
+  limits. Higher-speed profiles remain readable and need an explicit speed override.
 - The PLC owner is acquired only after safe-stop and full configuration readback.
   A fresh heartbeat is written before ownership; Reset and Start remain asserted
   until PLC state/heartbeat acknowledgement. The conveyor/array enables are written
@@ -267,9 +395,7 @@ that record. A normal Finish has no short cycle timeout and drains every acknowl
 part and result before stopping the conveyor.
 
 Before hardware acceptance, verify online that the PLC-normalized clear state of
-all six `LightBarrierStableN` signals is `TRUE`. Also resolve the documented UR
-fixed-orientation discrepancy (`Rz=-90°` versus the installation's possible
-`Rz=180°`).
+all eight `LightBarrierStableN` signals is `TRUE`. This prototype has no UR robot.
 
 `PressureControlGUI` and `ConveyorSetupGUI` refuse their initial write while a live
 reorientation owner is active. With the owner inactive, all original global profile
@@ -289,5 +415,5 @@ uv run ruff check src tests
 
 Hardware tests require a separately approved commissioning session. Do not run
 them on a pressurized system without an operator at the physical emergency stop.
-The current Reorientation offscreen suite contains 139 tests; the shared
-Pressure/Conveyor suite contains 55 tests.
+The Reorientation offscreen suite includes simulated ADS tests for conveyor
+preparation, cancellation, speed limits and fixed-batch queue ordering.

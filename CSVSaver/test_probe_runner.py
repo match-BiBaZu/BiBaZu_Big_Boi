@@ -53,10 +53,12 @@ class Axis:
         self.stops = 0
         self.moves = []
         self.air_available = None
+        self.force_center_mm = -10.0
+        self.force_sign = 1
         self.sample()
 
     def sample(self):
-        total = 0.1 * math.exp(-((self.position + 10) / 2) ** 2)
+        total = self.force_sign * 0.1 * math.exp(-((self.position - self.force_center_mm) / 2) ** 2)
         if self.air_available is not None and not self.air_available():
             total = 0.0
         self.sequence += 1
@@ -120,6 +122,7 @@ class Plc:
         self.on_snapshot = None
         self.fault = 0
         self.releases = 0
+        self.barrier_ranges = {1: (-50, -48), 2: (-30, -28)}
 
     def command(self, command, config=None, cancel=None):
         if command == 1:
@@ -140,8 +143,8 @@ class Plc:
     def snapshot(self):
         stamp = round(self.clock.now * 1000) & 0xFFFFFFFF
         self.history[2] = stamp
-        for sensor, start in ((1, -50), (2, -30)):
-            clear = not start <= self.axis.position <= start + 2
+        for sensor, (start, end) in self.barrier_ranges.items():
+            clear = not start <= self.axis.position <= end
             if clear != self.clear[sensor]:
                 self.clear[sensor] = clear
                 self.history[1] += 1
@@ -369,6 +372,47 @@ class CompleteRunnerTests(unittest.TestCase):
             self.assertAlmostEqual(result["summary"]["mean_mm"], 20, delta=0.15)
             self.assertEqual(self.runner.direction, "settling")
             self.assertFalse(self.plc.open)
+
+    def test_vertical_nozzle_uses_wide_stick_midpoint_and_absolute_peak_in_each_direction(self):
+        for sign in (-1, 1):
+            with self.subTest(sign=sign), tempfile.TemporaryDirectory() as directory:
+                self.setUpScenario()
+                self.forces.profile = profile()
+                self.forces.tare = {"noise_total_n": 0.0001}
+                self.forces.noise_n = 0.0001
+                self.axis.force_center_mm = -45
+                self.axis.force_sign = -1
+                self.plc.barrier_ranges[2] = (-26, -14)  # Wide side: 12 mm, center at -20.
+                read_steps, move_steps = self.axis.position_steps, self.axis.move_absolute_steps
+                mirror = -sign
+                with patch.object(self.axis, "position_steps", side_effect=lambda: mirror * read_steps()), \
+                        patch.object(self.axis, "move_absolute_steps", side_effect=lambda steps: move_steps(mirror * steps)):
+                    result = self.runner.run(ProbeConfig(mode="nozzle", nozzle_layout="vertical",
+                                                        outward_direction=sign, speed_mm_s=5,
+                                                        travel_mm=65, max_open_s=40), directory)
+                self.assertTrue(result["apply_allowed"])
+                self.assertEqual(len(result["rows"]), 10)
+                self.assertAlmostEqual(result["summary"]["mean_mm"], 25, delta=0.15)
+                self.assertEqual(result["geometry"]["nozzle_outbound_order"], ["barrier", "nozzle"])
+                for row in result["rows"]:
+                    center = row["reference_center"]
+                    peak = row["peaks"]["force_total_n"]
+                    self.assertEqual(row["reference_direction"], row["direction"])
+                    self.assertEqual(row["reference_method"], "switch_midpoint")
+                    self.assertIsNone(row["reference_edge"])
+                    self.assertAlmostEqual(center["position_mm"], sign * 20, delta=0.15)
+                    self.assertAlmostEqual(center["width_mm"], 12, delta=0.15)
+                    self.assertEqual(center["position_mm"], (center["on"]["position_mm"] + center["off"]["position_mm"]) / 2)
+                    self.assertAlmostEqual(peak["position_mm"], sign * 45, delta=0.15)
+                    self.assertLess(peak["force_n"], 0)
+                    self.assertEqual(row["force_position_method"], "absolute_peak")
+                    self.assertEqual(row["distance_mm"], abs(peak["position_mm"] - center["position_mm"]))
+                    if row["direction"] == "forward":
+                        self.assertLess(center["off"]["time_ns"], peak["time_ns"])
+                    else:
+                        self.assertGreater(center["on"]["time_ns"], peak["time_ns"])
+                self.assertEqual(self.plc.open_count, 5)
+                self.assertFalse(self.plc.open)
 
     def test_nozzle_series_without_profile_still_requires_tare_and_records_peaks(self):
         self.forces.profile = None

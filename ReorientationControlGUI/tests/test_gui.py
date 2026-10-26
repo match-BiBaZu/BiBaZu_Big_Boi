@@ -11,16 +11,14 @@ from local_roadmap_fixture import fixture_directory
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
-from bibazu_reorientation.config import save_roadmap_part_definition
+from bibazu_reorientation.config import save_part_definition, save_roadmap_part_definition
 from bibazu_reorientation.models import BatchState, CameraStatus, ConnectionState, PlcSnapshot
 from bibazu_reorientation.roadmap import load_pose_roadmap
 from bibazu_reorientation.settings import AppSettings
 from bibazu_reorientation.ui.main_window import MainWindow
 
 
-def write_transition_profile(
-    path: Path, *, array_index: int, speed: float, angle: float
-) -> Path:
+def write_transition_profile(path: Path, *, array_index: int, speed: float, angle: float) -> Path:
     path.write_text(
         json.dumps(
             {
@@ -50,13 +48,100 @@ def write_transition_profile(
     return path
 
 
+@pytest.fixture
+def prototype_window(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    window = MainWindow(AppSettings())
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "load_yolo_model", lambda: None)
+    yield window
+    window.close()
+    window.camera.shutdown()
+    window.pressure.shutdown()
+
+
+def test_legacy_configuration_supports_explicit_prototype_speed(prototype_window, tmp_path):
+    window = prototype_window
+    model = tmp_path / "model.pt"
+    model.write_bytes(b"model")
+    source = write_transition_profile(
+        tmp_path / "profile.json", array_index=1, speed=500, angle=18.0
+    )
+    raw = source.read_bytes()
+    part = save_part_definition(
+        tmp_path / "part.yaml",
+        part_name="part",
+        model_path=model,
+        pressure_profile=source,
+        target_pose=1,
+    )
+    window._load(part)
+    assert not window._machine_parameters_confirmed
+    assert "500 mm/s" in window.machine_parameter_status.text()
+    assert window.conveyor_speed_input.maximum() == 200
+    assert not window.start_button.isEnabled()
+    window.conveyor_speed_input.setValue(120.0)
+    window.apply_machine_parameters(show_error=False)
+    assert window._machine_parameters_confirmed
+    assert window.controller.profile.conveyor_speed_mm_per_sec == 120.0
+    assert window.controller.profile.ur_ry_angle_deg is None
+    assert not hasattr(window, "ur_button")
+    assert source.read_bytes() == raw
+
+
+@pytest.mark.parametrize("ending", ["stop", "disconnect", "close"])
+def test_manual_start_cannot_resume_after_cancelled_preparation(
+    prototype_window, monkeypatch, ending
+):
+    window = prototype_window
+    preparations, writes = [], []
+    monkeypatch.setattr(window.pressure, "prepare_conveyor", preparations.append)
+    monkeypatch.setattr(
+        window.pressure, "write", lambda name, values, verify=False: writes.append((name, values))
+    )
+    window.pressure.snapshot_changed.emit(PlcSnapshot(connected=True))
+    window._manual_conveyor_start()
+    assert len(preparations) == 1
+    assert writes == []
+    assert window.manual_conveyor_stop_button.isEnabled()
+    if ending == "stop":
+        window._manual_conveyor_stop()
+    elif ending == "disconnect":
+        window.pressure.connection_changed.emit(False, "lost")
+    else:
+        window.close()
+    window.pressure.operation_finished.emit(preparations[0])
+    assert not any(row.get("MAIN.GuiConveyorEnabled") for _, row in writes)
+
+
+def test_old_manual_reset_callback_cannot_restart_a_new_request(prototype_window, monkeypatch):
+    window = prototype_window
+    preparations, writes = [], []
+    monkeypatch.setattr(window.pressure, "prepare_conveyor", preparations.append)
+    monkeypatch.setattr(
+        window.pressure, "write", lambda name, values, verify=False: writes.append((name, values))
+    )
+    window.pressure.snapshot_changed.emit(
+        PlcSnapshot(connected=True, reorientation_state=90, reorientation_fault_code=90)
+    )
+    window._manual_conveyor_start()
+    old_reset = writes[-1][0]
+    old_id = window._manual_preparation_sequence
+    window._manual_conveyor_stop()
+    window.pressure.operation_finished.emit("manual_conveyor_stop")
+    window._manual_conveyor_start()
+    window.pressure.operation_finished.emit(old_reset)
+    window._prepare_manual_conveyor(old_id)
+    assert preparations == []
+
+
 def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
     assert window.windowTitle() == "BiBaZu Reorientation Control"
     assert window.start_button.text() == "Start production run"
-    assert window.stop_button.text() == "Cancel production start"
+    assert window.stop_button.text() == "Stop production run"
     assert window.connect_button.text() == "Connect all components"
     assert window.disconnect_button.text() == "Disconnect all components"
     assert not window.exposure_slider.isEnabled()
@@ -64,10 +149,7 @@ def test_main_window_offscreen_smoke(qtbot, tmp_path, monkeypatch) -> None:
     assert window.camera_fps.text() == "FPS: –"
     assert not window.light1._auto_reconnect
     assert not window.light2._auto_reconnect
-    roadmap_path = (
-        fixture_directory()
-        / "Df1a_roadmap.yaml"
-    )
+    roadmap_path = fixture_directory() / "Df1a_roadmap.yaml"
     roadmap = load_pose_roadmap(roadmap_path)
     model = tmp_path / "best.pt"
     model.write_bytes(b"model")
@@ -111,10 +193,7 @@ def test_roadmap_profile_prefills_machine_fields_and_enables_executor(
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
-    roadmap_path = (
-        fixture_directory()
-        / "Df1a_roadmap.yaml"
-    )
+    roadmap_path = fixture_directory() / "Df1a_roadmap.yaml"
     roadmap = load_pose_roadmap(roadmap_path)
     model = tmp_path / "best.pt"
     model.write_bytes(b"model")
@@ -168,12 +247,12 @@ def test_roadmap_profile_prefills_machine_fields_and_enables_executor(
     assert window._machine_parameters_confirmed
     assert window.controller.part == definition
     assert window.conveyor_speed_input.value() == 135
-    assert window.use_ur_angle.isChecked()
-    assert window.ur_angle_input.value() == 18.5
-    assert "confirmed" in window.machine_parameter_status.text()
+    assert not hasattr(window, "ur_angle_input")
+    assert window.machine_parameter_status.text() == ""
+    assert window.machine_parameter_status.isHidden()
     window.conveyor_speed_input.setValue(140.0)
     assert not window._machine_parameters_confirmed
-    assert window.controller.part == definition
+    assert window.controller.part is None
     window.apply_machine_parameters(show_error=False)
     assert window._machine_parameters_confirmed
     assert window.controller.profile.conveyor_speed_mm_per_sec == 140.0
@@ -188,16 +267,11 @@ def test_roadmap_profile_conflicts_require_explicit_machine_values(
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
-    roadmap_path = (
-        fixture_directory()
-        / "Df1a_roadmap.yaml"
-    )
+    roadmap_path = fixture_directory() / "Df1a_roadmap.yaml"
     roadmap = load_pose_roadmap(roadmap_path)
     model = tmp_path / "best.pt"
     model.write_bytes(b"model")
-    first = write_transition_profile(
-        tmp_path / "3-to-9.json", array_index=1, speed=100, angle=18.0
-    )
+    first = write_transition_profile(tmp_path / "3-to-9.json", array_index=1, speed=100, angle=18.0)
     second = write_transition_profile(
         tmp_path / "1-to-35.json", array_index=3, speed=150, angle=19.0
     )
@@ -221,15 +295,14 @@ def test_roadmap_profile_conflicts_require_explicit_machine_values(
 
     window._load(definition)
     assert not window._machine_parameters_confirmed
-    assert "Profiles disagree" in window.machine_parameter_status.text()
+    assert "speed selection" in window.machine_parameter_status.text()
     assert window.controller.part is None
 
     window.conveyor_speed_input.setValue(125.0)
-    window.ur_angle_input.setValue(18.5)
     window.apply_machine_parameters(show_error=False)
     assert window._machine_parameters_confirmed
     assert window.controller.profile.conveyor_speed_mm_per_sec == 125.0
-    assert window.controller.profile.ur_ry_angle_deg == 18.5
+    assert window.controller.profile.ur_ry_angle_deg is None
     window.close()
     window.camera.shutdown()
     window.pressure.shutdown()
@@ -297,19 +370,17 @@ def test_camera_status_limits_restores_and_saves_exposure_slider(
     window.pressure.shutdown()
 
 
-def test_production_warning_uses_persistent_bottom_banner(
-    qtbot, tmp_path, monkeypatch
-) -> None:
+def test_production_warning_uses_persistent_bottom_banner(qtbot, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     window = MainWindow(AppSettings())
     qtbot.addWidget(window)
     original_status = window.cycle_status.text()
 
-    window._production_warning("plc_light_barrier_order_edge_ignored", "LB6 ignored")
+    window._production_warning("camera_lost", "Camera frames stale")
 
     assert not window.warning_banner.isHidden()
     assert "WARNUNG" in window.warning_banner.text()
-    assert "LB6 ignored" in window.warning_banner.text()
+    assert "Camera frames stale" in window.warning_banner.text()
     assert "Produktion läuft weiter" in window.warning_banner.text()
     assert window.warning_display_timer.interval() == 15_000
     assert window.warning_display_timer.isActive()
@@ -317,7 +388,7 @@ def test_production_warning_uses_persistent_bottom_banner(
 
     # Normal state updates no longer overwrite the dedicated warning area.
     window._cycle_state_changed(BatchState.RUNNING, "normal status update")
-    assert "LB6 ignored" in window.warning_banner.text()
+    assert "Camera frames stale" in window.warning_banner.text()
     window._clear_warning_banner()
     assert window.warning_banner.isHidden()
 
@@ -402,6 +473,9 @@ def test_manual_conveyor_start_is_independent_and_forces_arrays_off(
         "write",
         lambda name, values, verify=False: writes.append((name, values, verify)),
     )
+    monkeypatch.setattr(
+        window.pressure, "prepare_conveyor", window.pressure.operation_finished.emit
+    )
     snapshot = PlcSnapshot(
         connected=True,
         calibration_valid=True,
@@ -426,9 +500,7 @@ def test_manual_conveyor_start_is_independent_and_forces_arrays_off(
     window._manual_conveyor_stop()
     assert writes[-1][0] == "manual_conveyor_stop"
     assert writes[-1][1]["MAIN.GuiConveyorEnabled"] is False
-    assert not any(
-        writes[-1][1][f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5)
-    )
+    assert not any(writes[-1][1][f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5))
     window.pressure.operation_finished.emit("manual_conveyor_stop")
     coordinated_stops: list[bool] = []
     monkeypatch.setattr(window.controller, "stop", lambda: coordinated_stops.append(True))
@@ -454,6 +526,9 @@ def test_manual_conveyor_clears_latched_cycle_fault_before_start(
         "write",
         lambda name, values, verify=False: writes.append((name, values, verify)),
     )
+    monkeypatch.setattr(
+        window.pressure, "prepare_conveyor", window.pressure.operation_finished.emit
+    )
     snapshot = PlcSnapshot(
         connected=True,
         reorientation_state=90,
@@ -464,18 +539,16 @@ def test_manual_conveyor_clears_latched_cycle_fault_before_start(
 
     assert window.manual_conveyor_start_button.isEnabled()
     window._manual_conveyor_start()
-    assert writes[-1][0] == "manual_conveyor_reset"
+    assert writes[-1][0].startswith("manual_conveyor_reset:")
     assert writes[-1][1]["MAIN.GuiReorientationReset"] is True
     assert writes[-1][1]["MAIN.GuiConveyorEnabled"] is False
 
-    window.pressure.operation_finished.emit("manual_conveyor_reset")
+    window.pressure.operation_finished.emit(writes[-1][0])
     qtbot.waitUntil(lambda: writes[-1][0] == "manual_conveyor_start", timeout=1_000)
     assert writes[-1][1]["MAIN.GuiReorientationControlActive"] is False
     assert writes[-1][1]["MAIN.GuiReorientationReset"] is False
     assert writes[-1][1]["MAIN.GuiConveyorEnabled"] is True
-    assert not any(
-        writes[-1][1][f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5)
-    )
+    assert not any(writes[-1][1][f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5))
     window.close()
     window.camera.shutdown()
     window.pressure.shutdown()

@@ -31,9 +31,17 @@ class HardwareSettingsDialog(QDialog):
         self.preview_fps.setRange(1, 60)
         self.preview_fps.setValue(round(settings.preview_fps))
         self.handoff_line = QSpinBox()
-        self.handoff_line.setRange(5, 80)
+        self.handoff_line.setRange(5, min(80, settings.input_line_percent - 1))
         self.handoff_line.setSuffix(" %")
         self.handoff_line.setValue(settings.handoff_line_percent)
+        self.input_line = QSpinBox()
+        self.input_line.setRange(settings.handoff_line_percent + 1, 100)
+        self.input_line.setSuffix(" %")
+        self.input_line.setValue(settings.input_line_percent)
+        self.handoff_line.valueChanged.connect(lambda value: self.input_line.setMinimum(value + 1))
+        self.input_line.valueChanged.connect(
+            lambda value: self.handoff_line.setMaximum(min(80, value - 1))
+        )
         self.plc_ip = QLineEdit(settings.plc_ip)
         self.ams_net_id = QLineEdit(settings.plc_ams_net_id)
         self.plc_port = QSpinBox()
@@ -48,6 +56,7 @@ class HardwareSettingsDialog(QDialog):
         form.addRow("Baumer GenTL/CTI", self._cti_row())
         form.addRow("Camera preview (FPS)", self.preview_fps)
         form.addRow("Part handoff line from left", self.handoff_line)
+        form.addRow("Hidden input boundary from left", self.input_line)
         form.addRow("PLC IP", self.plc_ip)
         form.addRow("PLC AMS Net ID", self.ams_net_id)
         form.addRow("PLC ADS port", self.plc_port)
@@ -93,6 +102,7 @@ class HardwareSettingsDialog(QDialog):
             cti_path=self.cti_path.text(),
             preview_fps=float(self.preview_fps.value()),
             handoff_line_percent=self.handoff_line.value(),
+            input_line_percent=self.input_line.value(),
             plc_ip=self.plc_ip.text(),
             plc_ams_net_id=self.ams_net_id.text(),
             plc_port=self.plc_port.value(),

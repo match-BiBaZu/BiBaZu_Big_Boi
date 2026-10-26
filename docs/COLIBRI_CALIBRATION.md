@@ -111,13 +111,14 @@ separat sichtbar. Alle Ventile bleiben bei dieser Messung geschlossen.
 ## Düsenabstand
 
 - Achse zwischen den Abläufen manuell versetzen. Eine Messserie benötigt danach
-  keinen mechanischen Umbau. Reihenfolge von Home aus: **Düse → zweite
-  Lichtschranke → Wendepunkt**, in der gewählten Achsrichtung. Auf der
-  Rückfahrt: **zweite Lichtschranke → Düse → Home**.
+  keinen mechanischen Umbau. **Messaufbau** wählen: **Normal** fährt von Home
+  über Düse und Lichtschranke zum Wendepunkt; **Vertikal / invertiert** fährt
+  über Lichtschranke und Düse zum Wendepunkt. Zurück gilt die umgekehrte Folge.
+  Das Vorzeichen der Hinfahrt wird unabhängig davon gewählt.
 - Array und einzelne Düse wählen. Die Zuordnung ist Array 1 → LB2, Array 2 →
   LB4, Array 3 → LB6 und Array 4 → LB8.
-- Den Wendepunkt über die Lichtschranke hinaus setzen, sodass auch deren
-  Ausschaltflanke auf der Hinfahrt erfasst wird. Die Eingabe ist der positive
+- Den Wendepunkt hinter Lichtschranke **und** Düse setzen, sodass beide
+  Lichtschrankenflanken und der vollständige Kraftpeak erfasst werden. Die Eingabe ist der positive
   Abstand von Home; das Vorzeichen der Zielposition wird separat gewählt. Der gesamte
   Hin-/Rückweg muss innerhalb des 75-mm-Hubs bleiben.
 - Druck startet bei **1000 mbar**. Maximale Ventilöffnungszeit startet bei
@@ -153,7 +154,8 @@ als `max(0,005 N, 5 × Tara-Summenrauschen)` erreichen und ausreichend innerhalb
 der Kurve liegen: mindestens zehn geglättete Messpunkte und 0,1 mm Abstand zu
 deren Rändern. Andernfalls wird die Serie als ungültig beendet.
 
-**Beide Richtungen eines Zyklus verwenden den Einschaltpunkt der Rückfahrt:**
+**Normaler Messaufbau:** Beide Richtungen eines Zyklus verwenden den
+Einschaltpunkt der Rückfahrt:
 
 `Abstand = Betrag(Peakposition der jeweiligen Richtung − Einschaltposition der Rückfahrt)`
 
@@ -162,14 +164,36 @@ Die Hinfahrt-Kraftkurve wird bis zum Erfassen dieses Rückfahrt-Bezugs vorläufi
 gespeichert. Fehlt der Rückfahrt-Bezug oder wird vorher abgebrochen, bleibt sie
 unter `pending_nozzle_cycle` erhalten; sie wird nicht als gültiger Abstand gezählt.
 
-Dieser Bezug ist absichtlich nicht die Schaltmitte der Lichtschranke. Der
+Im normalen Modus ist dieser Bezug absichtlich nicht die Schaltmitte. Der
 Messstift und seine optische Einschaltkante beeinflussen damit den resultierenden
-Abstand. Im Plot erscheinen Summen- und Einzelkräfte, getrennte Fahrtrichtungen
-sowie Markierungen für Lichtschranke und Hauptpeak.
+Abstand.
 
-Jede Ergebniszeile speichert `reference_direction = backward` und die tatsächlich
-verwendete Referenzflanke samt Zeit und Position. Die Serien-JSON enthält unter
-`geometry` die gewählte Zielposition, Sensorreihenfolge und Ventilöffnungsphase.
+**Vertikal / invertiert:** Für die breite Stiftseite wird je Fahrtrichtung
+die Lichtschrankenmitte aus den tatsächlichen Schaltpositionen berechnet:
+
+`LB-Mitte = (Einposition + Ausposition) / 2`
+
+`Abstand je Richtung = Betrag(Kraftmaximum derselben Richtung − LB-Mitte)`
+
+Die Kraftposition bleibt auf Wunsch das **Maximum von `abs(F1 + F2)`** nach
+zentrierter Glättung. Es wird keine Mitte bei halber Peakhöhe verwendet und
+kein zusätzlicher halber Stiftbreitenversatz auf das Kraftmaximum addiert.
+Ob dieses Maximum die mechanische Stiftmitte über der Düse trifft, bleibt am
+Aufbau zu prüfen. Ein-/Ausposition, optisch erfasste Breite und Mitte werden
+je Richtung gespeichert; die Breite steht auch im Tooltip der LB-Mitte.
+
+Beispiel mit negativer Hinfahrt: LB ein bei −14 mm, aus bei −26 mm ergibt
+eine Mitte bei −20 mm; Kraftmaximum bei −45 mm ergibt 25 mm Düsenabstand.
+Das Ventil ist auch in diesem Modus bereits ab Home für beide Fahrten offen.
+
+Im Plot erscheinen Summen- und Einzelkräfte, getrennte Fahrtrichtungen sowie
+Markierungen für den tatsächlich verwendeten Lichtschrankenbezug und Hauptpeak.
+Jede Ergebniszeile speichert `reference_direction`, `reference_method` und
+den Bezug: normal `reference_edge`, vertikal `reference_center` samt beiden
+Flanken. `config.nozzle_layout` und `geometry` dokumentieren Messaufbau,
+Reihenfolge und Auswertemethode. Bestehende Serien ohne dieses Feld verwenden
+weiterhin den normalen Messaufbau. Beim Fortsetzen wird der gespeicherte
+Aufbau übernommen; ein Wechsel erfordert eine neue Serie.
 
 ## Dateien und Übernahme
 

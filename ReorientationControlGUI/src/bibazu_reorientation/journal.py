@@ -68,6 +68,8 @@ class RunJournal:
         run_id: str,
         part: PartDefinition,
         profiles: tuple[PressureProfile, ...],
+        *,
+        production_mode: str = "snapshot",
     ) -> Path:
         session = self.directory / run_id
         session.mkdir(parents=False, exist_ok=False)
@@ -102,7 +104,15 @@ class RunJournal:
         metadata = {
             "schema_version": 2,
             "run_id": run_id,
+            "production_mode": production_mode,
             "part_name": part.part_name,
+            "configuration_mode": (
+                "manual"
+                if part.is_manual_configuration
+                else "roadmap"
+                if part.is_roadmap_configuration
+                else "legacy"
+            ),
             "target_pose": part.target_pose,
             "config_path": str(part.source_path or ""),
             "config_sha256": config_hash,

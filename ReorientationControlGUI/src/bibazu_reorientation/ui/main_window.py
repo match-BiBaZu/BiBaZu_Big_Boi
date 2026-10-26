@@ -5,13 +5,16 @@ import contextlib
 import logging
 import math
 import time
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -34,11 +37,11 @@ from bibazu_reorientation.config import (
     load_part_definition,
     roadmap_readiness,
 )
+from bibazu_reorientation.conveyor import MAX_SPEED_MM_PER_SEC, validate_speed
 from bibazu_reorientation.hardware.camera import CameraAdapter
 from bibazu_reorientation.hardware.light import LightAdapter
 from bibazu_reorientation.hardware.pressure import PressureAdapter
-from bibazu_reorientation.hardware.robot import UrAngleWorker
-from bibazu_reorientation.inference import InferenceConfig, InferenceWorker
+from bibazu_reorientation.inference import InferenceConfig, InferenceWorker, draw_overlay
 from bibazu_reorientation.mesh_preview import render_mesh_preview
 from bibazu_reorientation.models import (
     BatchState,
@@ -48,6 +51,7 @@ from bibazu_reorientation.models import (
     InferenceFrame,
     PressureBaseline,
     PressureProfile,
+    ProductionMode,
 )
 from bibazu_reorientation.profiles import (
     compare_machine_parameters,
@@ -61,6 +65,7 @@ from bibazu_reorientation.settings import (
     AppSettings,
 )
 from bibazu_reorientation.ui.hardware_settings_dialog import HardwareSettingsDialog
+from bibazu_reorientation.ui.manual_setup_dialog import ManualSetupDialog
 from bibazu_reorientation.ui.roadmap_setup_dialog import RoadmapSetupDialog
 from bibazu_reorientation.ui.setup_dialog import SetupDialog
 
@@ -116,6 +121,8 @@ class LightPanel(QGroupBox):
 
 
 class MainWindow(QMainWindow):
+    shutdown_requested = pyqtSignal()
+
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
         self.settings = settings
@@ -138,14 +145,17 @@ class MainWindow(QMainWindow):
         self.controller = BatchController(
             self.pressure,
             handoff_line_ratio=settings.handoff_line_percent / 100.0,
+            pose_cutoff_ratio=settings.handoff_line_percent / 100.0,
+            production_mode=ProductionMode(settings.production_mode),
+            input_line_ratio=settings.input_line_percent / 100.0,
         )
         self.inference: InferenceWorker | None = None
         self._yolo_reload_pending = False
         self._shutting_down = False
         self.part = None
         self.profile = None
-        self.ur_worker: UrAngleWorker | None = None
         self._last_camera_frame = 0.0
+        self._last_camera_image: np.ndarray | None = None
         self._camera_status_data = CameraStatus()
         self._exposure_min_us = CAMERA_EXPOSURE_MIN_US
         self._exposure_max_us = CAMERA_EXPOSURE_MAX_US
@@ -158,9 +168,11 @@ class MainWindow(QMainWindow):
         self._pressure_baseline: PressureBaseline | None = None
         self._machine_parameters_confirmed = False
         self._updating_machine_parameters = False
-        self._profile_parameter_details = ""
         self._light_connect_task: asyncio.Task[None] | None = None
         self._manual_conveyor_command_pending = False
+        self._manual_start_requested = False
+        self._manual_preparation_name: str | None = None
+        self._manual_preparation_sequence = 0
         self._build_ui()
         self._wire()
         self.freshness_timer = QTimer(self)
@@ -178,7 +190,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         menu = self.menuBar().addMenu("Configuration")
-        self.new_config_action = QAction("New part configuration (roadmap) …", self)
+        self.new_config_action = QAction("New configuration …", self)
         self.new_config_action.triggered.connect(self.new_configuration)
         menu.addAction(self.new_config_action)
         self.open_config_action = QAction("Open part configuration …", self)
@@ -252,13 +264,22 @@ class MainWindow(QMainWindow):
         camera_controls.addWidget(self.exposure_value)
         camera_controls.addWidget(self.camera_fps)
         self.handoff_slider = QSlider(Qt.Orientation.Horizontal)
-        self.handoff_slider.setRange(5, 80)
+        self.handoff_slider.setRange(5, min(80, self.settings.input_line_percent - 1))
         self.handoff_slider.setValue(self.settings.handoff_line_percent)
         self.handoff_slider.setToolTip(
-            "Vertical image line at which a tracked part is committed to the PLC queue."
+            "Select the profile from the current YOLO class when a part reaches this line."
         )
         self.handoff_value = QLabel(f"{self.settings.handoff_line_percent} %")
         self.handoff_slider.valueChanged.connect(self._handoff_line_changed)
+        self.input_slider = QSlider(Qt.Orientation.Horizontal)
+        self.input_slider.setRange(self.settings.handoff_line_percent + 1, 100)
+        self.input_slider.setValue(self.settings.input_line_percent)
+        self.input_slider.setToolTip(
+            "Ignore detections touching or right of this boundary until the whole box "
+            "enters from the right. No input line is drawn. 100% disables the entry region."
+        )
+        self.input_value = QLabel(f"{self.settings.input_line_percent} %")
+        self.input_slider.valueChanged.connect(self._input_line_changed)
         self.connect_button = QPushButton("Connect all components")
         self.connect_button.clicked.connect(self.connect_all)
         self.disconnect_button = QPushButton("Disconnect all components")
@@ -268,8 +289,26 @@ class MainWindow(QMainWindow):
         hardware_layout.addWidget(self.plc_status)
         hardware_layout.addWidget(self.camera_status)
         hardware_layout.addLayout(camera_controls)
-        # Snapshot-queue production does not present the legacy moving handoff
-        # line. Its widgets/settings remain for backward-compatible settings.
+        self.production_mode_input = QComboBox()
+        self.production_mode_input.addItem("Continuous feed", "continuous")
+        self.production_mode_input.addItem("Snapshot batch (preloaded parts)", "snapshot")
+        self.production_mode_input.setCurrentIndex(
+            self.production_mode_input.findData(self.settings.production_mode)
+        )
+        self.production_mode_input.currentIndexChanged.connect(self._production_mode_changed)
+        hardware_layout.addWidget(self.production_mode_input)
+        handoff_form = QFormLayout()
+        handoff_row = QHBoxLayout()
+        handoff_row.addWidget(self.handoff_slider, 1)
+        handoff_row.addWidget(self.handoff_value)
+        handoff_form.addRow("Yellow profile handoff line", handoff_row)
+        input_row = QHBoxLayout()
+        input_row.addWidget(self.input_slider, 1)
+        input_row.addWidget(self.input_value)
+        self.boundary_form = handoff_form
+        self.input_boundary_row = handoff_form.rowCount()
+        handoff_form.addRow("Input boundary", input_row)
+        hardware_layout.addLayout(handoff_form)
         self.yolo_status = QLabel("YOLO: no model loaded")
         self.yolo_status.setWordWrap(True)
         self.load_yolo_button = QPushButton("Load YOLO model")
@@ -279,37 +318,23 @@ class MainWindow(QMainWindow):
         yolo_row.addWidget(self.yolo_status, 1)
         yolo_row.addWidget(self.load_yolo_button)
         hardware_layout.addLayout(yolo_row)
-        self.use_ur_angle = QCheckBox("Apply")
-        self.ur_angle_input = QDoubleSpinBox()
-        self.ur_angle_input.setRange(0.0, 21.0)
-        self.ur_angle_input.setDecimals(1)
-        self.ur_angle_input.setSingleStep(0.1)
-        self.ur_angle_input.setSuffix(" °")
-        self.ur_angle_input.setValue(18.0)
-        ur_row = QHBoxLayout()
-        ur_row.addWidget(self.use_ur_angle)
-        ur_row.addWidget(self.ur_angle_input, 1)
         self.conveyor_speed_input = QDoubleSpinBox()
-        self.conveyor_speed_input.setRange(0.1, 5000.0)
+        self.conveyor_speed_input.setRange(0.1, MAX_SPEED_MM_PER_SEC)
         self.conveyor_speed_input.setDecimals(1)
         self.conveyor_speed_input.setSuffix(" mm/s")
         self.conveyor_speed_input.setValue(100.0)
         machine_form = QFormLayout()
-        machine_form.addRow("UR Ry angle", ur_row)
         machine_form.addRow("Conveyor speed", self.conveyor_speed_input)
         hardware_layout.addLayout(machine_form)
-        self.machine_parameter_status = QLabel("Load a configuration to compare profiles.")
+        self.machine_parameter_status = QLabel()
         self.machine_parameter_status.setWordWrap(True)
+        self.machine_parameter_status.hide()
         hardware_layout.addWidget(self.machine_parameter_status)
         self.apply_machine_parameters_button = QPushButton("Use machine parameters")
         self.apply_machine_parameters_button.setEnabled(False)
         self.apply_machine_parameters_button.clicked.connect(self.apply_machine_parameters)
-        self.ur_button = QPushButton("Apply UR angle")
-        self.ur_button.clicked.connect(self.apply_ur)
-        self.ur_button.setEnabled(False)
         machine_buttons = QHBoxLayout()
         machine_buttons.addWidget(self.apply_machine_parameters_button)
-        machine_buttons.addWidget(self.ur_button)
         hardware_layout.addLayout(machine_buttons)
         self.manual_conveyor_start_button = QPushButton("Start conveyor")
         self.manual_conveyor_start_button.setToolTip(
@@ -319,7 +344,7 @@ class MainWindow(QMainWindow):
         self.manual_conveyor_start_button.clicked.connect(self._manual_conveyor_start)
         self.manual_conveyor_stop_button = QPushButton("Stop conveyor")
         self.manual_conveyor_stop_button.setToolTip(
-            "Stops manual transport; during a production run this requests controlled draining."
+            "Stops the conveyor and nozzle arrays immediately, including during a production run."
         )
         self.manual_conveyor_stop_button.setEnabled(False)
         self.manual_conveyor_stop_button.clicked.connect(self._manual_conveyor_stop)
@@ -337,14 +362,10 @@ class MainWindow(QMainWindow):
         self.preflight = QVBoxLayout()
         preflight_box = QGroupBox("Preflight")
         preflight_box.setLayout(self.preflight)
-        self.batch_counters = QLabel(
-            "Snapshot 0 · poses 0 · queued 0 · LB1 0 · completed 0 · bypass 0 · PLC queue 0/128"
-        )
-        self.batch_counters.setWordWrap(True)
         self.start_button = QPushButton("Start production run")
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self._start)
-        self.stop_button = QPushButton("Cancel production start")
+        self.stop_button = QPushButton("Stop production run")
         self.stop_button.setStyleSheet("font-weight:bold;background:#d97706;color:white;padding:12px")
         self.stop_button.clicked.connect(self.controller.finish_run)
         self.cycle_status = QLabel("No configuration")
@@ -354,7 +375,6 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.light_panel1)
         right_layout.addWidget(self.light_panel2)
         right_layout.addWidget(preflight_box)
-        right_layout.addWidget(self.batch_counters)
         right_layout.addWidget(self.cycle_status)
         right_layout.addWidget(self.start_button)
         right_layout.addWidget(self.stop_button)
@@ -394,21 +414,21 @@ class MainWindow(QMainWindow):
         self.controller.preflight_changed.connect(self._preflight)
         self.controller.state_changed.connect(self._cycle_state_changed)
         self.controller.warning_raised.connect(self._production_warning)
-        self.controller.counters_changed.connect(self._batch_counters_changed)
         self.light_panel1.confirm.toggled.connect(self._lights_changed)
         self.light_panel2.confirm.toggled.connect(self._lights_changed)
         self.light1.status_changed.connect(self._light_status_changed)
         self.light2.status_changed.connect(self._light_status_changed)
         self.light1.error.connect(self._light1_error)
         self.light2.error.connect(self._light2_error)
-        self.use_ur_angle.toggled.connect(self._machine_parameters_edited)
-        self.ur_angle_input.valueChanged.connect(self._machine_parameters_edited)
         self.conveyor_speed_input.valueChanged.connect(self._machine_parameters_edited)
 
     def _plc_connection_changed(self, connected: bool, detail: str) -> None:
         self.plc_status.setText(f"PLC: {'connected' if connected else 'disconnected'} – {detail}")
         if not connected:
             self._manual_conveyor_command_pending = False
+            self._manual_start_requested = False
+            self._manual_preparation_name = None
+            self.pressure.cancel_preparation()
             self.manual_conveyor_status.setText("Manual conveyor: PLC disconnected")
         self._update_manual_conveyor_buttons()
         if connected:
@@ -441,7 +461,7 @@ class MainWindow(QMainWindow):
         snapshot = self.controller.snapshot
         self.manual_conveyor_start_button.setEnabled(self._manual_conveyor_can_start())
         self.manual_conveyor_stop_button.setEnabled(
-            snapshot.connected and not self._manual_conveyor_command_pending
+            snapshot.connected
         )
 
     @pyqtSlot(object)
@@ -451,8 +471,15 @@ class MainWindow(QMainWindow):
             return
         if getattr(snapshot, "conveyor_motion_state", 0) != 0:
             self.manual_conveyor_status.setText("Manual conveyor: running / drive active")
+        elif getattr(snapshot, "conveyor_fault_code", 0):
+            self.manual_conveyor_status.setText(
+                f"Beckhoff conveyor fault: {snapshot.conveyor_fault_code}"
+            )
         elif getattr(snapshot, "connected", False):
-            self.manual_conveyor_status.setText("Manual conveyor: stopped")
+            self.manual_conveyor_status.setText(
+                f"Manual conveyor: stopped; {snapshot.conveyor_motor_count} motors, "
+                f"acceleration {snapshot.conveyor_acceleration_rpm_per_sec:g} rpm/s"
+            )
 
     def _manual_conveyor_start(self) -> None:
         if not self._manual_conveyor_can_start():
@@ -464,6 +491,8 @@ class MainWindow(QMainWindow):
             )
             return
         self._manual_conveyor_command_pending = True
+        self._manual_start_requested = True
+        self._manual_preparation_sequence += 1
         self._update_manual_conveyor_buttons()
         snapshot = self.controller.snapshot
         if snapshot.reorientation_state != 0 or snapshot.reorientation_fault_code != 0:
@@ -478,14 +507,30 @@ class MainWindow(QMainWindow):
                 "MAIN.GuiConveyorEnabled": False,
             }
             values.update({f"MAIN.GuiArrayEnabled{index}": False for index in range(1, 5)})
-            self.pressure.write("manual_conveyor_reset", values, True)
+            self.pressure.write(
+                f"manual_conveyor_reset:{self._manual_preparation_sequence}", values, False
+            )
             return
-        self._send_manual_conveyor_start()
+        self._prepare_manual_conveyor()
+
+    def _prepare_manual_conveyor(self, request_id: int | None = None) -> None:
+        if (
+            not self._manual_start_requested or self._shutting_down
+            or self._manual_preparation_name is not None
+            or (request_id is not None and request_id != self._manual_preparation_sequence)
+        ):
+            return
+        self._manual_preparation_name = (
+            f"manual_conveyor_prepare:{self._manual_preparation_sequence}"
+        )
+        self.manual_conveyor_status.setText("Manual conveyor: preparing both Beckhoff motors ...")
+        self.pressure.prepare_conveyor(self._manual_preparation_name)
 
     def _send_manual_conveyor_start(self) -> None:
         if (
             self._shutting_down
             or not self._manual_conveyor_command_pending
+            or not self._manual_start_requested
             or not self.controller.snapshot.connected
         ):
             self._manual_conveyor_command_pending = False
@@ -502,18 +547,22 @@ class MainWindow(QMainWindow):
             "MAIN.GuiForceDelayMeasurementEnabled": False,
             "MAIN.GuiConveyorReverse": False,
             "MAIN.GuiConveyorSpeedMmPerSec": self.conveyor_speed_input.value(),
+            "MAIN.GuiConveyorMaxSpeedMmPerSec": MAX_SPEED_MM_PER_SEC,
             "MAIN.GuiConveyorEnabled": True,
         }
         values.update({f"MAIN.GuiArrayEnabled{index}": False for index in range(1, 5)})
         self.pressure.write("manual_conveyor_start", values, True)
 
     def _manual_conveyor_stop(self) -> None:
+        self._manual_start_requested = False
+        self._manual_preparation_name = None
         if not self._manual_conveyor_idle_state(self.controller.state):
             self.manual_conveyor_status.setText(
-                "Manual conveyor: controlled production-run draining requested …"
+                "Manual conveyor: stopping production run …"
             )
             self.controller.stop()
             return
+        self.pressure.cancel_preparation()
         if not self.controller.snapshot.connected:
             return
         self._manual_conveyor_command_pending = True
@@ -525,13 +574,24 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _pressure_operation_finished(self, name: str) -> None:
-        if name == "manual_conveyor_reset":
+        if name.startswith("manual_conveyor_prepare:"):
+            if name != self._manual_preparation_name or not self._manual_start_requested:
+                return
+            self._manual_preparation_name = None
+            self._send_manual_conveyor_start()
+            return
+        if name.startswith("manual_conveyor_reset:"):
+            if (not self._manual_start_requested
+                    or name != f"manual_conveyor_reset:{self._manual_preparation_sequence}"):
+                return
             self.manual_conveyor_status.setText(
                 "Manual conveyor: previous cycle latch cleared …"
             )
             # Keep Reset asserted long enough for at least one PLC scan before
             # releasing the automation owner and starting in legacy/manual mode.
-            QTimer.singleShot(100, self._send_manual_conveyor_start)
+            QTimer.singleShot(
+                100, partial(self._prepare_manual_conveyor, self._manual_preparation_sequence)
+            )
             return
         if name not in {"manual_conveyor_start", "manual_conveyor_stop"}:
             return
@@ -546,14 +606,22 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str, str)
     def _pressure_operation_failed(self, name: str, detail: str) -> None:
-        if name not in {
-            "manual_conveyor_reset",
+        if name.startswith("manual_conveyor_prepare:"):
+            if name != self._manual_preparation_name:
+                return
+            self._manual_preparation_name = None
+        elif name.startswith("manual_conveyor_reset:"):
+            if name != f"manual_conveyor_reset:{self._manual_preparation_sequence}":
+                return
+        elif name not in {
             "manual_conveyor_start",
             "manual_conveyor_stop",
         }:
             return
         self._manual_conveyor_command_pending = False
         self.manual_conveyor_status.setStyleSheet("color:#b91c1c;font-weight:bold")
+        self._manual_start_requested = False
+        self.pressure.cancel_preparation()
         self.manual_conveyor_status.setText(f"Manual conveyor failed: {detail}")
         self._update_manual_conveyor_buttons()
 
@@ -715,9 +783,24 @@ class MainWindow(QMainWindow):
         )
 
     def new_configuration(self) -> None:
+        chooser = QMessageBox(self)
+        chooser.setWindowTitle("New configuration")
+        chooser.setText("Choose a configuration type.")
+        roadmap = chooser.addButton("Roadmap configuration", QMessageBox.ButtonRole.ActionRole)
+        manual = chooser.addButton("Manual configuration", QMessageBox.ButtonRole.ActionRole)
+        chooser.addButton(QMessageBox.StandardButton.Cancel)
+        chooser.setDefaultButton(roadmap)
+        chooser.exec()
+        selected = chooser.clickedButton()
+        if selected is roadmap:
+            setup = RoadmapSetupDialog
+        elif selected is manual:
+            setup = ManualSetupDialog
+        else:
+            return
         try:
-            part = RoadmapSetupDialog(self).create()
-            if part:
+            part = setup(self).create()
+            if part is not None:
                 self._load(part)
         except Exception as exc:
             QMessageBox.critical(self, "Configuration", str(exc))
@@ -754,11 +837,12 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            dialog = (
-                RoadmapSetupDialog(self, self.part)
-                if self.part.schema_version == 2
-                else SetupDialog(self, self.part)
-            )
+            if self.part.is_manual_configuration:
+                dialog = ManualSetupDialog(self, self.part)
+            elif self.part.is_roadmap_configuration:
+                dialog = RoadmapSetupDialog(self, self.part)
+            else:
+                dialog = SetupDialog(self, self.part)
             part = dialog.create()
             if part:
                 self._load(part)
@@ -773,6 +857,10 @@ class MainWindow(QMainWindow):
         self.edit_config_button.setEnabled(True)
         self._roadmap_mode = part.schema_version == 2
         self.load_yolo_button.setEnabled(True)
+        self.transition_label.setVisible(not part.is_manual_configuration)
+        if part.is_manual_configuration:
+            self._load_manual_configuration(part)
+            return
         if self._roadmap_mode:
             self._load_roadmap_configuration(part)
             return
@@ -823,11 +911,37 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self.model_label.setPixmap(QPixmap())
                 self.model_label.setText(f"3D preview unavailable:\n{exc}")
-        self.ur_button.setEnabled(self.profile.ur_ry_angle_deg is not None)
-        self._set_machine_inputs(
-            self.profile.conveyor_speed_mm_per_sec, self.profile.ur_ry_angle_deg
+        self._set_machine_inputs(self.profile.conveyor_speed_mm_per_sec)
+        self._machine_parameters_confirmed = False
+        self.apply_machine_parameters_button.setEnabled(True)
+        if 0 < self.profile.conveyor_speed_mm_per_sec <= MAX_SPEED_MM_PER_SEC:
+            self.apply_machine_parameters(show_error=False)
+        else:
+            self._set_machine_parameter_status(
+                f"Profile requests {self.profile.conveyor_speed_mm_per_sec:g} mm/s. "
+                "Select a speed up to 200 mm/s and press 'Use machine parameters'."
+            )
+        self.load_yolo_model()
+
+    def _load_manual_configuration(self, part) -> None:
+        target = part.recognition_label(part.target_pose)
+        self.part_label.setText(
+            f"Part: {part.part_name}\n"
+            f"YOLO: {part.model_path.name}\nTarget: {target}"
         )
-        self.machine_parameter_status.setText("Machine values loaded from the pressure profile.")
+        self.transition_label.clear()
+        self.model_label.setPixmap(QPixmap())
+        self.model_label.setText("")
+        self.model_label.setToolTip("")
+        if part.mesh_path is not None:
+            try:
+                self.model_label.setPixmap(render_mesh_preview(part.mesh_path))
+            except Exception as exc:
+                self.model_label.setText(f"3D preview unavailable: {exc}")
+        self.pose_label.setText(f"Detected pose: -    Target: {target}")
+        self.apply_machine_parameters_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self._load_roadmap_profiles(self._pressure_baseline)
         self.load_yolo_model()
 
     def _load_roadmap_configuration(self, part) -> None:
@@ -870,19 +984,16 @@ class MainWindow(QMainWindow):
         self._load_roadmap_profiles(self._pressure_baseline)
         self.load_yolo_model()
 
-    def _set_machine_inputs(self, speed: float, angle: float | None) -> None:
+    def _set_machine_inputs(self, speed: float) -> None:
         self._updating_machine_parameters = True
         self.conveyor_speed_input.setValue(speed)
-        self.use_ur_angle.setChecked(angle is not None)
-        if angle is not None:
-            self.ur_angle_input.setValue(angle)
-        self.ur_angle_input.setEnabled(self._roadmap_mode and angle is not None)
-        self.conveyor_speed_input.setEnabled(self._roadmap_mode)
-        self.use_ur_angle.setEnabled(self._roadmap_mode)
+        self.conveyor_speed_input.setEnabled(True)
         self._updating_machine_parameters = False
 
     def _load_roadmap_profiles(self, baseline: PressureBaseline | None) -> None:
-        if self.part is None or not self._roadmap_mode:
+        if self.part is None or not (
+            self._roadmap_mode or self.part.is_manual_configuration
+        ):
             return
         profiles: dict[str, PressureProfile] = {}
         rows: list[str] = []
@@ -893,14 +1004,10 @@ class MainWindow(QMainWindow):
             try:
                 profile = load_pressure_profile(transition.pressure_profile, baseline=baseline)
                 profiles[transition.edge_id] = profile
-                angle = (
-                    "–"
-                    if profile.ur_ry_angle_deg is None
-                    else f"{profile.ur_ry_angle_deg:.1f}°"
-                )
                 rows.append(
-                    f"{transition.from_pose} → {transition.to_pose}: "
-                    f"UR {angle}, conveyor {profile.conveyor_speed_mm_per_sec:g} mm/s "
+                    f"{self.part.recognition_label(transition.from_pose)} "
+                    f"to {self.part.recognition_label(transition.to_pose)}: "
+                    f"Conveyor {profile.conveyor_speed_mm_per_sec:g} mm/s "
                     f"({profile.source_path.name})"
                 )
             except Exception as exc:
@@ -911,55 +1018,43 @@ class MainWindow(QMainWindow):
         self._roadmap_profiles = profiles
         self._machine_parameters_confirmed = False
         if errors:
-            self._profile_parameter_details = ""
             self.profile = None
             self.machine_parameter_status.setStyleSheet("color:#b91c1c;font-weight:bold")
-            self.machine_parameter_status.setText(
+            self._set_machine_parameter_status(
                 "Invalid transition profile:\n" + "\n".join(errors)
             )
             return
         if not profiles:
-            self._profile_parameter_details = ""
             self.profile = None
             self.machine_parameter_status.setStyleSheet("color:#b91c1c;font-weight:bold")
-            self.machine_parameter_status.setText(
-                "No pressure profile is assigned. At least one reachable transition is required."
+            self._set_machine_parameter_status(
+                "No pressure profile is assigned. Assign at least one start-pose profile."
             )
             return
         comparison = compare_machine_parameters(tuple(profiles.values()))
         speed = comparison.common_conveyor_speed_mm_per_sec
-        angle = comparison.common_ur_angle_deg
         fallback_speed = comparison.conveyor_speeds_mm_per_sec[0]
-        fallback_angle = next(
-            (value for value in comparison.ur_angles_deg if value is not None), None
-        )
-        selected_angle = angle if not comparison.ur_angle_conflict else fallback_angle
-        self._set_machine_inputs(speed or fallback_speed, selected_angle)
+        self._set_machine_inputs(speed or fallback_speed)
         profile_text = "\n".join(rows)
-        self._profile_parameter_details = profile_text
-        if comparison.ur_angle_conflict or comparison.conveyor_speed_conflict:
-            conflicts = []
-            if comparison.ur_angle_conflict:
-                conflicts.append("UR Ry angles")
-            if comparison.conveyor_speed_conflict:
-                conflicts.append("conveyor speeds")
+        if (
+            comparison.conveyor_speed_conflict or speed is None
+            or not 0 < speed <= MAX_SPEED_MM_PER_SEC
+        ):
             self.machine_parameter_status.setStyleSheet("color:#b45309;font-weight:bold")
-            self.machine_parameter_status.setText(
-                f"Profiles disagree on {' and '.join(conflicts)}. Select the values above and "
-                f"press 'Use machine parameters'.\n{profile_text}"
+            self._set_machine_parameter_status(
+                "Profiles require a conveyor speed selection (maximum 200 mm/s). "
+                f"Select a value and press 'Use machine parameters'.\n{profile_text}"
             )
             self.controller.clear_configuration()
             return
-        self.machine_parameter_status.setStyleSheet("color:#166534")
-        self.machine_parameter_status.setText(
-            "All assigned profiles use the same machine parameters; values were loaded "
-            f"automatically.\n{profile_text}"
-        )
         self.apply_machine_parameters(show_error=False)
 
+    def _set_machine_parameter_status(self, text: str) -> None:
+        self.machine_parameter_status.setText(text)
+        self.machine_parameter_status.setVisible(bool(text))
+
     def _machine_parameters_edited(self, _value=None) -> None:
-        self.ur_angle_input.setEnabled(self._roadmap_mode and self.use_ur_angle.isChecked())
-        if self._updating_machine_parameters or not self._roadmap_mode:
+        if self._updating_machine_parameters or self.part is None:
             return
         if self.controller.state not in {
             BatchState.NO_CONFIG,
@@ -970,45 +1065,47 @@ class MainWindow(QMainWindow):
         }:
             return
         self._machine_parameters_confirmed = False
+        self.controller.clear_configuration()
         self.machine_parameter_status.setStyleSheet("color:#b45309;font-weight:bold")
-        self.machine_parameter_status.setText(
+        self._set_machine_parameter_status(
             "Machine values changed. Press 'Use machine parameters' before starting."
         )
 
     def apply_machine_parameters(self, *, show_error: bool = True) -> None:
-        if self.part is None or not self._roadmap_mode:
+        if self.part is None:
             return
         try:
-            angle = self.ur_angle_input.value() if self.use_ur_angle.isChecked() else None
             speed = self.conveyor_speed_input.value()
+            if self.part.is_manual_configuration:
+                self.controller.set_manual_configuration(
+                    self.part, self._roadmap_profiles, conveyor_speed_mm_per_sec=speed
+                )
+            elif self._roadmap_mode:
+                self.controller.set_roadmap_configuration(
+                    self.part,
+                    self._roadmap_profiles,
+                    conveyor_speed_mm_per_sec=speed,
+                )
+            else:
+                profile = load_pressure_profile(
+                    self.part.transitions[0].pressure_profile,
+                    baseline=self._pressure_baseline,
+                )
+                validate_speed(speed, profile.conveyor_max_speed_mm_per_sec)
+                self.controller.set_configuration(
+                    self.part, replace(profile, conveyor_speed_mm_per_sec=speed)
+                )
             self._machine_parameters_confirmed = True
-            self.controller.set_roadmap_configuration(
-                self.part,
-                self._roadmap_profiles,
-                conveyor_speed_mm_per_sec=speed,
-                ur_ry_angle_deg=angle,
-            )
             self.profile = self.controller.profile
-            self.ur_button.setEnabled(angle is not None)
-            self.machine_parameter_status.setStyleSheet("color:#166534;font-weight:bold")
-            details = (
-                f"\n{self._profile_parameter_details}"
-                if self._profile_parameter_details
-                else ""
-            )
-            self.machine_parameter_status.setText(
-                f"Machine parameters confirmed: conveyor {speed:g} mm/s, "
-                f"UR Ry {'not used' if angle is None else f'{angle:.1f}°'}."
-                + details
-            )
+            self._set_machine_parameter_status("")
         except Exception as exc:
             self._machine_parameters_confirmed = False
             self.machine_parameter_status.setStyleSheet("color:#b91c1c;font-weight:bold")
-            self.machine_parameter_status.setText(str(exc))
+            self._set_machine_parameter_status(str(exc))
             if show_error:
                 QMessageBox.warning(self, "Machine parameters", str(exc))
 
-    def _validate_roadmap_paths(self, speed: float, angle: float | None) -> None:
+    def _validate_roadmap_paths(self, speed: float) -> None:
         assert self.part is not None
         valid_paths = 0
         ambiguous_paths: list[str] = []
@@ -1026,7 +1123,6 @@ class MainWindow(QMainWindow):
             compose_pressure_profiles(
                 profiles,
                 conveyor_speed_mm_per_sec=speed,
-                ur_ry_angle_deg=angle,
             )
             valid_paths += 1
         if ambiguous_paths:
@@ -1041,14 +1137,19 @@ class MainWindow(QMainWindow):
         self._pressure_baseline = baseline
         if self.part is None:
             return
-        if self._roadmap_mode:
+        if self._roadmap_mode or self.part.is_manual_configuration:
             self._load_roadmap_profiles(baseline)
             return
         try:
             self.profile = load_pressure_profile(
                 self.part.transitions[0].pressure_profile, baseline=baseline
             )
-            self.controller.set_configuration(self.part, self.profile)
+            if self._machine_parameters_confirmed:
+                self.apply_machine_parameters(show_error=False)
+            else:
+                self._set_machine_inputs(self.profile.conveyor_speed_mm_per_sec)
+                if 0 < self.profile.conveyor_speed_mm_per_sec <= MAX_SPEED_MM_PER_SEC:
+                    self.apply_machine_parameters(show_error=False)
         except Exception as exc:
             QMessageBox.critical(self, "Pressure profile", str(exc))
 
@@ -1111,22 +1212,72 @@ class MainWindow(QMainWindow):
         else:
             # A live preview is useful while setting up hardware, before a part/model
             # configuration has been selected.
-            self._show_image(frame.image)
+            self._show_image(draw_overlay(
+                frame.image, (), pose_cutoff_ratio=self.controller.handoff_line_ratio,
+                input_line_ratio=self.controller.input_line_ratio,
+            ))
+        self._last_camera_image = frame.image
 
     def _update_camera_freshness(self) -> None:
         self.controller.set_camera_fresh(time.time() - self._last_camera_frame <= 1.0)
 
-    def _handoff_line_changed(self, value: int) -> None:
-        self.handoff_value.setText(f"{value} %")
+    def _production_mode_changed(self, _index: int) -> None:
         try:
-            self.controller.set_handoff_line_ratio(value / 100.0)
+            mode = ProductionMode(self.production_mode_input.currentData())
+            self.controller.set_production_mode(mode)
         except RuntimeError:
+            self.production_mode_input.blockSignals(True)
+            self.production_mode_input.setCurrentIndex(
+                self.production_mode_input.findData(self.controller.production_mode.value)
+            )
+            self.production_mode_input.blockSignals(False)
             return
-        self.settings.handoff_line_percent = value
+        self.settings.production_mode = mode.value
         try:
             self.settings.save()
         except ValueError as exc:
-            LOGGER.error("Handoff-line setting could not be saved: %s", exc)
+            LOGGER.error("Production mode could not be saved: %s", exc)
+
+    def _handoff_line_changed(self, value: int) -> None:
+        try:
+            self.controller.set_handoff_line_ratio(value / 100.0)
+        except RuntimeError:
+            self.handoff_slider.blockSignals(True)
+            self.handoff_slider.setValue(round(self.controller.handoff_line_ratio * 100))
+            self.handoff_slider.blockSignals(False)
+            return
+        self.handoff_value.setText(f"{value} %")
+        self.input_slider.setMinimum(value + 1)
+        self.settings.handoff_line_percent = value
+        if self.inference is not None:
+            self.inference.set_pose_cutoff_ratio(value / 100.0)
+        elif self._last_camera_image is not None:
+            self._show_image(draw_overlay(
+                self._last_camera_image, (), pose_cutoff_ratio=value / 100.0,
+                input_line_ratio=self.controller.input_line_ratio,
+            ))
+        try:
+            self.settings.save()
+        except ValueError as exc:
+            LOGGER.error("Handoff line could not be saved: %s", exc)
+
+    def _input_line_changed(self, value: int) -> None:
+        try:
+            self.controller.set_input_line_ratio(value / 100.0)
+        except (RuntimeError, ValueError):
+            self.input_slider.blockSignals(True)
+            self.input_slider.setValue(round(self.controller.input_line_ratio * 100))
+            self.input_slider.blockSignals(False)
+            return
+        self.input_value.setText(f"{value} %")
+        self.handoff_slider.setMaximum(min(80, value - 1))
+        self.settings.input_line_percent = value
+        if self.inference is not None:
+            self.inference.set_input_line_ratio(value / 100.0)
+        try:
+            self.settings.save()
+        except ValueError as exc:
+            LOGGER.error("Input boundary could not be saved: %s", exc)
 
     def _inference_frame(self, frame: InferenceFrame) -> None:
         update = self.controller.accept_inference(frame)
@@ -1136,11 +1287,14 @@ class MainWindow(QMainWindow):
         if leftmost is None:
             detected = "none"
         elif leftmost.confirmed_pose_id is not None:
-            detected = f"Track {leftmost.track_id}: Pose {leftmost.confirmed_pose_id} locked"
+            detected = (
+                self.part.recognition_label(leftmost.confirmed_pose_id)
+                if self.part else str(leftmost.confirmed_pose_id)
+            )
         else:
-            detected = f"Track {leftmost.track_id}: consensus {leftmost.pose_streak}/5"
+            detected = "unmapped YOLO class"
         self.pose_label.setText(
-            f"Leftmost: {detected}    Target pose: "
+            f"YOLO: {detected}    Target pose: "
             f"{self.part.target_pose if self.part else '–'}"
         )
 
@@ -1220,7 +1374,7 @@ class MainWindow(QMainWindow):
         self.load_yolo_button.setEnabled(False)
         expected = (
             tuple(pose.model_class_id for pose in self.part.poses)
-            if self._roadmap_mode
+            if self._roadmap_mode or self.part.is_manual_configuration
             else None
         )
         class_to_pose = tuple(
@@ -1232,6 +1386,8 @@ class MainWindow(QMainWindow):
                 max_fps=15.0,
                 expected_class_ids=expected,
                 class_to_pose=class_to_pose,
+                pose_cutoff_ratio=self.controller.handoff_line_ratio,
+                input_line_ratio=self.controller.input_line_ratio,
             )
         )
         self.inference.frame_ready.connect(self._inference_frame)
@@ -1281,23 +1437,6 @@ class MainWindow(QMainWindow):
         )
         self.controller.set_lights_ready(ready1, ready2)
 
-    def apply_ur(self) -> None:
-        profile = self.controller.profile or self.profile
-        if not profile or profile.ur_ry_angle_deg is None:
-            return
-        self.ur_worker = UrAngleWorker(profile.ur_ry_angle_deg, self)
-        self.ur_worker.applied.connect(self._ur_applied)
-        self.ur_worker.failed.connect(self._ur_failed)
-        self.ur_worker.start()
-
-    @pyqtSlot(float, int)
-    def _ur_applied(self, angle: float, _command: int) -> None:
-        self.controller.set_ur_applied(angle)
-
-    @pyqtSlot(str)
-    def _ur_failed(self, error: str) -> None:
-        QMessageBox.critical(self, "UR", error)
-
     def _preflight(self, checks: dict[str, bool]) -> None:
         if checks == self._displayed_preflight_checks:
             return
@@ -1312,18 +1451,6 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(
             self._preflight_ok
             or self.controller.state in {BatchState.COMPLETE, BatchState.FAULT}
-        )
-
-    def _batch_counters_changed(self, counters: dict[str, object]) -> None:
-        sensor_sequences = "/".join(str(value) for value in counters["sensor_sequences"])
-        barrier_states = "".join("1" if value else "0" for value in counters["barrier_states"])
-        self.batch_counters.setText(
-            f"Snapshot {counters['visible']} · poses {counters['confirmed']} · "
-            f"queued {counters['queued']} · LB1 {counters['entered']} · "
-            f"completed {counters['completed']} · bypass {counters['bypass']} · "
-            f"PLC queue {counters['queue_depth']}/{counters['queue_capacity']} · "
-            f"next {counters['next']}\n"
-            f"LB sequences 1→8: {sensor_sequences} · normalized states: {barrier_states}"
         )
 
     def _cycle_state_changed(self, state, detail: str) -> None:
@@ -1341,11 +1468,15 @@ class MainWindow(QMainWindow):
         self.open_config_button.setEnabled(configuration_editable)
         self.edit_config_button.setEnabled(configuration_editable and self.part is not None)
         self.load_yolo_button.setEnabled(configuration_editable and self.part is not None)
-        machine_editable = configuration_editable and self._roadmap_mode
-        self.use_ur_angle.setEnabled(machine_editable)
-        self.ur_angle_input.setEnabled(machine_editable and self.use_ur_angle.isChecked())
+        machine_editable = configuration_editable and self.part is not None
         self.conveyor_speed_input.setEnabled(configuration_editable)
         self.handoff_slider.setEnabled(configuration_editable)
+        self.input_slider.setEnabled(configuration_editable)
+        self.boundary_form.setRowVisible(
+            self.input_boundary_row,
+            configuration_editable or state in {BatchState.COMPLETE, BatchState.FAULT},
+        )
+        self.production_mode_input.setEnabled(configuration_editable)
         self.apply_machine_parameters_button.setEnabled(machine_editable)
         terminal = state in {BatchState.COMPLETE, BatchState.FAULT}
         self.start_button.setText(
@@ -1358,10 +1489,26 @@ class MainWindow(QMainWindow):
                 and self._preflight_ok
             )
         )
-        self.stop_button.setEnabled(state is BatchState.STARTING)
+        self.stop_button.setText(
+            "Cancel production start" if state == BatchState.STARTING else "Stop production run"
+        )
+        self.stop_button.setEnabled(
+            state in {
+                BatchState.STARTING, BatchState.RUNNING, BatchState.FINISHING, BatchState.DRAINING
+            }
+        )
         self._update_manual_conveyor_buttons()
 
     def _production_warning(self, code: str, detail: str) -> None:
+        if self.controller.continuous and code in {
+            "plc_airborne_sensor_skip",
+            "plc_airborne_duplicate_edge",
+            "plc_light_barrier_no_clear_ignored",
+            "plc_light_barrier_queue_edge_ignored",
+            "plc_light_barrier_order_edge_ignored",
+        }:
+            LOGGER.info("PLC light-barrier notice %s: %s", code, detail)
+            return
         LOGGER.warning("Production warning %s: %s", code, detail)
         self.warning_banner.setText(
             f"⚠ WARNUNG · {time.strftime('%H:%M:%S')} · {code}\n"
@@ -1379,11 +1526,13 @@ class MainWindow(QMainWindow):
             if self.controller.state in {BatchState.COMPLETE, BatchState.FAULT}:
                 self.controller.prepare_next_cycle()
                 return
-            if self._roadmap_mode and not self._machine_parameters_confirmed:
+            if self._manual_conveyor_command_pending:
+                raise RuntimeError("Wait for manual conveyor preparation or stop it first")
+            if not self._machine_parameters_confirmed:
                 self.apply_machine_parameters(show_error=False)
                 if not self._machine_parameters_confirmed:
                     raise RuntimeError(
-                        "The currently entered conveyor/UR values could not be applied."
+                        "The currently entered conveyor speed could not be applied."
                     )
             self.controller.start_run()
         except Exception as exc:
@@ -1391,18 +1540,36 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._shutting_down = True
+        self._manual_start_requested = False
+        self._manual_preparation_name = None
+        self.pressure.cancel_preparation()
+        if self.controller.continuous:
+            self.controller.abort_run()
+        elif self.controller.state == BatchState.STARTING:
+            self.controller.stop()
         self._yolo_reload_pending = False
         self.freshness_timer.stop()
         self.exposure_apply_timer.stop()
         self.warning_display_timer.stop()
         super().closeEvent(event)
+        self.shutdown_requested.emit()
 
     async def shutdown_async(self) -> None:
         self._shutting_down = True
+        self._manual_start_requested = False
+        self._manual_preparation_name = None
+        self.pressure.cancel_preparation()
+        if self.controller.continuous:
+            self.controller.abort_run()
+        elif self.controller.state == BatchState.STARTING:
+            self.controller.stop()
         self._yolo_reload_pending = False
         self.freshness_timer.stop()
         self.exposure_apply_timer.stop()
         self.warning_display_timer.stop()
+        # Finish the stopped PLC handover before BLE or model cleanup can delay
+        # application exit or fail independently.
+        self.pressure.shutdown()
         if self._light_connect_task and not self._light_connect_task.done():
             self._light_connect_task.cancel()
             done, pending = await asyncio.wait({self._light_connect_task}, timeout=1.0)
@@ -1416,4 +1583,3 @@ class MainWindow(QMainWindow):
         self.camera.shutdown()
         await self.light1.shutdown()
         await self.light2.shutdown()
-        self.pressure.shutdown()

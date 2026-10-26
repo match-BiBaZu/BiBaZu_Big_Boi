@@ -64,6 +64,21 @@ class ProbeUiTests(unittest.TestCase):
                         config = tab.config(0.005, 1)
                         self.assertEqual(config.sensors, (first, second))
 
+    def test_vertical_layout_selects_optical_midpoint_but_keeps_force_maximum(self):
+        with patch("probe_calibration_ui.QSettings") as settings:
+            settings.return_value.value.side_effect = lambda key, default=None, **kwargs: default
+            tab = ProbeTab("nozzle")
+        tab.suggest_duration.click()
+        self.assertEqual(tab.config(0.005, 1).nozzle_layout, "standard")
+        tab.nozzle_layout.setCurrentIndex(tab.nozzle_layout.findData("vertical"))
+        self.assertEqual(tab.config(0.005, 1).nozzle_layout, "vertical")
+        self.assertIn("Lichtschranke → Düse", tab.path_hint.text())
+        self.assertIn("Stiftmitte", tab.description.text())
+        self.assertIn("Maximum", tab.description.text())
+        tab.busy = True
+        tab.update_controls()
+        self.assertFalse(tab.nozzle_layout.isEnabled())
+
     def test_manual_move_submits_negative_target(self):
         ui = ProbeCalibrationUi("test", "127.0.0.1", 851, "unused.json")
         try:

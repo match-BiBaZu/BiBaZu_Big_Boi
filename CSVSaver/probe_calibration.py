@@ -255,32 +255,6 @@ def force_peak(samples, noise_n, window=20):
     return peaks, smoothed
 
 
-def force_center(curve, peak):
-    """Midpoint of the two interpolated half-height crossings around |F1+F2|'s peak."""
-    threshold = abs(peak["force_n"]) / 2
-    i = min(range(len(curve)), key=lambda j: abs(curve[j]["time_ns"] - peak["time_ns"]))
-    first = last = i
-    while first > 0 and abs(curve[first - 1]["force_total_n"]) >= threshold:
-        first -= 1
-    while last < len(curve) - 1 and abs(curve[last + 1]["force_total_n"]) >= threshold:
-        last += 1
-    if first == 0 or last == len(curve) - 1:
-        raise MeasurementError("Kraftmitte nicht bestimmbar: beide Flanken bei halber Peakhöhe müssen im Messbereich liegen.")
-
-    def crossing(a, b):
-        fa, fb = abs(a["force_total_n"]), abs(b["force_total_n"])
-        fraction = (threshold - fa) / (fb - fa)
-        return {key: a[key] + fraction * (b[key] - a[key]) for key in ("position_mm", "time_ns")}
-
-    entry = crossing(curve[first - 1], curve[first])
-    exit_ = crossing(curve[last], curve[last + 1])
-    return {"position_mm": (entry["position_mm"] + exit_["position_mm"]) / 2,
-            "time_ns": (entry["time_ns"] + exit_["time_ns"]) / 2,
-            "entry": entry, "exit": exit_, "half_height_abs_n": threshold,
-            "width_mm": abs(exit_["position_mm"] - entry["position_mm"]),
-            "method": "half_height_midpoint"}
-
-
 def optical_center(edges):
     on, off = edges["on"], edges["off"]
     return {"position_mm": (on["position_mm"] + off["position_mm"]) / 2,
@@ -354,7 +328,7 @@ class ProbeRecording:
                                       "nozzle_layout": config.nozzle_layout if config.mode == "nozzle" else None,
                                       "nozzle_reference_direction": ("same_direction" if config.nozzle_layout == "vertical" else "backward") if config.mode == "nozzle" else None,
                                       "nozzle_reference_method": ("switch_midpoint" if config.nozzle_layout == "vertical" else "on_edge") if config.mode == "nozzle" else None,
-                                      "force_position_method": ("half_height_midpoint" if config.nozzle_layout == "vertical" else "absolute_peak") if config.mode == "nozzle" else None,
+                                      "force_position_method": "absolute_peak" if config.mode == "nozzle" else None,
                                       "nozzle_outbound_order": (["barrier", "nozzle"] if config.nozzle_layout == "vertical" else ["nozzle", "barrier"]) if config.mode == "nozzle" else None,
                                       "valve_open_phase": "home_before_outbound" if config.mode == "nozzle" else None},
                          "status": "running", "rows": [], "summary": {}, "apply_allowed": False,

@@ -35,6 +35,8 @@ class InferenceConfig:
     device: str = "auto"
     expected_class_ids: tuple[int, ...] | None = None
     class_to_pose: tuple[tuple[int, int], ...] = ()
+    pose_cutoff_ratio: float = POSE_CUTOFF_RATIO
+    input_line_ratio: float = 1.0
 
     def validated(self, *, require_model: bool = True) -> InferenceConfig:
         model_path = Path(self.model_path).expanduser().resolve()
@@ -48,6 +50,10 @@ class InferenceConfig:
             raise ValueError("Image size must be a multiple of 32")
         if not 0.2 <= self.max_fps <= 60:
             raise ValueError("Inference rate must be between 0.2 and 60 FPS")
+        if not 0.05 <= self.pose_cutoff_ratio <= 0.80:
+            raise ValueError("Profile handoff line must be between 5 and 80 percent")
+        if not self.pose_cutoff_ratio < self.input_line_ratio <= 1.0:
+            raise ValueError("Input boundary must be right of the handoff line and at most 100%")
         class_ids = [class_id for class_id, _pose_id in self.class_to_pose]
         pose_ids = [pose_id for _class_id, pose_id in self.class_to_pose]
         if len(class_ids) != len(set(class_ids)):
@@ -85,9 +91,7 @@ def _overlap_ratios(first: Detection, second: Detection) -> tuple[float, float]:
     if first_area <= 0.0 or second_area <= 0.0:
         return 0.0, 0.0
     try:
-        intersection = float(
-            cv2.intersectConvexConvex(first_polygon, second_polygon)[0]
-        )
+        intersection = float(cv2.intersectConvexConvex(first_polygon, second_polygon)[0])
     except cv2.error:
         return 0.0, 0.0
     intersection = max(0.0, intersection)
@@ -141,9 +145,7 @@ def suppress_duplicate_detections(
                 _normalized_center_distance(candidate, detections[selected_index])
                 <= center_distance_threshold
             )
-            if centers_coincide and (
-                iou >= iou_threshold or containment >= containment_threshold
-            ):
+            if centers_coincide and (iou >= iou_threshold or containment >= containment_threshold):
                 duplicate = True
                 break
         if not duplicate:
@@ -250,13 +252,29 @@ def overlay_labels(
     return f"Pose {pose_id}", f"{detection.confidence:.0%}"
 
 
+def filter_input_detections(
+    detections: tuple[Detection, ...], width: int, input_line_ratio: float = 1.0
+) -> tuple[Detection, ...]:
+    """Ignore entry-side objects until their whole box is left of the boundary."""
+    if input_line_ratio >= 1.0:
+        return detections
+    boundary_x = width * input_line_ratio
+    return tuple(
+        detection for detection in detections
+        if max(x for x, _y in detection.corners) < boundary_x
+    )
+
+
 def draw_overlay(
     image: np.ndarray,
     detections: tuple[Detection, ...],
     class_to_pose: dict[int, int] | None = None,
+    *,
+    pose_cutoff_ratio: float = POSE_CUTOFF_RATIO,
+    input_line_ratio: float = 1.0,
 ) -> np.ndarray:
     annotated = np.ascontiguousarray(image).copy()
-    cutoff_x = round(annotated.shape[1] * POSE_CUTOFF_RATIO)
+    cutoff_x = round(annotated.shape[1] * pose_cutoff_ratio)
     cv2.line(
         annotated,
         (cutoff_x, 0),
@@ -266,8 +284,8 @@ def draw_overlay(
         cv2.LINE_AA,
     )
     palette = ((34, 197, 94), (249, 115, 22))
-    for detection in detections:
-        if not before_pose_cutoff(detection, annotated.shape[1]):
+    for detection in filter_input_detections(detections, annotated.shape[1], input_line_ratio):
+        if not before_pose_cutoff(detection, annotated.shape[1], cutoff_ratio=pose_cutoff_ratio):
             continue
         color = palette[detection.class_id % len(palette)]
         points = np.rint(np.asarray(detection.corners)).astype(np.int32)
@@ -287,12 +305,8 @@ def draw_overlay(
             cv2.LINE_AA,
         )
         if secondary:
-            primary_width = cv2.getTextSize(
-                primary, cv2.FONT_HERSHEY_SIMPLEX, 1.15, 3
-            )[0][0]
-            secondary_width = cv2.getTextSize(
-                secondary, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
-            )[0][0]
+            primary_width = cv2.getTextSize(primary, cv2.FONT_HERSHEY_SIMPLEX, 1.15, 3)[0][0]
+            secondary_width = cv2.getTextSize(secondary, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)[0][0]
             secondary_x = x + primary_width + 14
             if secondary_x + secondary_width >= annotated.shape[1]:
                 secondary_x = max(0, x - secondary_width - 14)
@@ -337,9 +351,7 @@ class PoseConsensus:
             self.reset()
             return None
         detection = frame.detections[0]
-        if detection.class_id not in class_to_pose or not fully_visible(
-            detection, width, height
-        ):
+        if detection.class_id not in class_to_pose or not fully_visible(detection, width, height):
             self.reset()
             return None
         if self._observations and frame.timestamp <= self._observations[-1].timestamp:
@@ -380,6 +392,14 @@ class InferenceWorker(QThread):
         self._condition = threading.Condition()
         self._latest: tuple[np.ndarray, float] | None = None
         self._stopping = False
+
+    def set_pose_cutoff_ratio(self, ratio: float) -> None:
+        with self._condition:
+            self._config = replace(self._config, pose_cutoff_ratio=ratio).validated()
+
+    def set_input_line_ratio(self, ratio: float) -> None:
+        with self._condition:
+            self._config = replace(self._config, input_line_ratio=ratio).validated()
 
     def submit(self, image: np.ndarray, timestamp: float) -> None:
         if image.ndim != 3 or image.shape[2] != 3:
@@ -456,10 +476,14 @@ class InferenceWorker(QThread):
                     verbose=False,
                 )
                 result = results[0] if results else None
+                with self._condition:
+                    config = self._config
                 detections = (
                     ()
                     if result is None
-                    else suppress_duplicate_detections(extract_detections(result))
+                    else suppress_duplicate_detections(filter_input_detections(
+                        extract_detections(result), image.shape[1], config.input_line_ratio
+                    ))
                 )
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 self.frame_ready.emit(
@@ -467,7 +491,9 @@ class InferenceWorker(QThread):
                         draw_overlay(
                             image,
                             detections,
-                            dict(self._config.class_to_pose),
+                            dict(config.class_to_pose),
+                            pose_cutoff_ratio=config.pose_cutoff_ratio,
+                            input_line_ratio=config.input_line_ratio,
                         ),
                         detections,
                         elapsed_ms,

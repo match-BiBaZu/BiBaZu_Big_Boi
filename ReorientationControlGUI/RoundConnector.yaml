@@ -1,0 +1,15 @@
+schema_version: 3
+part_name: RoundConnector
+model_path: D:\1_Yolo\RoundConnectorOctober\RoundConnectorOctober.pt
+poses:
+- id: 0
+  label: Pose 0
+  model_class_id: 0
+- id: 1
+  label: Pose 1
+  model_class_id: 1
+target_pose: 0
+transitions:
+- from_pose: 1
+  to_pose: 0
+  pressure_profile: D:\3_PressureProfiles\RoundConnector\SteckerP1zuP0.json

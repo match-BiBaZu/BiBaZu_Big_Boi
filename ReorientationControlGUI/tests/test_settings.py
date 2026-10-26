@@ -35,6 +35,42 @@ def test_legacy_plc_ip_is_migrated() -> None:
     assert _migrated_plc_ip("192.168.0.42") == "192.168.0.42"
 
 
+def test_production_mode_and_handoff_position_are_persisted(tmp_path, monkeypatch) -> None:
+    values = {}
+
+    class MemorySettings:
+        def __init__(self, *_args):
+            pass
+
+        def allKeys(self):
+            return list(values)
+
+        def value(self, key, default):
+            return values.get(key, default)
+
+        def setValue(self, key, value):
+            values[key] = value
+
+        def sync(self):
+            pass
+
+    monkeypatch.setattr("bibazu_reorientation.settings.QSettings", MemorySettings)
+    settings = replace(
+        valid_settings(tmp_path), handoff_line_percent=45, input_line_percent=75,
+        production_mode="continuous"
+    )
+    settings.save()
+    loaded = AppSettings.load()
+    assert loaded.handoff_line_percent == 45
+    assert loaded.input_line_percent == 75
+    assert loaded.production_mode == "continuous"
+    with pytest.raises(ValueError, match="Production mode"):
+        replace(settings, production_mode="invalid").validated()
+    for invalid in (45, 101):
+        with pytest.raises(ValueError, match="Input boundary"):
+            replace(settings, input_line_percent=invalid).validated()
+
+
 def test_hardware_dialog_exposes_all_connection_fields(qtbot, tmp_path) -> None:
     dialog = HardwareSettingsDialog(valid_settings(tmp_path))
     qtbot.addWidget(dialog)

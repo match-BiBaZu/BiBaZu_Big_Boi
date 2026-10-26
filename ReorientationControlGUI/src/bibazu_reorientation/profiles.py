@@ -7,9 +7,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from bibazu_reorientation.conveyor import MAX_SPEED_MM_PER_SEC, validate_speed
 from bibazu_reorientation.models import (
     ArrayProfile,
-    ConveyorCalibration,
     PressureBaseline,
     PressureProfile,
     ProfileWritePlan,
@@ -17,18 +17,18 @@ from bibazu_reorientation.models import (
 
 ARRAY_COUNT = 4
 NOZZLES_PER_ARRAY = 6
-PROFILE_VERSION_MAX = 9
+# Pressure Control versions 10–13 retain the four-array/six-nozzle layout.
+# Additional machine snapshots and UI timing options do not extend the batch
+# queue contract; its PLC continues to calculate offsets from light-barrier speed.
+PROFILE_VERSION_MAX = 13
 
 
 @dataclass(slots=True, frozen=True)
 class MachineParameterComparison:
     """Global machine values found in a set of transition profiles."""
 
-    ur_angles_deg: tuple[float | None, ...]
     conveyor_speeds_mm_per_sec: tuple[float, ...]
-    common_ur_angle_deg: float | None
     common_conveyor_speed_mm_per_sec: float | None
-    ur_angle_conflict: bool
     conveyor_speed_conflict: bool
 
 
@@ -37,16 +37,11 @@ def compare_machine_parameters(
 ) -> MachineParameterComparison:
     if not profiles:
         raise ValueError("At least one pressure profile is required")
-    angles = tuple(profile.ur_ry_angle_deg for profile in profiles)
     speeds = tuple(profile.conveyor_speed_mm_per_sec for profile in profiles)
-    unique_angles = set(angles)
     unique_speeds = set(speeds)
     return MachineParameterComparison(
-        ur_angles_deg=angles,
         conveyor_speeds_mm_per_sec=speeds,
-        common_ur_angle_deg=angles[0] if len(unique_angles) == 1 else None,
         common_conveyor_speed_mm_per_sec=speeds[0] if len(unique_speeds) == 1 else None,
-        ur_angle_conflict=len(unique_angles) != 1,
         conveyor_speed_conflict=len(unique_speeds) != 1,
     )
 
@@ -55,23 +50,17 @@ def compose_pressure_profiles(
     profiles: tuple[PressureProfile, ...],
     *,
     conveyor_speed_mm_per_sec: float,
-    ur_ry_angle_deg: float | None,
+    ur_ry_angle_deg: float | None = None,
 ) -> PressureProfile:
-    """Merge active, non-overlapping arrays for one planned roadmap path."""
+    """Merge active arrays; the legacy angle keyword is accepted but has no effect."""
 
     if not profiles:
         raise ValueError("At least one pressure profile is required")
-    if not math.isfinite(conveyor_speed_mm_per_sec) or not 0 < conveyor_speed_mm_per_sec <= 5000:
-        raise ValueError("Conveyor speed must be between 0 and 5000 mm/s")
-    if ur_ry_angle_deg is not None and (
-        not math.isfinite(ur_ry_angle_deg) or not 0.0 <= ur_ry_angle_deg <= 21.0
-    ):
-        raise ValueError("UR Ry angle must be between 0.0 and 21.0 degrees")
+    validate_speed(conveyor_speed_mm_per_sec)
     if any(profile.conveyor_reverse for profile in profiles):
         raise ValueError("Roadmap execution does not support reverse conveyor motion")
     if any(
-        conveyor_speed_mm_per_sec > profile.conveyor_max_speed_mm_per_sec
-        for profile in profiles
+        conveyor_speed_mm_per_sec > profile.conveyor_max_speed_mm_per_sec for profile in profiles
     ):
         raise ValueError("Selected conveyor speed exceeds a profile's maximum speed")
 
@@ -80,7 +69,6 @@ def compose_pressure_profiles(
         "light_barrier_debounce_ms",
         "light_barrier_inverted",
         "light_barrier_debounce_enabled",
-        "conveyor_calibration",
     )
     for field in shared_fields:
         values = {getattr(profile, field) for profile in profiles}
@@ -117,19 +105,23 @@ def compose_pressure_profiles(
         raise ValueError("The planned transition profiles do not activate any nozzle array")
 
     signature = "|".join(
-        [*(profile.sha256 for profile in profiles), f"speed={conveyor_speed_mm_per_sec}",
-         f"ur={ur_ry_angle_deg}"]
+        [
+            *(profile.sha256 for profile in profiles),
+            f"speed={conveyor_speed_mm_per_sec}",
+            "hardware=beckhoff",
+        ]
     ).encode("utf-8")
     return replace(
         base,
         source_version=max(profile.source_version for profile in profiles),
         created_at=None,
-        ur_ry_angle_deg=ur_ry_angle_deg,
+        ur_ry_angle_deg=None,
         conveyor_enabled=True,
         conveyor_reverse=False,
         conveyor_speed_mm_per_sec=float(conveyor_speed_mm_per_sec),
         conveyor_max_speed_mm_per_sec=min(
-            profile.conveyor_max_speed_mm_per_sec for profile in profiles
+            MAX_SPEED_MM_PER_SEC,
+            *(profile.conveyor_max_speed_mm_per_sec for profile in profiles),
         ),
         force_response_delays_ms=tuple(force_delays),
         force_single_nozzle_response_delays_ms=tuple(single_delays),
@@ -177,9 +169,7 @@ def _bool_list(value: Any, field: str, length: int, fallback: tuple[bool, ...]) 
     return tuple(value)
 
 
-def _barrier_bool_list(
-    value: Any, field: str, fallback: tuple[bool, ...]
-) -> tuple[bool, ...]:
+def _barrier_bool_list(value: Any, field: str, fallback: tuple[bool, ...]) -> tuple[bool, ...]:
     if isinstance(value, list) and len(value) == 6:
         value = [*value, *fallback[6:]]
     return _bool_list(value, field, 8, fallback)
@@ -293,38 +283,13 @@ def load_pressure_profile(
     version = _integer(payload.get("version", 1), "version", 1, PROFILE_VERSION_MAX)
     baseline = baseline or PressureBaseline()
 
-    calibration_raw = payload.get("conveyor_calibration")
-    if calibration_raw is None:
-        calibration = baseline.conveyor_calibration
-    elif not isinstance(calibration_raw, dict):
-        raise ValueError("conveyor_calibration must be an object")
-    else:
-        calibration = ConveyorCalibration(
-            marker_distance_mm=_number(
-                calibration_raw.get(
-                    "marker_distance_mm", baseline.conveyor_calibration.marker_distance_mm
-                ),
-                "calibration.marker_distance_mm",
-                1.0,
-                5000.0,
-            ),
-            mm_per_full_step=_number(
-                calibration_raw.get(
-                    "mm_per_full_step", baseline.conveyor_calibration.mm_per_full_step
-                ),
-                "calibration.mm_per_full_step",
-                0.000001,
-                1000.0,
-            ),
-            valid=_boolean(calibration_raw.get("valid"), "calibration.valid", False),
-        )
-    ur_angle = payload.get("ur_ry_angle_deg")
-    ur_angle_value = None if ur_angle is None else _number(ur_angle, "ur_ry_angle_deg", 0.0, 21.0)
+    # Belt calibration belongs to the PLC; old profile machine metadata is inert.
+    calibration = baseline.conveyor_calibration
     profile = PressureProfile(
         source_path=source,
         source_version=version,
         created_at=str(payload["created_at"]) if "created_at" in payload else None,
-        ur_ry_angle_deg=ur_angle_value,
+        ur_ry_angle_deg=None,
         light_barrier_debounce_ms=_integer(
             payload.get("light_barrier_debounce_ms", baseline.light_barrier_debounce_ms),
             "light_barrier_debounce_ms",
@@ -363,9 +328,7 @@ def load_pressure_profile(
         # Force response is a global machine setting. Legacy profile fields are
         # intentionally ignored so selecting a transition cannot overwrite it.
         force_response_delays_ms=baseline.force_response_delays_ms,  # type: ignore[arg-type]
-        force_single_nozzle_response_delays_ms=(
-            baseline.force_single_nozzle_response_delays_ms
-        ),  # type: ignore[arg-type]
+        force_single_nozzle_response_delays_ms=(baseline.force_single_nozzle_response_delays_ms),  # type: ignore[arg-type]
         arrays=_normalize_arrays(payload.get("arrays", [])),
         sha256=hashlib.sha256(raw).hexdigest(),
     )
@@ -376,8 +339,6 @@ def load_pressure_profile(
             raise ValueError("V1 does not support reverse conveyor motion")
         if profile.conveyor_speed_mm_per_sec <= 0:
             raise ValueError("The transition profile requires a positive conveyor speed")
-        if not profile.conveyor_calibration.valid:
-            raise ValueError("A valid conveyor calibration is required")
         if profile.active_array_mask == 0:
             raise ValueError("The transition profile must activate at least one nozzle array")
     return profile
@@ -398,14 +359,14 @@ SAFE_STOP_VALUES: dict[str, bool | int | float] = {
 
 
 def build_write_plan(profile: PressureProfile, *, actuate: bool) -> ProfileWritePlan:
+    validate_speed(profile.conveyor_speed_mm_per_sec, profile.conveyor_max_speed_mm_per_sec)
     configuration: dict[str, bool | int | float] = {
         "MAIN.GuiBarrierCalibrationDebounceMs": profile.light_barrier_debounce_ms,
         "MAIN.GuiConveyorReverse": False,
         "MAIN.GuiConveyorSpeedMmPerSec": profile.conveyor_speed_mm_per_sec,
-        "MAIN.GuiConveyorMaxSpeedMmPerSec": profile.conveyor_max_speed_mm_per_sec,
-        "MAIN.GuiCalibrationMarkerDistanceMm": profile.conveyor_calibration.marker_distance_mm,
-        "MAIN.GuiConveyorMmPerFullStep": profile.conveyor_calibration.mm_per_full_step,
-        "MAIN.GuiConveyorCalibrationValid": profile.conveyor_calibration.valid,
+        "MAIN.GuiConveyorMaxSpeedMmPerSec": min(
+            MAX_SPEED_MM_PER_SEC, profile.conveyor_max_speed_mm_per_sec
+        ),
     }
     configuration.update(
         {

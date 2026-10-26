@@ -18,7 +18,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from probe_calibration import (
     MASK, CYCLES, AXIS_POSITION_MIN_MM, AXIS_POSITION_MAX_MM,
     BarrierHistory, EdgeCapture, MeasurementError, PositionTimeline,
-    ProbeConfig, ProbeRecording, barrier_row, force_peak, force_center, optical_center,
+    ProbeConfig, ProbeRecording, barrier_row, force_peak, optical_center,
     persist_spacing, load_failed_session,
 )
 from probe_vendor.colibri import ColibriController
@@ -638,8 +638,6 @@ class ProbeRunner:
                 else:
                     forward_peaks, forward_curve = force_peak(
                         self.force_rows, self.forces.noise_n, config.force_smoothing_samples)
-                    if config.nozzle_layout == "vertical":
-                        forward_peaks["force_total_n"]["center"] = force_center(forward_curve, forward_peaks["force_total_n"])
                     # The return reference is not known yet. Keep the outbound result
                     # provisional so an abort still retains its peaks and curve.
                     self.recording.document["pending_nozzle_cycle"] = {
@@ -666,7 +664,6 @@ class ProbeRunner:
                     reference = backward_edges[config.array * 2]["on"]
                     forward_reference = reference
                     if config.nozzle_layout == "vertical":
-                        backward_peaks["force_total_n"]["center"] = force_center(backward_curve, backward_peaks["force_total_n"])
                         forward_reference = optical_center(forward_edges[config.array * 2])
                         reference = optical_center(backward_edges[config.array * 2])
                     self._add_nozzle_row(cycle, "forward", forward_peaks, forward_curve,
@@ -698,16 +695,16 @@ class ProbeRunner:
     def _add_nozzle_row(self, cycle, direction, peaks, curve, edges, reference, opened_ms):
         vertical = self.config.nozzle_layout == "vertical"
         peak = peaks["force_total_n"]
-        force_position = peak["center"]["position_mm"] if vertical else peak["position_mm"]
+        force_position = peak["position_mm"]
         if vertical and self.config.outward_direction * (force_position - reference["position_mm"]) <= 0:
-            raise MeasurementError("Vertikaler Messaufbau: Kraftmitte muss auf der Hinfahrt hinter der Lichtschrankenmitte liegen. Aufbau und Fahrtrichtung prüfen.")
+            raise MeasurementError("Vertikaler Messaufbau: Kraftmaximum muss auf der Hinfahrt hinter der Lichtschrankenmitte liegen. Aufbau und Fahrtrichtung prüfen.")
         distance = abs(force_position - reference["position_mm"])
         if distance <= 0:
             raise MeasurementError("Kraftpeak und Lichtschrankenbezug liegen an derselben Position.")
         self.recording.add({"cycle": cycle, "direction": direction, "distance_mm": distance,
                             "reference_position_mm": reference["position_mm"], "peaks": peaks,
                             "force_position_mm": force_position,
-                            "force_position_method": "half_height_midpoint" if vertical else "absolute_peak",
+                            "force_position_method": "absolute_peak",
                             "reference_direction": direction if vertical else "backward",
                             "reference_sensor": self.config.array * 2,
                             "reference_method": "switch_midpoint" if vertical else "on_edge",

@@ -8,10 +8,12 @@ import pytest
 
 from bibazu_reorientation.inference import (
     InferenceConfig,
+    InferenceWorker,
     PoseConsensus,
     before_pose_cutoff,
     draw_overlay,
     extract_detections,
+    filter_input_detections,
     overlay_labels,
     suppress_duplicate_detections,
     validate_model_classes,
@@ -224,3 +226,66 @@ def test_pose_prediction_is_ignored_at_ten_percent_left_cutoff(monkeypatch) -> N
     draw_overlay(np.zeros((100, 400, 3), np.uint8), (crossing,), {1: 10})
 
     assert calls == []
+
+
+@pytest.mark.parametrize("right_edge, accepted", [(69, True), (70, False), (95, False)])
+def test_input_region_requires_entire_box_left_of_hidden_boundary(right_edge, accepted):
+    detection = Detection(
+        0, "Pose 0", 0.9,
+        ((right_edge - 10, 30), (right_edge, 35), (right_edge - 2, 50), (right_edge - 12, 45)),
+        "obb",
+    )
+    filtered = filter_input_detections((detection,), 100, 0.7)
+    assert filtered == ((detection,) if accepted else ())
+
+
+def test_ignored_input_object_has_no_box_label_or_visible_input_line():
+    image = np.zeros((100, 100, 3), np.uint8)
+    detection = Detection(0, "Pose 0", 0.9, ((80, 30), (95, 30), (95, 50), (80, 50)), "detect")
+    annotated = draw_overlay(
+        image, (detection,), {0: 0}, pose_cutoff_ratio=0.3, input_line_ratio=0.7
+    )
+    expected = draw_overlay(image, (), pose_cutoff_ratio=0.3)
+    np.testing.assert_array_equal(annotated, expected)
+    assert not annotated[:, 70:].any()
+    assert annotated[:, 30].any()  # The existing yellow handoff line remains.
+
+
+def test_worker_filters_input_detections_before_display_and_emission(qtbot, tmp_path):
+    model_path = tmp_path / "model.pt"
+    model_path.write_bytes(b"model")
+    result = SimpleNamespace(
+        boxes=SimpleNamespace(
+            xyxy=np.array([[80, 30, 95, 50], [50, 30, 65, 50]]),
+            cls=np.array([0, 1]), conf=np.array([0.95, 0.9]),
+        ),
+        obb=None, names={0: "Pose 0", 1: "Pose 1"},
+    )
+    model = SimpleNamespace(names=result.names, predict=lambda **_kwargs: [result])
+    worker = InferenceWorker(
+        InferenceConfig(
+            model_path, device="cpu", expected_class_ids=(0, 1),
+            class_to_pose=((0, 0), (1, 1)), pose_cutoff_ratio=0.3,
+        ),
+        model_factory=lambda _path: model,
+    )
+    worker.set_input_line_ratio(0.7)
+    frames, errors = [], []
+    worker.frame_ready.connect(frames.append)
+    worker.error.connect(errors.append)
+    try:
+        worker.start()
+        worker.submit(np.zeros((100, 100, 3), np.uint8), time.time())
+        qtbot.waitUntil(lambda: bool(frames or errors))
+        assert errors == []
+        assert [detection.class_id for detection in frames[0].detections] == [1]
+    finally:
+        assert worker.stop()
+
+
+@pytest.mark.parametrize("input_ratio", [0.3, 0.2, 1.01])
+def test_invalid_input_boundary_cannot_cover_the_handoff_zone(tmp_path, input_ratio):
+    with pytest.raises(ValueError, match="Input boundary"):
+        InferenceConfig(
+            tmp_path / "model.pt", pose_cutoff_ratio=0.3, input_line_ratio=input_ratio
+        ).validated(require_model=False)

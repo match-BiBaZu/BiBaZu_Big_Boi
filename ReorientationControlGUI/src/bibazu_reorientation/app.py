@@ -23,9 +23,10 @@ def _exception_hook(exc_type: type[BaseException], exc: BaseException, trace: An
 
 async def _run(app: QApplication) -> int:
     window = MainWindow(AppSettings.load())
-    window.show()
     done = asyncio.Event()
+    window.shutdown_requested.connect(done.set)
     app.aboutToQuit.connect(done.set)
+    window.show()
     await done.wait()
     await window.shutdown_async()
     return 0
@@ -35,6 +36,9 @@ def main() -> int:
     configure_logging()
     sys.excepthook = _exception_hook
     app = QApplication(sys.argv)
+    # Closing the window requests cleanup; keep Qt running until ADS has
+    # released the stopped PLC owner and asynchronous hardware cleanup finishes.
+    app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("BiBaZu Reorientation Control")
     plc_lease = HardwareLease.acquire(PLC_CONTROL_LEASE_NAME)
     if plc_lease is None:

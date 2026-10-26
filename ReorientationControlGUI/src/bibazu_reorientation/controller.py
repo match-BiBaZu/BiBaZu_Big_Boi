@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from bibazu_reorientation.config import TransitionResolver
+from bibazu_reorientation.conveyor import MAX_SPEED_MM_PER_SEC
 from bibazu_reorientation.hardware.pressure import PressureAdapter
 from bibazu_reorientation.inference import PoseConsensus
 from bibazu_reorientation.journal import RunJournal
@@ -44,7 +45,6 @@ class ReorientationController(QObject):
         self.model_ready = False
         self.camera_fresh = False
         self.lights_ready = (False, False)
-        self.ur_applied: float | None = None
         self._last_preflight_checks: dict[str, bool] | None = None
         self._decision_frame: InferenceFrame | None = None
         self._observations = ()
@@ -57,6 +57,7 @@ class ReorientationController(QObject):
         self._started_at: datetime | None = None
         self._cycle_id = ""
         self._session = None
+        self._preparation_name: str | None = None
         self._plan = None
         self._roadmap_mode = False
         self._roadmap_profiles: dict[str, PressureProfile] = {}
@@ -85,6 +86,7 @@ class ReorientationController(QObject):
     def set_configuration(self, part: PartDefinition, profile: PressureProfile) -> None:
         if self.state not in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
             raise RuntimeError("The configuration cannot be changed during a cycle")
+        profile = replace(profile, ur_ry_angle_deg=None)
         self.part, self.profile = part, profile
         self._roadmap_mode = False
         self._roadmap_profiles = {}
@@ -120,7 +122,6 @@ class ReorientationController(QObject):
         profiles_by_edge: dict[str, PressureProfile],
         *,
         conveyor_speed_mm_per_sec: float,
-        ur_ry_angle_deg: float | None,
     ) -> None:
         if self.state not in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
             raise RuntimeError("The configuration cannot be changed during a cycle")
@@ -139,7 +140,6 @@ class ReorientationController(QObject):
         transport = compose_pressure_profiles(
             (first,),
             conveyor_speed_mm_per_sec=conveyor_speed_mm_per_sec,
-            ur_ry_angle_deg=ur_ry_angle_deg,
         )
         self.part = part
         self.profile = transport
@@ -148,8 +148,6 @@ class ReorientationController(QObject):
         self._roadmap_profiles = dict(profiles_by_edge)
         self._selected_transitions = ()
         self._selected_profiles = ()
-        if self.ur_applied != ur_ry_angle_deg:
-            self.ur_applied = None
         self._refresh_preflight()
 
     def set_model_ready(self, ready: bool) -> None:
@@ -193,12 +191,6 @@ class ReorientationController(QObject):
     def set_light_addresses(self, first: str, second: str) -> None:
         self._light_addresses = (first, second)
 
-    def set_ur_applied(self, angle: float | None) -> None:
-        if self.ur_applied == angle:
-            return
-        self.ur_applied = angle
-        self._refresh_preflight()
-
     def preflight(self) -> dict[str, bool]:
         p = self.profile
         s = self.snapshot
@@ -207,16 +199,19 @@ class ReorientationController(QObject):
             "YOLO model warmed up": self.model_ready,
             "Fresh camera frame": self.camera_fresh,
             "PLC connected": s.connected,
-            "Conveyor stopped": s.conveyor_motion_state == 0 and not s.stepper_busy,
+            "Conveyor speed valid": p is not None
+            and (
+                0
+                < p.conveyor_speed_mm_per_sec
+                <= min(MAX_SPEED_MM_PER_SEC, p.conveyor_max_speed_mm_per_sec)
+            ),
+            "Beckhoff velocity-only PLC": s.conveyor_velocity_only,
             "Calibration valid": s.calibration_valid,
             "Arrays idle / valves closed": s.array_states == (2, 2, 2, 2)
             and s.pending_mask == 0
             and s.open_valve_mask == 0,
             "Drive and VTEM fault-free": not s.stepper_error and s.vtem_error_codes == (0, 0),
             "Light barriers clear": self._barriers_clear_long_enough(),
-            "UR angle acknowledged": p is None
-            or p.ur_ry_angle_deg is None
-            or self.ur_applied == p.ur_ry_angle_deg,
         }
 
     def _refresh_preflight(self) -> None:
@@ -268,7 +263,7 @@ class ReorientationController(QObject):
         self.set_camera_fresh(time.time() - frame.timestamp <= 1.0)
         if self.state != CycleState.DETECTING or self.part is None or self.profile is None:
             return
-        mapping = {pose.model_class_id: pose.id for pose in self.part.poses}
+        mapping = self.part.recognition_mapping
         decision = self.consensus.add(frame, mapping)
         if decision is None:
             return
@@ -299,16 +294,17 @@ class ReorientationController(QObject):
         # decision.  Never derive actuation for that case from a previously
         # selected route or from profile contents: the PLC must receive an
         # explicit zero mask and all four GUI array enables must be false.
-        already_at_target = decision.pose_id == self.part.target_pose
-        actuate = False if already_at_target else (
-            bool(self._selected_transitions) if self._roadmap_mode else True
+        already_at_target = self.part.same_target_group(decision.pose_id, self.part.target_pose)
+        actuate = (
+            False
+            if already_at_target
+            else (bool(self._selected_transitions) if self._roadmap_mode else True)
         )
         self._plan = build_write_plan(self.profile, actuate=actuate)
         if already_at_target and (
             self._plan.expected_array_mask != 0
             or any(
-                bool(self._plan.enables[f"MAIN.GuiArrayEnabled{index}"])
-                for index in range(1, 5)
+                bool(self._plan.enables[f"MAIN.GuiArrayEnabled{index}"]) for index in range(1, 5)
             )
         ):
             self._fault(
@@ -351,16 +347,21 @@ class ReorientationController(QObject):
         self.profile = compose_pressure_profiles(
             profiles,
             conveyor_speed_mm_per_sec=self._transport_profile.conveyor_speed_mm_per_sec,
-            ur_ry_angle_deg=self._transport_profile.ur_ry_angle_deg,
         )
         self._selected_transitions = transitions
         self._selected_profiles = profiles
 
     def _operation_finished(self, name: str) -> None:
-        if self._plan is None:
+        if self._plan is None or self.state == CycleState.FAULT:
             return
-        if name == "safe_stop":
+        if name.startswith("cycle_prepare:"):
+            if name != self._preparation_name or self._finalizing:
+                return
+            self._preparation_name = None
             self.pressure.write("configuration", self._plan.configuration, True)
+        elif name == "safe_stop" and not self._finalizing:
+            self._preparation_name = f"cycle_prepare:{self._cycle_id}"
+            self.pressure.prepare_conveyor(self._preparation_name)
         elif name == "configuration":
             # Seed a fresh heartbeat while ownership is still inactive. This
             # prevents a retained PLC heartbeat age from immediately restoring
@@ -409,6 +410,8 @@ class ReorientationController(QObject):
             self.pressure.write("release_safe", self._plan.safe_stop, True)
 
     def _operation_failed(self, name: str, error: str) -> None:
+        if name.startswith("cycle_prepare:") and name != self._preparation_name:
+            return
         self._fault(f"ads_{name}", error)
 
     def _on_snapshot(self, snapshot: PlcSnapshot) -> None:
@@ -426,9 +429,7 @@ class ReorientationController(QObject):
                 and snapshot.heartbeat_ack != self._heartbeat_ack_before_ownership
             ):
                 self._clear_handshake()
-                self.pressure.write(
-                    "reset_end", {"MAIN.GuiReorientationReset": False}, True
-                )
+                self.pressure.write("reset_end", {"MAIN.GuiReorientationReset": False}, True)
             return
         if self._handshake_phase == "reset_release_ack":
             if (
@@ -442,9 +443,7 @@ class ReorientationController(QObject):
         if self._handshake_phase == "start_ack":
             if snapshot.reorientation_state == 20 and snapshot.heartbeat_alive:
                 self._clear_handshake()
-                self.pressure.write(
-                    "start_pulse_end", {"MAIN.GuiReorientationStart": False}, True
-                )
+                self.pressure.write("start_pulse_end", {"MAIN.GuiReorientationStart": False}, True)
             elif snapshot.reorientation_fault_code:
                 self._fault(
                     f"plc_{snapshot.reorientation_fault_code}",
@@ -454,9 +453,7 @@ class ReorientationController(QObject):
         if self._handshake_phase == "abort_ack":
             if snapshot.reorientation_state >= 90 or snapshot.reorientation_fault_code:
                 self._clear_handshake()
-                self.pressure.write(
-                    "abort_pulse_end", {"MAIN.GuiReorientationAbort": False}, True
-                )
+                self.pressure.write("abort_pulse_end", {"MAIN.GuiReorientationAbort": False}, True)
             return
         if self.state in {CycleState.NO_CONFIG, CycleState.OFFLINE, CycleState.READY}:
             self._refresh_preflight()
@@ -519,9 +516,7 @@ class ReorientationController(QObject):
         if phase == "abort_ack":
             # Clear the command even if the status poll missed the short PLC
             # transition. Safe-stop/readback still precedes owner release.
-            self.pressure.write(
-                "abort_pulse_end", {"MAIN.GuiReorientationAbort": False}, True
-            )
+            self.pressure.write("abort_pulse_end", {"MAIN.GuiReorientationAbort": False}, True)
             return
         self._fault(
             f"plc_handshake_{phase}",
@@ -529,6 +524,8 @@ class ReorientationController(QObject):
         )
 
     def stop(self) -> None:
+        self._preparation_name = None
+        self.pressure.cancel_preparation()
         if self.state not in {CycleState.READY, CycleState.OFFLINE, CycleState.NO_CONFIG}:
             if self.state == CycleState.DETECTING:
                 self._terminal_state = CycleState.ABORTED
@@ -545,6 +542,8 @@ class ReorientationController(QObject):
     def _fault(self, code: str, text: str) -> None:
         if self.state == CycleState.FAULT:
             return
+        self._preparation_name = None
+        self.pressure.cancel_preparation()
         self._clear_handshake()
         self._set_state(CycleState.FAULT, text)
         self._terminal_state = CycleState.FAULT
@@ -568,7 +567,7 @@ class ReorientationController(QObject):
             self.part.target_pose,
             (
                 "pass_through"
-                if self._detected_pose == self.part.target_pose
+                if self.part.same_target_group(self._detected_pose, self.part.target_pose)
                 else "plan_unavailable"
                 if not self._selected_transitions
                 else "_to_".join(
@@ -604,9 +603,7 @@ class ReorientationController(QObject):
             "transition_profile_paths": [
                 str(profile.source_path) for profile in self._selected_profiles
             ],
-            "transition_profile_sha256": [
-                profile.sha256 for profile in self._selected_profiles
-            ],
+            "transition_profile_sha256": [profile.sha256 for profile in self._selected_profiles],
             "observations": [
                 {
                     "class_id": item.class_id,
@@ -617,7 +614,7 @@ class ReorientationController(QObject):
                 for item in self._observations
             ],
             "ur_requested": self.profile.ur_ry_angle_deg if self.profile else None,
-            "ur_applied": self.ur_applied,
+            "ur_applied": None,
             "light_addresses": self._light_addresses,
             "lights_manual_confirmed": self.lights_ready,
             "camera_lost_after_decision": self._camera_lost_after_decision,

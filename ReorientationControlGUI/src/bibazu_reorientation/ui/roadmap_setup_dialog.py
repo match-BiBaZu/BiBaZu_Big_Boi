@@ -265,6 +265,20 @@ class RoadmapSetupDialog(QDialog):
             spin.valueChanged.connect(self._update_readiness)
             self.mapping_table.setCellWidget(row, 3, spin)
             self.class_inputs[pose.pose_id] = spin
+        if self.roadmap.consumer_export_version == 3:
+            details={n.get('node_id',n.get('id')):n for n in self.roadmap.pose_details}
+            masters={}
+            for row,pose in enumerate(self.roadmap.robust_poses):
+                key=dict(self.roadmap.pose_group_keys)[pose.pose_id]
+                info=details[pose.pose_id]
+                self.mapping_table.setItem(row,1,QTableWidgetItem(f"Group {info['group_id']} · {info['observed_frequency_percent']:g}%"))
+                spin=self.class_inputs[pose.pose_id]
+                if key in masters:
+                    master=masters[key];spin.setValue(master.value());spin.setReadOnly(True)
+                    master.valueChanged.connect(spin.setValue)
+                    spin.setToolTip('Recognition class is shared by all displayed members of this group')
+                else:
+                    masters[key]=spin
 
     def _populate_profiles(self, definition: PartDefinition | None) -> None:
         assert self.roadmap is not None
@@ -284,14 +298,19 @@ class RoadmapSetupDialog(QDialog):
                 9,
                 QTableWidgetItem(
                     "Calibrated for source group"
-                    if self.roadmap.consumer_export_version == 2
+                    if self.roadmap.consumer_export_version in (2, 3)
                     else "Tested source members (* = all)"
                 ),
             )
         self.profile_table.setRowCount(len(self.roadmap.visible_transitions))
         for row, edge in enumerate(self.roadmap.visible_transitions):
             self.profile_table.setItem(
-                row, 0, QTableWidgetItem(f"{edge.from_pose} → {edge.to_pose}")
+                row, 0, QTableWidgetItem(
+                    f"Pose {edge.from_pose} → Group {(edge.member_context or {})['target_group_id']}"
+                    if (edge.member_context or {}).get('source_pose_specific') else
+                    f"Poses {', '.join(map(str,(edge.member_context or {}).get('applicable_source_pose_ids',[])))} → "
+                    f"{', '.join(map(str,(edge.member_context or {}).get('accepted_target_pose_ids',[])))}"
+                    if self.roadmap.consumer_export_version == 3 else f"{edge.from_pose} → {edge.to_pose}")
             )
             action = edge.actuation
             if edge.transition_kind == "multi_reorientation":
@@ -517,12 +536,14 @@ class RoadmapSetupDialog(QDialog):
             pose_id for pose_id, spin in self.class_inputs.items() if spin.value() < 0
         ]
         values = [spin.value() for spin in self.class_inputs.values() if spin.value() >= 0]
-        duplicates = len(values) != len(set(values))
+        keys=dict(self.roadmap.pose_group_keys)
+        assignments=[(i,s.value()) for i,s in self.class_inputs.items() if s.value() >= 0]
+        duplicates=any(a!=b and ca==cb and (not keys or keys[a]!=keys[b]) for a,ca in assignments for b,cb in assignments)
         missing_profiles = [
             edge.edge_id
             for edge in (
                 self.roadmap.visible_transitions
-                if self.roadmap.consumer_export_version == 2
+                if self.roadmap.consumer_export_version in (2, 3)
                 else self.roadmap.profile_transitions
             )
             if edge.edge_id not in self.profile_inputs
@@ -641,7 +662,9 @@ class RoadmapSetupDialog(QDialog):
             tuple(transitions),
             member_states=self.roadmap.member_states,
             execution_routes=self.roadmap.execution_routes,
-            planning_semantics="group_union" if self.roadmap.consumer_export_version == 2 else "",
+            planning_semantics=('pose_to_group' if any(r.get('source_pose_specific') for r in self.roadmap.execution_routes)
+                                else 'group_union' if self.roadmap.consumer_export_version in (2, 3) else ''),
+            pose_group_keys=self.roadmap.pose_group_keys,
         )
         resolver = TransitionResolver(definition)
         reachable = []
@@ -658,7 +681,11 @@ class RoadmapSetupDialog(QDialog):
             QMessageBox.warning(self, "Configuration", "Please select a roadmap first.")
             return
         values = [spin.value() for spin in self.class_inputs.values()]
-        if any(value < 0 for value in values) or len(set(values)) != len(values):
+        groups=dict(self.roadmap.pose_group_keys) if self.roadmap else {}
+        pairs=[(i,spin.value()) for i,spin in self.class_inputs.items()]
+        invalid_duplicates=any(ca == cb and a != b and (not groups or groups[a] != groups[b])
+                               for a,ca in pairs for b,cb in pairs)
+        if any(value < 0 for value in values) or invalid_duplicates:
             QMessageBox.warning(
                 self, "Configuration", "Every robust pose requires a unique model class."
             )
@@ -724,6 +751,8 @@ class RoadmapSetupDialog(QDialog):
                 if self.definition
                 else None
             ),
+            unavailable_transition_group_coverage=dict(self.definition.unavailable_transition_group_coverage) if self.definition else None,
+            unavailable_recognition_group_classes=dict(self.definition.unavailable_recognition_group_classes) if self.definition else None,
             transition_group_coverage={
                 edge_id: self.roadmap.edge(edge_id).source_group_key
                 for edge_id, widget in self.group_coverage_inputs.items()

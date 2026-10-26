@@ -186,13 +186,14 @@ from roadmap_transition_dialog import load_roadmap_document, RoadmapTransitionDi
 app=QApplication([])
 path=catalogue/part/(part+'_roadmap.json')
 data=json.loads(path.read_text(encoding='utf-8'))
-assert data['connectivity']['members']['known_member_inter_group_action_count']==expected
+if data['consumer_export']['version'] < 3:
+    assert data['connectivity']['members']['known_member_inter_group_action_count']==expected
 roadmap=load_pose_roadmap(path)
 pressure=load_roadmap_document(path)
 ids={r['edge_id'] for r in data['consumer_export']['calibration_choices']}
 assert {e.edge_id for e in roadmap.calibratable_transitions}==ids
 assert {e.edge_id for e in pressure.transitions if e.calibratable}==ids
-edge=next(e for e in roadmap.member_transitions if e.member_context.get('settling_segments'))
+edge=next(e for e in roadmap.visible_transitions if any(s.get('segment_kind')=='settling' for s in e.preview_segments))
 preview=TransitionPreviewDialog(roadmap,edge)
 preview._render_progress(750)
 assert not preview.animation.pixmap().isNull()

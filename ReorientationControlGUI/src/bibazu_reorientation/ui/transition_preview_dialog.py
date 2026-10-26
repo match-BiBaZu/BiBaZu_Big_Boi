@@ -86,8 +86,12 @@ class TransitionPreviewDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         noun = "Group" if self.transition.source_group_key else "Pose"
+        context = self.transition.member_context or {}
+        endpoints = f"{noun} {self.transition.from_pose} → {noun} {self.transition.to_pose}"
+        if context.get('source_pose_specific'):
+            endpoints = f"Pose {self.transition.from_pose} → Group {context['target_group_id']}"
         title = QLabel(
-            f"<b>{noun} {self.transition.from_pose} → {noun} {self.transition.to_pose}</b>"
+            f"<b>{endpoints}</b>"
             f" · {self.transition.display_label or self.transition.actuation or 'Reorientation'}"
         )
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)

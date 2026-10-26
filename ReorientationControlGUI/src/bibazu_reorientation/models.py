@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from bibazu_reorientation.conveyor import NOMINAL_MM_PER_FULL_STEP
+
 
 class ConnectionState(StrEnum):
     DISCONNECTED = "Disconnected"
@@ -34,6 +36,11 @@ class CycleState(StrEnum):
     FAULT = "Fault"
 
 
+class ProductionMode(StrEnum):
+    SNAPSHOT = "snapshot"
+    CONTINUOUS = "continuous"
+
+
 class BatchState(StrEnum):
     NO_CONFIG = "No configuration"
     OFFLINE = "Offline"
@@ -42,6 +49,7 @@ class BatchState(StrEnum):
     RUNNING = "Production run active"
     FINISHING = "Finishing visible parts"
     DRAINING = "Draining PLC queue"
+    STOPPING = "Stopping production run"
     COMPLETE = "Run complete"
     FAULT = "Fault"
 
@@ -104,6 +112,38 @@ class PartDefinition:
     planning_semantics: str = ""
     unavailable_transition_profiles: tuple[tuple[str, Path | None], ...] = ()
     unavailable_transition_source_coverage: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    pose_group_keys: tuple[tuple[int, str], ...] = ()
+    unavailable_transition_group_coverage: tuple[tuple[str, str], ...] = ()
+    unavailable_recognition_group_classes: tuple[tuple[str, int], ...] = ()
+
+    def same_target_group(self, start: int, target: int) -> bool:
+        keys = dict(self.pose_group_keys)
+        return start == target or bool(keys.get(start) and keys.get(start) == keys.get(target))
+
+    @property
+    def recognition_mapping(self) -> dict[int, int]:
+        result = {}
+        for pose in sorted(self.poses, key=lambda p:p.id):
+            result.setdefault(pose.model_class_id, pose.id)
+        for index, (key,class_id) in enumerate(sorted(self.unavailable_recognition_group_classes)):
+            result.setdefault(class_id,-index-1)
+        return result
+
+    def recognition_label(self, pose_id):
+        if self.is_manual_configuration:
+            pose = next((pose for pose in self.poses if pose.id == pose_id), None)
+            return pose.label if pose else "Unknown start pose"
+        keys=dict(self.pose_group_keys)
+        if pose_id in keys:
+            ids=[str(i) for i,key in self.pose_group_keys if key == keys[pose_id]]
+            return 'Group recognition · possible poses ' + ', '.join(ids)
+        if pose_id is not None and pose_id < 0:
+            return 'Omitted group · no roadmap route available'
+        return f'Pose {pose_id}'
+
+    @property
+    def is_manual_configuration(self) -> bool:
+        return self.schema_version == 3
 
     @property
     def is_roadmap_configuration(self) -> bool:
@@ -157,10 +197,12 @@ class PressureBaseline:
     light_barrier_inverted: tuple[bool, ...] = (True,) * 8
     light_barrier_debounce_enabled: tuple[bool, ...] = (False,) * 8
     conveyor_speed_mm_per_sec: float = 0.0
-    conveyor_max_speed_mm_per_sec: float = 1000.0
+    conveyor_max_speed_mm_per_sec: float = 200.0
     conveyor_enabled: bool = False
     conveyor_reverse: bool = False
-    conveyor_calibration: ConveyorCalibration = ConveyorCalibration(315.0, 0.32960026, True)
+    conveyor_calibration: ConveyorCalibration = ConveyorCalibration(
+        315.0, NOMINAL_MM_PER_FULL_STEP, False
+    )
     force_response_delays_ms: tuple[float, ...] = (8.7, 8.7, 8.7, 8.7)
     force_single_nozzle_response_delays_ms: tuple[float, ...] = (8.7, 8.7, 8.7, 8.7)
 
@@ -356,6 +398,13 @@ class DiscoveredLight:
 @dataclass(slots=True, frozen=True)
 class PlcSnapshot:
     connected: bool = False
+    conveyor_velocity_only: bool = False
+    conveyor_commissioned: bool = False
+    conveyor_motor_count: int = 0
+    conveyor_servo_state: int = 0
+    conveyor_fault_code: int = 0
+    conveyor_acceleration_rpm_per_sec: float = 0.0
+    conveyor_target_velocities: tuple[int, int] = (0, 0)
     conveyor_motion_state: int = 0
     stepper_busy: bool = False
     stepper_error: bool = False

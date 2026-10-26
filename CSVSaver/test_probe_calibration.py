@@ -290,8 +290,9 @@ class ForceAndRecordingTests(unittest.TestCase):
             resumed.finish("Erneuter Testfehler")
             _, loaded = load_failed_session(first.path / "session.json")
             self.assertEqual(len(loaded["rows"]), 3)
-            with self.assertRaisesRegex(MeasurementError, "Messeinstellungen"):
-                ProbeRecording(directory, replace(config, speed_mm_s=3), retared, new_tare, resume_from=first.path)
+            for changed in (replace(config, speed_mm_s=3), replace(config, nozzle_layout="vertical")):
+                with self.assertRaisesRegex(MeasurementError, "Messeinstellungen"):
+                    ProbeRecording(directory, changed, retared, new_tare, resume_from=first.path)
             with self.assertRaisesRegex(MeasurementError, "Kraftprofil geändert"):
                 ProbeRecording(directory, config, None, new_tare, resume_from=first.path)
             (first.path / "session.json").write_text('{"version": 1, "status": "complete", "rows": []}')

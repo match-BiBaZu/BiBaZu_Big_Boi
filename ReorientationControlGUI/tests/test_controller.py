@@ -33,6 +33,17 @@ class FakePressure(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.writes: list[tuple[str, dict, bool]] = []
+        self.preparations: list[str] = []
+        self.auto_prepare = True
+        self.cancelled = False
+
+    def prepare_conveyor(self, name: str) -> None:
+        self.preparations.append(name)
+        if self.auto_prepare:
+            self.operation_finished.emit(name)
+
+    def cancel_preparation(self) -> None:
+        self.cancelled = True
 
     def write(self, name: str, values: dict, verify: bool = False) -> None:
         self.writes.append((name, values, verify))
@@ -88,6 +99,7 @@ def configured_controller(
     controller._on_snapshot(
         PlcSnapshot(
             connected=True,
+            conveyor_velocity_only=True,
             calibration_valid=True,
             light_barriers_stable=(True,) * 6,
         )
@@ -152,9 +164,7 @@ def roadmap_profile(tmp_path: Path, name: str, array_index: int):
     return load_pressure_profile(source)
 
 
-def advance_staging_to_enables(
-    controller: ReorientationController, pressure: FakePressure
-) -> None:
+def advance_staging_to_enables(controller: ReorientationController, pressure: FakePressure) -> None:
     pressure.operation_finished.emit("safe_stop")
     pressure.operation_finished.emit("configuration")
     assert pressure.writes[-1][0] == "heartbeat_prepare"
@@ -164,6 +174,7 @@ def advance_staging_to_enables(
     assert controller._handshake_phase == "ownership_ack"
     acknowledged = PlcSnapshot(
         connected=True,
+        conveyor_velocity_only=True,
         calibration_valid=True,
         light_barriers_stable=(True,) * 8,
         reorientation_state=10,
@@ -195,8 +206,15 @@ def test_roadmap_cycle_combines_unique_two_step_path_before_staging(tmp_path: Pa
             TransitionSpec(2, 3, first.source_path, "edge-2-3"),
             TransitionSpec(3, 4, second.source_path, "edge-3-4"),
         ),
-        execution_routes=(dict(source=2, target=4, profile_edge_ids=["edge-2-3", "edge-3-4"],
-            steps=[dict(edge_id=k) for k in ("edge-2-3", "edge-3-4")], priority=[2, 2]),),
+        execution_routes=(
+            dict(
+                source=2,
+                target=4,
+                profile_edge_ids=["edge-2-3", "edge-3-4"],
+                steps=[dict(edge_id=k) for k in ("edge-2-3", "edge-3-4")],
+                priority=[2, 2],
+            ),
+        ),
     )
     pressure = FakePressure()
     controller = ReorientationController(pressure, RunJournal(tmp_path / "runs"))
@@ -204,14 +222,17 @@ def test_roadmap_cycle_combines_unique_two_step_path_before_staging(tmp_path: Pa
         part,
         {"edge-2-3": first, "edge-3-4": second},
         conveyor_speed_mm_per_sec=125.0,
-        ur_ry_angle_deg=18.0,
     )
     controller.set_model_ready(True)
     controller.set_camera_fresh(True)
     controller.set_lights_ready(True, True)
-    controller.set_ur_applied(18.0)
     controller._on_snapshot(
-        PlcSnapshot(connected=True, calibration_valid=True, light_barriers_stable=(True,) * 8)
+        PlcSnapshot(
+            connected=True,
+            conveyor_velocity_only=True,
+            calibration_valid=True,
+            light_barriers_stable=(True,) * 8,
+        )
     )
     controller._barriers_clear_since = time.monotonic() - 1.0
     controller._refresh_preflight()
@@ -240,9 +261,7 @@ def test_roadmap_target_pose_forces_zero_mask_and_disables_every_array(
         model_path=tmp_path / "best.pt",
         poses=(PoseDefinition(5, "Pose 5", 2), PoseDefinition(10, "Pose 10", 1)),
         target_pose=10,
-        transitions=(
-            TransitionSpec(5, 10, transition_profile.source_path, "edge-5-10"),
-        ),
+        transitions=(TransitionSpec(5, 10, transition_profile.source_path, "edge-5-10"),),
     )
     pressure = FakePressure()
     controller = ReorientationController(pressure, RunJournal(tmp_path / "runs"))
@@ -250,14 +269,17 @@ def test_roadmap_target_pose_forces_zero_mask_and_disables_every_array(
         part,
         {"edge-5-10": transition_profile},
         conveyor_speed_mm_per_sec=100.0,
-        ur_ry_angle_deg=18.0,
     )
     controller.set_model_ready(True)
     controller.set_camera_fresh(True)
     controller.set_lights_ready(True, True)
-    controller.set_ur_applied(18.0)
     controller._on_snapshot(
-        PlcSnapshot(connected=True, calibration_valid=True, light_barriers_stable=(True,) * 8)
+        PlcSnapshot(
+            connected=True,
+            conveyor_velocity_only=True,
+            calibration_valid=True,
+            light_barriers_stable=(True,) * 8,
+        )
     )
     controller._barriers_clear_since = time.monotonic() - 1.0
     controller._refresh_preflight()
@@ -271,8 +293,7 @@ def test_roadmap_target_pose_forces_zero_mask_and_disables_every_array(
     assert controller._selected_transitions == ()
     assert controller._plan.expected_array_mask == 0
     assert not any(
-        controller._plan.enables[f"MAIN.GuiArrayEnabled{index}"]
-        for index in range(1, 5)
+        controller._plan.enables[f"MAIN.GuiArrayEnabled{index}"] for index in range(1, 5)
     )
     assert pressure.writes[0][0] == "safe_stop"
 
@@ -310,6 +331,7 @@ def test_latched_previous_abort_is_reset_during_staging(tmp_path: Path) -> None:
 
     stale_abort = PlcSnapshot(
         connected=True,
+        conveyor_velocity_only=True,
         calibration_valid=True,
         light_barriers_stable=(True,) * 8,
         reorientation_state=90,
@@ -365,6 +387,7 @@ def test_staging_order_and_no_enable_before_readback(tmp_path: Path) -> None:
     controller._on_snapshot(
         PlcSnapshot(
             connected=True,
+            conveyor_velocity_only=True,
             calibration_valid=True,
             light_barriers_stable=(True,) * 8,
             reorientation_state=10,
@@ -375,6 +398,7 @@ def test_staging_order_and_no_enable_before_readback(tmp_path: Path) -> None:
     assert pressure.writes[-1][0] == "ownership"
     acknowledged = PlcSnapshot(
         connected=True,
+        conveyor_velocity_only=True,
         calibration_valid=True,
         light_barriers_stable=(True,) * 8,
         reorientation_state=10,
@@ -396,6 +420,7 @@ def test_staging_order_and_no_enable_before_readback(tmp_path: Path) -> None:
     controller._on_snapshot(
         PlcSnapshot(
             connected=True,
+            conveyor_velocity_only=True,
             calibration_valid=True,
             light_barriers_stable=(True,) * 8,
             reorientation_state=20,

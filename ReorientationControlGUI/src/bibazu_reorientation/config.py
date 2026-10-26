@@ -81,6 +81,10 @@ def load_part_definition(path: Path, *, accept_roadmap_change: bool = False) -> 
     source = Path(path).expanduser().resolve()
     payload = _read_config(source)
     version = int(payload.get("schema_version", 0))
+    if version == 3:
+        from bibazu_reorientation.manual_config import load_manual_definition
+
+        return load_manual_definition(source, payload)
     if version == LEGACY_SCHEMA_VERSION:
         return _load_v1(source, payload)
     if version == ROADMAP_SCHEMA_VERSION:
@@ -182,6 +186,27 @@ def _load_v2(
     raw_poses = payload.get("poses")
     if not isinstance(raw_poses, list):
         raise ValueError("poses must be a list")
+    pose_groups = dict(roadmap.pose_group_keys)
+    unavailable_recognition = dict(payload.get('unavailable_recognition_group_classes', {}))
+    if changed and roadmap.consumer_export_version == 3:
+        old_groups = payload.get('pose_group_keys')
+        if not old_groups:
+            migration = roadmap.migration or {}
+            if migration.get('previous_roadmap_sha256') != expected_hash:
+                raise ValueError('Individual-pose migration needs the exact previous roadmap hash; remap explicitly')
+            old_groups = migration['previous_pose_groups']
+        classes = {}
+        for raw in raw_poses:
+            key = old_groups.get(str(raw['id']))
+            if key:
+                if key in classes and classes[key] != int(raw['model_class_id']):
+                    raise ValueError('A recognition group requires one model class')
+                classes[key] = int(raw['model_class_id'])
+        unavailable_recognition.update({key:value for key,value in classes.items() if key not in set(pose_groups.values())})
+        target_key = payload.get('target_group_key') or old_groups.get(str(payload.get('target_pose')))
+        raw_poses = [dict(id=i, label=f'Pose {i}',model_class_id=classes[key])
+                     for i,key in roadmap.pose_group_keys if key in classes]
+        payload = dict(payload, target_pose=next((i for i,key in roadmap.pose_group_keys if key == target_key),-1))
     mappings: dict[int, PoseDefinition] = {}
     class_ids: set[int] = set()
     for raw in raw_poses:
@@ -191,7 +216,9 @@ def _load_v2(
         if pose_id in mappings:
             raise ValueError(f"Duplicate pose mapping: {pose_id}")
         class_id = int(raw["model_class_id"])
-        if class_id < 0 or class_id in class_ids:
+        if class_id < 0 or (class_id in class_ids and (not pose_groups or any(
+            p.model_class_id == class_id and pose_groups.get(p.id) != pose_groups.get(pose_id)
+            for p in mappings.values()))):
             raise ValueError("YOLO model classes must be unique and non-negative")
         mappings[pose_id] = PoseDefinition(
             pose_id, str(raw.get("label", f"Pose {pose_id}")), class_id
@@ -215,7 +242,7 @@ def _load_v2(
         raise ValueError("transition_profiles must map edge_id to a path or null")
     required_edge_ids = (
         set()
-        if roadmap.consumer_export_version == 2
+        if roadmap.consumer_export_version in (2, 3)
         else {edge.edge_id for edge in roadmap.profile_transitions}
     )
     valid_edges = {edge.edge_id: edge for edge in roadmap.calibratable_transitions}
@@ -229,7 +256,7 @@ def _load_v2(
     unavailable_ids = {
         key
         for key in unknown_edge_ids
-        if key.startswith(("multi", "route:", "composite:", "member:", "member-route:"))
+        if roadmap.consumer_export_version == 3 or key.startswith(("multi", "route:", "composite:", "member:", "member-route:"))
     }
     if not changed and unknown_edge_ids - unavailable_ids:
         raise ValueError(f"transition_profiles contains unknown edges: {sorted(unknown_edge_ids)}")
@@ -248,7 +275,7 @@ def _load_v2(
         for key in sorted(unavailable_ids & set(coverage_map))
     )
     group_coverage_map = payload.get("transition_group_coverage", {})
-    if not isinstance(group_coverage_map, dict) or set(group_coverage_map) - set(valid_edges):
+    if not isinstance(group_coverage_map, dict) or set(group_coverage_map) - set(valid_edges) - unavailable_ids:
         raise ValueError("Group calibration references unknown transfers")
     for edge_id, edge in valid_edges.items():
         raw_profile = raw_profiles.get(edge_id)
@@ -318,8 +345,12 @@ def _load_v2(
         transitions=tuple(transitions),
         member_states=roadmap.member_states,
         execution_routes=roadmap.execution_routes,
-        planning_semantics="group_union" if roadmap.consumer_export_version == 2 else "",
+        planning_semantics=('pose_to_group' if any(r.get('source_pose_specific') for r in roadmap.execution_routes)
+                            else 'group_union' if roadmap.consumer_export_version in (2, 3) else ''),
+        pose_group_keys=roadmap.pose_group_keys,
         unavailable_transition_profiles=unavailable_profiles,
+        unavailable_transition_group_coverage=tuple((k,v) for k,v in group_coverage_map.items() if k in unavailable_ids),
+        unavailable_recognition_group_classes=tuple(sorted(unavailable_recognition.items())),
         unavailable_transition_source_coverage=unavailable_coverage,
         mesh_path=mesh_path,
         source_path=source,
@@ -422,6 +453,8 @@ def save_roadmap_part_definition(
     transition_group_coverage: Mapping[str, str] | None = None,
     unavailable_transition_profiles: Mapping[str, Path | None] | None = None,
     unavailable_transition_source_coverage: Mapping[str, tuple[str, ...]] | None = None,
+    unavailable_transition_group_coverage: Mapping[str, str] | None = None,
+    unavailable_recognition_group_classes: Mapping[str, int] | None = None,
 ) -> PartDefinition:
     destination = Path(path).expanduser().resolve()
     roadmap = load_pose_roadmap(roadmap_path)
@@ -433,13 +466,17 @@ def save_roadmap_part_definition(
     if set(pose_class_mapping) != robust_ids:
         raise ValueError("Every robust roadmap pose requires an explicit model class")
     class_ids = [int(value) for value in pose_class_mapping.values()]
-    if any(value < 0 for value in class_ids) or len(set(class_ids)) != len(class_ids):
+    pose_groups = dict(roadmap.pose_group_keys)
+    pairs = list(pose_class_mapping.items())
+    if any(value < 0 for value in class_ids) or any(a != b and ca == cb and
+        (not pose_groups or pose_groups[a] != pose_groups[b]) for a,ca in pairs for b,cb in pairs) or any(
+        pose_groups and pose_groups[a] == pose_groups[b] and ca != cb for a,ca in pairs for b,cb in pairs):
         raise ValueError("Model classes must be unique and non-negative")
     if target_pose not in robust_ids:
         raise ValueError("The target pose must be robust")
     required_edge_ids = (
         set()
-        if roadmap.consumer_export_version == 2
+        if roadmap.consumer_export_version in (2, 3)
         else {edge.edge_id for edge in roadmap.profile_transitions}
     )
     edge_ids = {edge.edge_id for edge in roadmap.calibratable_transitions}
@@ -460,6 +497,8 @@ def save_roadmap_part_definition(
         "schema_version": 2,
         "roadmap_path": _portable_path(roadmap.path, destination),
         "roadmap_sha256": roadmap.sha256,
+        **({'pose_group_keys':{str(k):v for k,v in roadmap.pose_group_keys},
+            'target_group_key':dict(roadmap.pose_group_keys).get(target_pose)} if roadmap.pose_group_keys else {}),
         "part_name": part_name.strip(),
         "mesh_path": _portable_path(mesh, destination),
         "model_path": _portable_path(model, destination),
@@ -474,6 +513,7 @@ def save_roadmap_part_definition(
         "target_pose": int(target_pose),
         "transition_profiles": serialized_profiles,
         "transition_group_coverage": dict(transition_group_coverage or {}),
+        "unavailable_recognition_group_classes": dict(unavailable_recognition_group_classes or {}),
         "transition_source_coverage": {
             key: list(value) for key, value in (transition_source_coverage or {}).items()
         },
@@ -495,9 +535,9 @@ def save_roadmap_part_definition(
     # transitions, deriving endpoints, or manufacturing a route in the consumer.
     unavailable = unavailable_transition_profiles or {}
     for key, profile in unavailable.items():
-        if key in edge_ids or not key.startswith(
+        if key in edge_ids or (roadmap.consumer_export_version != 3 and not key.startswith(
             ("multi", "route:", "composite:", "member:", "member-route:")
-        ):
+        )):
             raise ValueError("Invalid unavailable route assignment")
         payload["transition_profiles"][key] = (
             None if profile is None else _portable_path(Path(profile), destination)
@@ -506,6 +546,9 @@ def save_roadmap_part_definition(
         if key not in unavailable:
             raise ValueError("Unavailable coverage has no saved route assignment")
         payload["transition_source_coverage"][key] = list(source_coverage(values, values))
+    for key,value in (unavailable_transition_group_coverage or {}).items():
+        if key not in unavailable: raise ValueError('Unavailable group qualification has no saved assignment')
+        payload['transition_group_coverage'][key]=value
     _atomic_yaml(destination, payload)
     return load_part_definition(destination)
 
@@ -560,7 +603,7 @@ class TransitionResolver:
         self, start_pose: int, target_pose: int | None = None, *, max_transitions: int | None = None
     ) -> tuple[TransitionSpec, ...]:
         target = self.definition.target_pose if target_pose is None else target_pose
-        if start_pose == target:
+        if self.definition.same_target_group(start_pose, target):
             return ()
         if max_transitions is not None and (
             isinstance(max_transitions, bool)
@@ -577,7 +620,7 @@ class TransitionResolver:
         routes = self.definition.execution_routes
         # Legacy exports/configs can still execute an explicitly assigned direct
         # transition. They never acquire a synthesized multi-transfer route here.
-        if not routes and self.definition.planning_semantics != "group_union":
+        if not routes and self.definition.planning_semantics not in ("group_union", "pose_to_group"):
             routes = tuple(
                 dict(
                     source=e.from_pose,
@@ -594,8 +637,21 @@ class TransitionResolver:
                 for e in self.definition.transitions
             )
         for record in routes:
-            if record["source"] != start_pose or record["target"] != target:
+            pose_groups = dict(self.definition.pose_group_keys)
+            if pose_groups:
+                if record.get('source_group_key') != pose_groups.get(start_pose) or record.get('target_group_key') != pose_groups.get(target):
+                    continue
+            elif record["source"] != start_pose or record["target"] != target:
                 continue
+            if record.get('source_pose_specific'):
+                # Recognition may identify a whole group, not its exact member.
+                # Do not promote that result to an exact source observation.
+                mappings = {p.id: p.model_class_id for p in self.definition.poses}
+                possible = {p for p, c in mappings.items() if c == mappings.get(start_pose)} if start_pose in mappings else {start_pose}
+                if mappings and pose_groups.get(start_pose):
+                    possible.update(p for p, key in pose_groups.items() if key == pose_groups[start_pose])
+                if not possible.issubset(record.get('applicable_source_pose_ids', [])):
+                    continue
             keys = record["profile_edge_ids"]
             if max_transitions is not None and len(keys) > max_transitions:
                 continue

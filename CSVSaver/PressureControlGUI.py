@@ -77,7 +77,7 @@ AMS_NET_ID = "10.145.4.14.1.1"
 PLC_IP = "192.168.10.23"
 PLC_PORT = pyads.PORT_TC3PLC1
 
-PROFILE_DIR = Path("pressure_profiles")
+PROFILE_DIR = Path("D:/3_PressureProfiles")
 LIGHT_BARRIER_SETTINGS_FILE = Path(__file__).resolve().parent / "light_barrier_settings.json"
 PROFILE_VERSION = 13
 CSV_FILE = Path("pressure_log.csv")
@@ -142,7 +142,7 @@ SENSOR_TO_ARRAY_SYMBOLS = {
     array: f"MAIN.GuiSensor{sensor}ToArray{array}SpacingMm"
     for sensor, array in SENSOR_TO_ARRAY_MAPPINGS
 }
-SENSOR_TO_ARRAY_DEFAULTS_MM = (50.0, 45.0, 45.0, 48.0)
+SENSOR_TO_ARRAY_DEFAULTS_MM = (30.3, 41.9, 29.4, 42.7)
 OFFSET_MIN_MM = 0.0
 OFFSET_MAX_MM = 5000.0
 LIGHT_BARRIER_DEBOUNCE_MIN_MS = 1
@@ -876,7 +876,16 @@ class AdsWorker(QObject):
                 )
             except Exception:
                 reorientation_owner = False
-            if reorientation_owner and not self.reclaim_fail_stopped_reorientation_owner():
+            try:
+                reorientation_safe_latched = bool(
+                    self.plc().read_by_name("MAIN.ReorientationSafeLatch", pyads.PLCTYPE_BOOL)
+                )
+            except Exception:
+                reorientation_safe_latched = False
+            if (
+                (reorientation_owner or reorientation_safe_latched)
+                and not self.reclaim_fail_stopped_reorientation_owner()
+            ):
                 self.disconnect_ads(
                     "BiBaZu Reorientation Control besitzt derzeit die SPS; "
                     "PressureControlGUI bleibt bis zum sicheren Laufende "

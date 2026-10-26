@@ -1,5 +1,16 @@
 # Grouped roadmap composite candidates
 
+## Individual poses and shared group actions (consumer export v3)
+
+Exports declaring `planning_semantics: pose_to_group` list commands witnessed from the exact selected source pose, accepting any destination-group member. Actions are not shared across source poses. Previews and saved metadata retain this applicability. Explicitly reimport changed exports; older group-shared assignments do not automatically qualify the new actions.
+
+The external grouped catalogue now shows individual poses numbered by their own observed frequencies, with membership and percentages in both GUIs. Members below the configured cutoff are omitted and cannot witness transfers. Outgoing actions are shared by all displayed source members; any qualifying target-group member satisfies the target. There are no internal group moves or composite fallback bridges. Missing connectivity is reported without constructing a fallback.
+
+Recognition classes continue to identify groups. The GUI reports the possible pose set rather than claiming a particular member was recognised. Selecting a member accepts its group as the target, including zero actuator enables when already in that group. Source-group calibration and assigned pressure profiles remain required.
+
+After the catalogue changes, explicitly reimport the roadmap. Migration uses stable group keys and the exact previous export hash; old numeric group IDs are never interpreted as new individual pose numbers. Compatible assignments can be retained, while removed/composite assignments and omitted recognition groups remain unavailable. Existing exports and profile metadata remain readable. Generation and route construction remain entirely in the external grouped roadmap application.
+
+
 Pressure Control reads the optional `composite_transfers` section of schema-v1
 roadmap JSON/YAML. The existing direct edge list stays unchanged. Candidates describe
 ordered Y/Z rotations through transient orientations; they do not add pose IDs.

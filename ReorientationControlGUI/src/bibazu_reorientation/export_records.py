@@ -28,6 +28,8 @@ def group_evidence_details(record):
         "Geometry only; contact feasibility unverified.",
         "Execution requires an assigned profile calibrated for the source group.",
     ]
+    if record.get('source_pose_specific'):
+        lines.append(f"Exact source pose: {record['source']}; accepts destination-group members {record['accepted_target_pose_ids']}.")
     if witnesses:
         lines += [f"Member witnesses: {len(witnesses)}", "Landing evidence: " + ", ".join(models)]
     if errors:
@@ -110,9 +112,87 @@ def source_coverage(raw, allowed):
     return tuple(sorted(raw))
 
 
+
+def read_individual_export(payload):
+    """Validate V3 namespaces and applicability, then reuse structural V2 checks."""
+    from copy import deepcopy
+    section = payload['consumer_export']
+    exact_source = section.get('planning_semantics') == 'pose_to_group'
+    groups = section.get('pose_groups', [])
+    nodes = payload.get('nodes', payload.get('poses', []))
+    pose_ids = {n.get('node_id', n.get('id')) for n in nodes}
+    if len(pose_ids) != len(nodes):
+        raise ValueError('Duplicate individual pose ID')
+    nodes_by_id = {n.get('node_id', n.get('id')): n for n in nodes}
+    member_pose = {m: i for i,n in nodes_by_id.items() for m in n.get('source_pose_ids', [])}
+    keys = section.get('group_keys', {})
+    covered = set(); anchors = {}; by_key = {}
+    for group in groups:
+        ids = group['pose_ids']; key = group['group_key']
+        if not ids or key in by_key or group['group_id'] in anchors or len(set(ids)) != len(ids) or covered.intersection(ids):
+            raise ValueError('Invalid or duplicate individual/group membership')
+        if not set(ids).issubset(pose_ids) or any(keys.get(str(i)) != key for i in ids):
+            raise ValueError('Individual pose/group mapping disagrees')
+        covered.update(ids); anchors[group['group_id']] = min(ids); by_key[key] = group
+    if covered != pose_ids or set(keys) != {str(i) for i in pose_ids}:
+        raise ValueError('Every individual pose requires a group')
+    if section.get('composite_fallbacks') is not False or section.get('same_group_target_satisfied') is not True:
+        raise ValueError('V3 requires no bridges and explicit same-group target semantics')
+    for choice in section['calibration_choices']:
+        a,b=choice['source_group_key'],choice['target_group_key']
+        if a == b or a not in by_key or b not in by_key or choice.get('is_composite'):
+            raise ValueError('Internal transitions and composite bridges are unavailable')
+        expected_sources = [choice['source']] if exact_source else by_key[a]['pose_ids']
+        if choice.get('applicable_source_pose_ids') != expected_sources or choice.get('accepted_target_pose_ids') != by_key[b]['pose_ids']:
+            raise ValueError('Choice has incompatible source-pose or target-group applicability')
+        if exact_source and (not choice.get('source_pose_specific') or keys.get(str(choice['source'])) != a):
+            raise ValueError('Pose-to-group choices require an exact source pose')
+        if choice.get('transition_kind') == 'group_transfer' and len(choice.get('commands', [])) != 1:
+            raise ValueError('Group actions must be single-axis transfers')
+        for witness in choice.get('witnesses', []):
+            if exact_source and member_pose.get(witness['source_member_id']) != choice['source']:
+                raise ValueError('Witness belongs to a different source pose')
+            if witness['source_member_id'] not in by_key[a]['planning_member_ids'] or witness['target_member_id'] not in by_key[b]['planning_member_ids']:
+                raise ValueError('Below-cutoff witness cannot establish connectivity')
+    choices={c['edge_id']:c for c in section['calibration_choices']}
+    for choice in choices.values():
+        if choice.get('transition_kind') != 'group_route':
+            continue
+        components=choice.get('component_edge_ids', [])
+        if len(components) < 2 or any(key not in choices or choices[key].get('transition_kind') != 'group_transfer' for key in components):
+            raise ValueError('Multi-step group choices require exported single-axis components')
+        legs=[choices[key] for key in components]
+        if exact_source and any(a['accepted_target_pose_ids'] != b['applicable_source_pose_ids'] for a,b in zip(legs,legs[1:])):
+            raise ValueError('Route requires observing an uncertain intermediate pose')
+        if any(a['target_group_key'] != b['source_group_key'] for a,b in zip(legs,legs[1:])) or choice['commands'] != [c for leg in legs for c in leg['commands']]:
+            raise ValueError('Multi-step choice disagrees with its exported components')
+    temporary = deepcopy(payload)
+    temporary['consumer_export']['version'] = 2
+    for state in temporary.get('member_states', []):
+        state['original_group_id'] = state['group_id']
+        state['group_id'] = (member_pose.get(state['member_id']) if exact_source else anchors.get(state['group_id'])) if state['retained'] else None
+    if exact_source:
+        for choice in temporary['consumer_export']['calibration_choices']:
+            # V3 checks above validate member endpoints in their group namespace.
+            # V2 validates the remaining record shape using individual anchors.
+            choice['source_member_ids'] = []
+            choice['possible_target_member_ids'] = []
+        for route in section['execution_routes']:
+            if route.get('applicable_source_pose_ids') != [route['source']] or not route.get('source_pose_specific'):
+                raise ValueError('Execution route must retain exact source applicability')
+            for step in route['steps']:
+                choice = choices[step['edge_id']]
+                if step.get('required_source_pose_ids') != choice['applicable_source_pose_ids'] or step.get('possible_target_pose_ids') != choice['accepted_target_pose_ids']:
+                    raise ValueError('Execution route source/arrival applicability disagrees')
+        states, _, _ = read_export(temporary)
+        return states, tuple(section['calibration_choices']), tuple(section['execution_routes'])
+    return read_export(temporary)
+
 def read_export(payload):
     """Check record shape and references, leaving geometric proofs to the producer."""
     section = payload.get("consumer_export", {})
+    if section.get("version") == 3:
+        return read_individual_export(payload)
     if section and section.get("version") not in (1, 2):
         raise ValueError("Unsupported consumer export version; upgrade the roadmap offline")
     states = payload.get("member_states", [])

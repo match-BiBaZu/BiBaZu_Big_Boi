@@ -44,6 +44,8 @@ class RoadmapPoseDialog(QDialog):
             "Click a pose to use it as the physical target pose for the currently "
             "selected YOLO target class."
         )
+        if self.roadmap.consumer_export_version == 3:
+            hint.setText('Select an individual pose. Any qualifying member of its group satisfies the target; no internal group motion is planned.')
         hint.setWordWrap(True)
         hint.setStyleSheet(
             "background:#edf7ff;border:1px solid #7aa7d9;border-radius:5px;padding:8px;"
@@ -114,6 +116,12 @@ class RoadmapPoseDialog(QDialog):
             "QToolButton:hover {background:#dcefff;border-color:#075b9b;}"
             "QToolButton:pressed {background:#bddfff;}"
         )
+        if self.roadmap.consumer_export_version == 3:
+            from PyQt6.QtGui import QColor
+            item=next(n for n in self.roadmap.pose_details if n.get('node_id',n.get('id'))==pose.pose_id)
+            group=item['group_id']; color=QColor.fromHsv((group*71)%360,65,245).name()
+            button.setText(f"Pose {pose.pose_id} · {item['observed_frequency_percent']:g}%\nGroup {group}")
+            button.setStyleSheet(f'QToolButton {{background:{color};border:2px solid #64748b;border-radius:8px;padding:6px;}}')
         button.clicked.connect(lambda _checked=False, selected=pose: self._select(selected))
         return button
 

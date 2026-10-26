@@ -59,12 +59,29 @@ class PartQueuePlanner:
         code = PartDecisionCode.BYPASS_UNCERTAIN
         actuate = False
 
-        if pose_id == self.part.target_pose:
+        if self.part.same_target_group(pose_id, self.part.target_pose):
             code = PartDecisionCode.TARGET
             reason = "already_target"
+        elif pose_id is not None and pose_id < 0:
+            reason = "bypass_omitted_group: no roadmap route available"
         elif pose_id is not None:
             try:
-                if self.part.is_roadmap_configuration:
+                if self.part.is_manual_configuration:
+                    choices = tuple(
+                        edge
+                        for edge in self.part.transitions
+                        if edge.from_pose == pose_id
+                        and edge.to_pose == self.part.target_pose
+                        and edge.pressure_profile is not None
+                    )
+                    if len(choices) != 1:
+                        raise ValueError("no unique manual profile assigned for this start pose")
+                    edge_ids = (choices[0].edge_id,)
+                    profile = compose_pressure_profiles(
+                        (self.profiles_by_edge[edge_ids[0]],),
+                        conveyor_speed_mm_per_sec=self.transport_profile.conveyor_speed_mm_per_sec,
+                    )
+                elif self.part.is_roadmap_configuration:
                     transitions = TransitionResolver(self.part).plan(pose_id)
                     edge_ids = tuple(transition.edge_id for transition in transitions)
                     source_profiles = tuple(
@@ -77,12 +94,10 @@ class PartQueuePlanner:
                         conveyor_speed_mm_per_sec=(
                             self.transport_profile.conveyor_speed_mm_per_sec
                         ),
-                        ur_ry_angle_deg=self.transport_profile.ur_ry_angle_deg,
                     )
                 else:
                     edge_ids = tuple(
-                        transition.edge_id
-                        or f"{transition.from_pose}->{transition.to_pose}"
+                        transition.edge_id or f"{transition.from_pose}->{transition.to_pose}"
                         for transition in self.part.transitions
                     )
                 actuate = profile.active_array_mask != 0
@@ -112,7 +127,7 @@ def queue_record_values(record: QueuedPartProfile) -> dict[str, int | float]:
     values: dict[str, int | float] = {
         "MAIN.GuiReorientationQueueSequence": record.sequence_id,
         "MAIN.GuiReorientationQueueTrackId": record.track_id,
-        "MAIN.GuiReorientationQueuePoseId": record.pose_id or 0,
+        "MAIN.GuiReorientationQueuePoseId": max(0, record.pose_id or 0),
         "MAIN.GuiReorientationQueueDecisionCode": int(record.decision_code),
         "MAIN.GuiReorientationQueueArrayMask": record.expected_array_mask,
     }

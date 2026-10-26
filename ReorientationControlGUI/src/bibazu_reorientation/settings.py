@@ -27,6 +27,8 @@ class AppSettings:
     preview_fps: float = 15.0
     camera_exposure_time_us: float = CAMERA_EXPOSURE_DEFAULT_US
     handoff_line_percent: int = 30
+    input_line_percent: int = 90
+    production_mode: str = "continuous"
     light_1_address: str = ""
     light_2_address: str = ""
     plc_ip: str = DEFAULT_PLC_IP
@@ -47,12 +49,18 @@ class AppSettings:
             raise ValueError("The ADS port must be between 1 and 65535")
         if not 1.0 <= float(self.preview_fps) <= 60.0:
             raise ValueError("Camera preview must be between 1 and 60 FPS")
-        if not CAMERA_EXPOSURE_MIN_US <= float(
-            self.camera_exposure_time_us
-        ) <= CAMERA_EXPOSURE_MAX_US:
+        if (
+            not CAMERA_EXPOSURE_MIN_US
+            <= float(self.camera_exposure_time_us)
+            <= CAMERA_EXPOSURE_MAX_US
+        ):
             raise ValueError("Camera exposure must be between 1000 and 20000 microseconds")
         if not 5 <= int(self.handoff_line_percent) <= 80:
             raise ValueError("Handoff line must be between 5 and 80 percent")
+        if not self.handoff_line_percent < self.input_line_percent <= 100:
+            raise ValueError("Input boundary must be right of the handoff line and at most 100%")
+        if self.production_mode not in {"continuous", "snapshot"}:
+            raise ValueError("Production mode must be continuous or snapshot")
         cti = Path(self.cti_path.strip()).expanduser()
         if not cti.is_file():
             raise ValueError(f"Baumer CTI not found: {cti}")

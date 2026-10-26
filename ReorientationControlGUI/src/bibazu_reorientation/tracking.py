@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-import cv2
-import numpy as np
-
 from bibazu_reorientation.inference import (
     before_pose_cutoff,
     fully_visible,
@@ -73,6 +70,8 @@ class TrackerUpdate:
 def snapshot_queue(
     frame: InferenceFrame,
     class_to_pose: dict[int, int],
+    *,
+    pose_cutoff_ratio: float = 0.10,
 ) -> TrackerUpdate:
     """Freeze one camera frame into the physical left-to-right PLC queue order."""
     height, width = frame.image.shape[:2]
@@ -85,7 +84,7 @@ def snapshot_queue(
         center = _center(box)
         mapped_pose_id = class_to_pose.get(detection.class_id)
         visible = fully_visible(detection, width, height)
-        before_cutoff = before_pose_cutoff(detection, width)
+        before_cutoff = before_pose_cutoff(detection, width, cutoff_ratio=pose_cutoff_ratio)
         pose_id = mapped_pose_id if visible and before_cutoff else None
         if mapped_pose_id is None:
             reason = "snapshot_unmapped_class"
@@ -134,57 +133,6 @@ def snapshot_queue(
     return TrackerUpdate(tuple(tracks), tuple(decisions))
 
 
-def draw_tracking_overlay(
-    image: np.ndarray,
-    tracks: tuple[TrackedPart, ...],
-    handoff_line_ratio: float | None,
-) -> np.ndarray:
-    annotated = np.ascontiguousarray(image).copy()
-    if handoff_line_ratio is not None:
-        line_x = round(annotated.shape[1] * handoff_line_ratio)
-        cv2.line(
-            annotated,
-            (line_x, 0),
-            (line_x, annotated.shape[0] - 1),
-            (6, 182, 212),
-            3,
-        )
-        cv2.putText(
-            annotated,
-            "PLC handoff",
-            (max(4, line_x + 8), 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (6, 182, 212),
-            2,
-            cv2.LINE_AA,
-        )
-    for track in tracks:
-        x1, y1, x2, y2 = (round(value) for value in track.bbox)
-        color = (34, 197, 94) if track.confirmed_pose_id is not None else (250, 204, 21)
-        if track.handed_off:
-            color = (148, 163, 184)
-        thickness = 4 if track.leftmost else 2
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
-        pose = (
-            f"Pose {track.confirmed_pose_id} locked"
-            if track.confirmed_pose_id is not None
-            else f"consensus {track.pose_streak}/5"
-        )
-        status = " queued" if track.handed_off else ""
-        cv2.putText(
-            annotated,
-            f"T{track.track_id} {pose}{status}",
-            (max(0, x1), max(22, y1 - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
-    return annotated
-
-
 class MultiPartTracker:
     """Order-preserving tracker for workpieces moving from right to left."""
 
@@ -194,6 +142,9 @@ class MultiPartTracker:
         required_observations: int = 5,
         max_missed_frames: int = 2,
         handoff_line_ratio: float = 0.30,
+        strict_order: bool = False,
+        pose_cutoff_ratio: float = 0.10,
+        pose_at_handoff: bool = False,
     ) -> None:
         if required_observations < 5:
             raise ValueError("At least five observations are required")
@@ -201,6 +152,11 @@ class MultiPartTracker:
             raise ValueError("max_missed_frames must be non-negative")
         if not 0.05 <= handoff_line_ratio <= 0.80:
             raise ValueError("handoff_line_ratio must be between 0.05 and 0.80")
+        if not 0.05 <= pose_cutoff_ratio <= 0.80:
+            raise ValueError("pose_cutoff_ratio must be between 0.05 and 0.80")
+        self.strict_order = strict_order
+        self.pose_cutoff_ratio = pose_cutoff_ratio
+        self.pose_at_handoff = pose_at_handoff
         self.required_observations = required_observations
         self.max_missed_frames = max_missed_frames
         self.handoff_line_ratio = handoff_line_ratio
@@ -226,8 +182,7 @@ class MultiPartTracker:
         boxes = [_bbox(detection) for detection in detections]
         centers = [_center(box) for box in boxes]
         previous_order = tuple(
-            track.track_id
-            for track in sorted(self._tracks.values(), key=lambda row: row.center[0])
+            track.track_id for track in sorted(self._tracks.values(), key=lambda row: row.center[0])
         )
         matches, unmatched_tracks, unmatched_detections = self._match(centers, boxes, width)
         fault = ""
@@ -257,7 +212,8 @@ class MultiPartTracker:
         # Queue-once production mode does not require tracking order validation at
         # every frame. We only need stable track identity until the workpiece has
         # passed the handoff line or been lost before it can be queued.
-        _ = previous_matched_order, current_matched_order
+        if self.strict_order and previous_matched_order != current_matched_order:
+            fault = "Tracked parts changed physical queue order"
 
         for track_id in unmatched_tracks:
             track = self._tracks[track_id]
@@ -266,7 +222,14 @@ class MultiPartTracker:
                 track.streak_pose_id = None
                 track.observations.clear()
             if track.missed_frames > self.max_missed_frames:
-                if not track.handed_off and track.hits >= 2:
+                # Live handoff selection needs a detection at the line, not an
+                # uninterrupted upstream track. Drop expired tracks quietly;
+                # a later detection at the line can still select its profile.
+                if (
+                    not self.pose_at_handoff
+                    and not track.handed_off
+                    and (self.strict_order or track.hits >= 2)
+                ):
                     fault = fault or f"Track {track_id} was lost before the handoff line"
 
         for detection_index in unmatched_detections:
@@ -280,7 +243,9 @@ class MultiPartTracker:
             self._next_track_id += 1
             self._tracks[track.track_id] = track
             self._observe(track, detection, frame, class_to_pose, width, height)
-            if track.center[0] <= line_x:
+            if (track.bbox[0] if self.strict_order else track.center[0]) <= line_x and not (
+                self.pose_at_handoff and track.bbox[2] > line_x
+            ):
                 fault = fault or f"New track {track.track_id} appeared beyond the handoff line"
 
         handoffs: list[PartDecision] = []
@@ -290,12 +255,22 @@ class MultiPartTracker:
                 for track in self._tracks.values()
                 if not track.handed_off
                 and track.missed_frames == 0
-                and track.center[0] <= line_x
+                and (track.bbox[0] if self.strict_order else track.center[0]) <= line_x
             ),
             key=lambda item: item.center[0],
         )
         for track in crossing:
             track.handed_off = True
+            if self.pose_at_handoff:
+                reason = (
+                    "handoff_detection"
+                    if track.confirmed_pose_id is not None
+                    else "handoff_unmapped_class"
+                )
+            else:
+                reason = (
+                    "confirmed" if track.confirmed_pose_id is not None else "consensus_incomplete"
+                )
             handoffs.append(
                 PartDecision(
                     track.track_id,
@@ -304,7 +279,7 @@ class MultiPartTracker:
                     tuple(track.observations),
                     track.bbox,
                     frame.timestamp,
-                    "confirmed" if track.confirmed_pose_id is not None else "consensus_incomplete",
+                    reason,
                 )
             )
 
@@ -357,10 +332,34 @@ class MultiPartTracker:
         width: int,
         height: int,
     ) -> None:
+        if self.pose_at_handoff:
+            if track.handed_off:
+                return
+            # Only the current YOLO output selects the profile. Track identity
+            # prevents duplicate commits; earlier classes never lock the pose.
+            track.confirmed_pose_id = class_to_pose.get(detection.class_id)
+            track.observations.clear()
+            if track.confirmed_pose_id is not None:
+                track.observations.append(
+                    PoseObservation(
+                        track.confirmed_pose_id,
+                        detection.class_id,
+                        detection.confidence,
+                        frame.timestamp,
+                    )
+                )
+            return
         if track.confirmed_pose_id is not None:
             return
         pose_id = class_to_pose.get(detection.class_id)
-        if pose_id is None or not fully_visible(detection, width, height):
+        if (
+            pose_id is None
+            or not fully_visible(detection, width, height)
+            or (
+                self.strict_order
+                and not before_pose_cutoff(detection, width, cutoff_ratio=self.pose_cutoff_ratio)
+            )
+        ):
             track.streak_pose_id = None
             track.observations.clear()
             return

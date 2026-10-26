@@ -41,9 +41,7 @@ def test_tracks_multiple_parts_and_hands_each_off_once() -> None:
     assert len(decisions[0].observations) == 5
 
     for index in range(3):
-        update = tracker.update(
-            frame((0, 45 - index * 10, 70), timestamp=6.0 + index), mapping
-        )
+        update = tracker.update(frame((0, 45 - index * 10, 70), timestamp=6.0 + index), mapping)
         decisions.extend(update.handoffs)
     assert [(item.track_id, item.pose_id) for item in decisions] == [(1, 5), (2, 10)]
 
@@ -152,3 +150,10 @@ def test_order_inversion_does_not_fault_in_queue_once_mode() -> None:
     update = tracker.update(frame((0, 55, 30), (0, 45, 70), timestamp=2.0), mapping)
 
     assert not update.fault
+
+
+def test_order_inversion_faults_in_continuous_mode() -> None:
+    tracker = MultiPartTracker(strict_order=True)
+    tracker.update(frame((0, 50, 20), (1, 60, 70), timestamp=1), {0: 1, 1: 2})
+    update = tracker.update(frame((0, 65, 20), (1, 45, 70), timestamp=2), {0: 1, 1: 2})
+    assert "queue order" in update.fault

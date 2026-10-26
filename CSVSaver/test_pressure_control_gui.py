@@ -186,7 +186,7 @@ class AdsThreadTests(unittest.TestCase):
         self.assertEqual(gui.SENSOR_SPACING_56_DEFAULT_MM, 40.0)
         self.assertEqual(gui.SENSOR_SPACING_67_DEFAULT_MM, 196.0)
         self.assertEqual(gui.SENSOR_SPACING_78_DEFAULT_MM, 40.0)
-        self.assertEqual(gui.SENSOR_TO_ARRAY_DEFAULTS_MM, (50.0, 45.0, 45.0, 48.0))
+        self.assertEqual(gui.SENSOR_TO_ARRAY_DEFAULTS_MM, (30.3, 41.9, 29.4, 42.7))
         self.assertEqual(gui.LIGHT_BARRIER_INVERT_DEFAULTS, (True,) * 8)
         self.assertEqual(gui.LIGHT_BARRIER_DEBOUNCE_ENABLED_DEFAULTS, (False,) * 8)
 
@@ -215,6 +215,42 @@ class AdsThreadTests(unittest.TestCase):
             released_but_latched.writes,
             [("MAIN.GuiReorientationLegacyTakeover", True)],
         )
+
+    def test_connect_recovers_a_stop_latch_even_after_batch_owner_was_released(self):
+        plc = FakeReorientationOwnerPlc(safe_latched=True)
+        plc.owner = False
+        worker = gui.AdsWorker()
+        worker.client = SimpleNamespace(
+            is_connected=False, connect=lambda: True, plc=plc, last_error=""
+        )
+        with (
+            patch.object(worker, "write_values_impl") as write,
+            patch.object(worker, "read_initial_snapshot", return_value={}),
+            patch.object(worker, "disconnect_ads") as disconnect,
+        ):
+            worker.connect_ads()
+        self.assertFalse(plc.safe_latched)
+        self.assertFalse(plc.owner)
+        self.assertEqual(plc.writes, [("MAIN.GuiReorientationLegacyTakeover", True)])
+        disconnect.assert_not_called()
+        write.assert_called_once()
+        self.assertFalse(write.call_args.args[0]["MAIN.GuiConveyorEnabled"])
+
+    def test_connect_does_not_take_control_from_a_healthy_batch_owner(self):
+        plc = FakeReorientationOwnerPlc(safe_latched=False)
+        worker = gui.AdsWorker()
+        worker.client = SimpleNamespace(
+            is_connected=False, connect=lambda: True, plc=plc, last_error=""
+        )
+        with (
+            patch.object(worker, "write_values_impl") as write,
+            patch.object(worker, "disconnect_ads") as disconnect,
+        ):
+            worker.connect_ads()
+        self.assertTrue(plc.owner)
+        self.assertEqual(plc.writes, [])
+        disconnect.assert_called_once()
+        write.assert_not_called()
 
     def test_twin_cat_maps_and_processes_light_barriers_7_and_8(self):
         project_root = Path(__file__).parent / "TwinCAT Projekt3 - Kopie" / "TwinCAT Projekt3"
@@ -1309,10 +1345,10 @@ class ProfileCompatibilityTests(unittest.TestCase):
             self.assertEqual(profile["ur_ry_angle_deg"], 20.4)
             self.assertEqual(profile["sensor_spacing_78_mm"], 40.0)
             self.assertNotIn("sensor_spacing_23_mm", profile)
-            self.assertEqual(profile["sensor_2_to_array_1_spacing_mm"], 50.0)
-            self.assertEqual(profile["sensor_4_to_array_2_spacing_mm"], 45.0)
-            self.assertEqual(profile["sensor_6_to_array_3_spacing_mm"], 45.0)
-            self.assertEqual(profile["sensor_8_to_array_4_spacing_mm"], 48.0)
+            self.assertEqual(profile["sensor_2_to_array_1_spacing_mm"], 30.3)
+            self.assertEqual(profile["sensor_4_to_array_2_spacing_mm"], 41.9)
+            self.assertEqual(profile["sensor_6_to_array_3_spacing_mm"], 29.4)
+            self.assertEqual(profile["sensor_8_to_array_4_spacing_mm"], 42.7)
             self.assertEqual(len(profile["light_barrier_inverted"]), 8)
 
     def test_zero_ur_angle_round_trips_without_moving_robot(self):
@@ -1346,7 +1382,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
             result["sensor_spacings"],
             (40.0, 40.0, 40.0, 40.0),
         )
-        self.assertEqual(result["sensor_to_array_spacings"], (50.0, 45.0, 45.0, 48.0))
+        self.assertEqual(result["sensor_to_array_spacings"], (30.3, 41.9, 29.4, 42.7))
 
     def test_version_11_profile_does_not_load_any_light_barrier_spacings(self):
         expected_pairs = (41.0, 42.0, 43.0, 44.0)
@@ -1370,7 +1406,7 @@ class ProfileCompatibilityTests(unittest.TestCase):
         result = self.load_profile(profile)
 
         self.assertEqual(result["sensor_spacings"], (40.0,) * 4)
-        self.assertEqual(result["sensor_to_array_spacings"], (50.0, 45.0, 45.0, 48.0))
+        self.assertEqual(result["sensor_to_array_spacings"], (30.3, 41.9, 29.4, 42.7))
 
     def test_profile_load_preserves_current_global_machine_values(self):
         current_distances = (51.0, 46.0, 47.0, 49.0)

@@ -118,6 +118,11 @@ class ProbeTab(QWidget):
             form.addRow("Nachlauf nach letzter Ausschaltflanke", self.runout)
             self.inputs += [self.first, self.second, self.runout]
         else:
+            self.nozzle_layout = QComboBox()
+            self.nozzle_layout.addItem("Normal: Düse → Lichtschranke", "standard")
+            self.nozzle_layout.addItem("Vertikal / invertiert: Lichtschranke → Düse", "vertical")
+            self.nozzle_layout.setCurrentIndex(max(0, self.nozzle_layout.findData(
+                settings.value("nozzle/layout", "standard"))))
             self.array = QComboBox()
             self.nozzle = QComboBox()
             for array in range(1, 5):
@@ -138,12 +143,13 @@ class ProbeTab(QWidget):
             self.smoothing.setToolTip(
                 "Zentrierter Mittelwert vor der Betragssuche; 100 Werte entsprechen bei 2400 Hz etwa 42 ms. "
                 "Größere Fenster glätten stärker und verbreitern schmale Kraftspitzen.")
-            form.addRow("Array / Bezugslichtschranke auf Rückfahrt", self.array)
+            form.addRow("Messaufbau", self.nozzle_layout)
+            form.addRow("Array / Bezugslichtschranke", self.array)
             form.addRow("Einzelne Düse", self.nozzle)
             form.addRow("Kalibrierdruck", self.pressure)
             form.addRow("Maximale Öffnungszeit je Zyklus", self.open_time)
             form.addRow("Kraftglättung", self.smoothing)
-            self.inputs += [self.array, self.nozzle, self.pressure, self.open_time, self.smoothing]
+            self.inputs += [self.nozzle_layout, self.array, self.nozzle, self.pressure, self.open_time, self.smoothing]
         self.speed = decimal(0.5, 5, 2, " mm/s", 0.5, 1)
         self.travel = decimal(1, 75, 75 if mode == "barriers" else 60, " mm")
         self.direction = QComboBox()
@@ -153,7 +159,7 @@ class ProbeTab(QWidget):
             settings.value(f"{mode}/outward_direction", 1, type=int))))
         form.addRow("Fahrgeschwindigkeit", self.speed)
         form.addRow("Hinfahrt ab Home", self.direction)
-        form.addRow("Maximaler Weg ab Home" if mode == "barriers" else "Weg bis Wendepunkt jenseits der Lichtschranke", self.travel)
+        form.addRow("Maximaler Weg ab Home" if mode == "barriers" else "Weg bis Wendepunkt hinter Lichtschranke und Düse", self.travel)
         self.path_hint = QLabel()
         self.path_hint.setWordWrap(True)
         form.addRow("Fahrtrichtung", self.path_hint)
@@ -176,6 +182,7 @@ class ProbeTab(QWidget):
             "Bezug beider Peakabstände ist der Einschaltpunkt der Lichtschranke auf der Rückfahrt."
         )
         description.setWordWrap(True)
+        self.description = description
         controls.addWidget(description, 1)
         root.addLayout(controls)
         if mode == "nozzle":
@@ -222,7 +229,7 @@ class ProbeTab(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Zyklus", "Richtung", "Abstand [mm]", "Einschaltabstand", "Erste LB ein/aus [mm]", "Zweite LB ein/aus [mm]", "Unsicherheit [mm]"]
             if mode == "barriers" else
-            ["Zyklus", "Richtung", "Abstand [mm]", "LB-Bezug Rückfahrt [mm]", "Peakposition [mm]", "FΣ Peak [N]", "F1/F2 Peak [N]", "Unsicherheit [mm]"]
+            ["Zyklus", "Richtung", "Abstand [mm]", "LB-Bezug [mm]", "Peakposition [mm]", "FΣ Peak [N]", "F1/F2 Peak [N]", "Unsicherheit [mm]"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.setMinimumHeight(160)
@@ -238,6 +245,8 @@ class ProbeTab(QWidget):
             self.plot.smoothing_samples = self.smoothing.value()
             self.smoothing.valueChanged.connect(self._smoothing_changed)
             root.addWidget(self.plot, 2)
+            self.nozzle_layout.currentIndexChanged.connect(self._nozzle_layout_changed)
+            self._nozzle_layout_changed()
         self.update_controls()
 
     def update_path(self):
@@ -246,7 +255,22 @@ class ProbeTab(QWidget):
         text = f"Hin: 0 → {sign}{self.travel.value():g} mm ({endpoint}); zurück: → 0 mm"
         if self.mode == "barriers":
             text += f" · LB{self.first.currentData()} → LB{self.second.currentData()}"
+        else:
+            text += (" · Lichtschranke → Düse" if self.nozzle_layout.currentData() == "vertical"
+                     else " · Düse → Lichtschranke")
         self.path_hint.setText(text)
+
+    def _nozzle_layout_changed(self, _index=None):
+        vertical = self.nozzle_layout.currentData() == "vertical"
+        self.description.setText(
+            ("Home → Lichtschranke → Düse → Wendepunkt. "
+             "Bezug ist je Fahrtrichtung die Stiftmitte aus Ein- und Ausschaltposition der Lichtschranke. "
+             "Abstand = Betrag(Kraftmaximum − Lichtschrankenmitte). " if vertical else
+             "Home → Düse → Lichtschranke → Wendepunkt. "
+             "Bezug beider Peakabstände ist der Einschaltpunkt der Lichtschranke auf der Rückfahrt. ")
+            + "Kraftposition: Maximum des Betrags der geglätteten Summenkraft. "
+              "Das Ventil öffnet an Home und bleibt für beide Fahrtrichtungen bis zur Rückkehr offen.")
+        self.update_path()
 
     def _smoothing_changed(self, value):
         self.plot.smoothing_samples = value
@@ -268,7 +292,8 @@ class ProbeTab(QWidget):
             args.update(first_sensor=self.first.currentData(), second_sensor=self.second.currentData(), runout_mm=self.runout.value())
         else:
             args.update(array=self.array.currentData(), nozzle=self.nozzle.currentData(), pressure_mbar=self.pressure.value(),
-                        max_open_s=self.open_time.value(), force_smoothing_samples=self.smoothing.value())
+                        max_open_s=self.open_time.value(), force_smoothing_samples=self.smoothing.value(),
+                        nozzle_layout=self.nozzle_layout.currentData())
         config = ProbeConfig(**args)
         config.validate()
         return config
@@ -283,6 +308,8 @@ class ProbeTab(QWidget):
             config = document["config"]
             name = (f"LB{config['first_sensor']}–{config['second_sensor']}" if self.mode == "barriers"
                     else f"Array {config['array']}, Düse {config['nozzle']}")
+            if self.mode == "nozzle" and config.get("nozzle_layout") == "vertical":
+                name += " · vertikal"
             self.selection.addItem(f"{Path(path).name} · {name}", path)
             index = self.selection.count() - 1
         self.selection.setCurrentIndex(index)
@@ -295,6 +322,9 @@ class ProbeTab(QWidget):
             return
         document = self.document
         rows = document["rows"]
+        if self.mode == "nozzle":
+            vertical = document["config"].get("nozzle_layout") == "vertical"
+            self.table.horizontalHeaderItem(3).setText("LB-Mitte je Richtung [mm]" if vertical else "LB-Bezug Rückfahrt [mm]")
         self.table.setRowCount(len(rows))
         for index, row in enumerate(rows):
             direction = "Hin" if row["direction"] == "forward" else "Zurück"
@@ -316,6 +346,11 @@ class ProbeTab(QWidget):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(index, column, item)
+            if self.mode == "nozzle" and row.get("reference_center"):
+                center = row["reference_center"]
+                self.table.item(index, 3).setToolTip(
+                    f"Ein: {center['on']['position_mm']:.3f} mm; Aus: {center['off']['position_mm']:.3f} mm; "
+                    f"erfasste Stiftbreite: {center['width_mm']:.3f} mm; Mitte der jeweiligen Fahrtrichtung.")
         summary = document.get("summary", {})
         if summary:
             text = f"{summary['count']}/10 Fahrten · Mittel {summary['mean_mm']:.3f} mm · σ {summary['std_mm']:.3f} mm"
@@ -462,6 +497,7 @@ class ProbeCalibrationUi(QObject):
         self.settings.setValue("barriers/first_sensor", self.barrier_tab.first.currentData())
         self.settings.setValue("barriers/second_sensor", self.barrier_tab.second.currentData())
         self.settings.setValue("nozzle/force_smoothing_samples", self.nozzle_tab.smoothing.value())
+        self.settings.setValue("nozzle/layout", self.nozzle_tab.nozzle_layout.currentData())
 
     def _force_connect(self):
         self._remember()

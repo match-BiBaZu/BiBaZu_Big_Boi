@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import math
 import os
@@ -129,10 +130,12 @@ class RoadmapDocument:
     member_states: tuple[dict, ...] = ()
     member_route_data: tuple[dict, ...] = ()
     consumer_export_version: int = 1
+    pose_group_keys: tuple[tuple[int,str], ...] = ()
+    pose_details: tuple[dict, ...] = ()
 
     @property
     def overview_transitions(self):
-        if self.consumer_export_version == 2:
+        if self.consumer_export_version in (2, 3):
             pairs = {}
             for edge in sorted(
                 self.transitions, key=lambda e: (e.preference_cost, e.edge_id)
@@ -158,17 +161,25 @@ class RoadmapDocument:
         raise KeyError(pose_id)
 
     def route_options(self, start, target):
+        if self.consumer_export_version == 3:
+            keys=dict(self.pose_group_keys)
+            if keys.get(start) == keys.get(target): return ()
+            return tuple(sorted((e for e in self.transitions if e.calibratable
+                and e.source_group_key == keys.get(start)
+                and (not (e.member_context or {}).get('source_pose_specific') or start == e.source_pose_id)
+                and (e.member_context or {}).get('target_group_key') == keys.get(target)),
+                key=lambda e:(e.preference_cost,e.edge_id)))
         choices = tuple(
             e
             for e in self.transitions
             if e.calibratable
             and e.source_pose_id == start
             and e.target_pose_id == target
-            and (self.consumer_export_version != 2 or e.source_group_key)
+            and (self.consumer_export_version not in (2, 3) or e.source_group_key)
         )
         return (
             tuple(sorted(choices, key=lambda e: (e.preference_cost, e.edge_id)))
-            if self.consumer_export_version == 2
+            if self.consumer_export_version in (2, 3)
             else choices
         )
 
@@ -209,6 +220,7 @@ def roadmap_transition_metadata(selection: SelectedRoadmapTransition) -> dict[st
     return {
         "title": transition.display_name,
         "roadmap_path": str(selection.roadmap_path),
+        "roadmap_sha256": hashlib.sha256(selection.roadmap_path.read_bytes()).hexdigest() if selection.roadmap_path.is_file() else None,
         "part_name": selection.part_name,
         "edge_id": transition.edge_id,
         "source_pose_id": transition.source_pose_id,
@@ -245,6 +257,7 @@ def roadmap_transition_metadata(selection: SelectedRoadmapTransition) -> dict[st
 
 def selection_from_roadmap_transition_metadata(
     value: Any,
+    profile_path: Path | None = None,
 ) -> SelectedRoadmapTransition | None:
     """Restore a selected transition without making old profiles invalid.
 
@@ -257,6 +270,28 @@ def selection_from_roadmap_transition_metadata(
         roadmap_path = relocated_path(
             value["roadmap_path"], default_roadmap_directory()
         )
+        if not roadmap_path.is_file() and value.get("roadmap_sha256"):
+            # Profiles and their roadmap bundles may be moved together. Recover
+            # only byte-identical exports: numeric pose IDs can change meaning.
+            roots = [default_roadmap_directory()]
+            if profile_path is not None:
+                roots.insert(0, profile_path.parent)
+            for root in roots:
+                candidates = (
+                    root / roadmap_path.name,
+                    root / str(value.get("part_name", "")) / roadmap_path.name,
+                )
+                for candidate in candidates:
+                    if (
+                        candidate.is_file()
+                        and hashlib.sha256(candidate.read_bytes()).hexdigest()
+                        == value["roadmap_sha256"]
+                    ):
+                        roadmap_path = candidate.resolve()
+                        break
+                else:
+                    continue
+                break
         edge_id = str(value["edge_id"])
         source_id = int(value["source_pose_id"])
         target_id = int(value["target_pose_id"])
@@ -317,11 +352,13 @@ def selection_from_roadmap_transition_metadata(
         document = None
         try:
             document = load_roadmap_document(roadmap_path)
+            if document.consumer_export_version == 3 and value.get('roadmap_sha256') != hashlib.sha256(roadmap_path.read_bytes()).hexdigest():
+                raise ValueError('Historical export requires explicit reimport; numeric pose IDs are not interchangeable')
             source_pose = document.pose(source_id)
             target_pose = document.pose(target_id)
         except (KeyError, OSError, TypeError, ValueError):
             pass
-        if transition.member_context:
+        if transition.member_context or (value.get('source_quaternion_xyzw') and value.get('target_quaternion_xyzw')):
             source_pose = replace(
                 source_pose,
                 quaternion_xyzw=_quaternion(value.get("source_quaternion_xyzw")),
@@ -396,7 +433,7 @@ def selection_from_pressure_profile(
     """Restore metadata, or recover the pose pair from a legacy profile name."""
     metadata = profile.get("roadmap_transition")
     if isinstance(metadata, dict):
-        return selection_from_roadmap_transition_metadata(metadata)
+        return selection_from_roadmap_transition_metadata(metadata, profile_path)
     match = re.fullmatch(
         r"(.+)_(?:Uebergang|Transition)_(\d+)-(\d+)_"
         r"(floor_main_(?:pos|neg)_x|wall_main_(?:pos|neg)_x|free_[yz]|"
@@ -604,7 +641,7 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
     states, records, routes = read_export(payload)
     by_id = {e.edge_id: e for e in transitions}
     by_id.update({r["edge_id"]: _exported_choice(r) for r in records})
-    transitions = list(by_id.values())
+    transitions = [_exported_choice(r) for r in records] if payload.get('consumer_export',{}).get('version') == 3 else list(by_id.values())
     mesh_source = str(payload.get("source", source.stem))
     part_name = str(
         payload.get("part_name")
@@ -621,6 +658,8 @@ def load_roadmap_document(path: str | Path) -> RoadmapDocument:
         member_states=states,
         member_route_data=routes,
         consumer_export_version=payload.get("consumer_export", {}).get("version", 1),
+        pose_group_keys=tuple((int(k),v) for k,v in payload.get('consumer_export',{}).get('group_keys',{}).items()) if payload.get('consumer_export',{}).get('version') == 3 else (),
+        pose_details=tuple(payload.get('nodes', [])),
     )
 
 
@@ -855,7 +894,7 @@ class RoadmapMap(QWidget):
             painter.drawLine(
                 round(start[0]), round(start[1]), round(end[0]), round(end[1])
             )
-            if self.document.consumer_export_version == 2:
+            if self.document.consumer_export_version in (2, 3):
                 # Offset opposite directions and label the exported preferred command.
                 dx, dy = end[0] - start[0], end[1] - start[1]
                 length = math.hypot(dx, dy) or 1.0
@@ -880,13 +919,18 @@ class RoadmapMap(QWidget):
                     round(x - width / 2), round(y - 23), width, 18, QColor("#fbfdff")
                 )
                 painter.drawText(round(x - width / 2 + 4), round(y - 9), label)
+        details={n['node_id']:n for n in self.document.pose_details}
         for pose_id, (x, y) in positions.items():
             if pose_id == self.start_pose_id:
                 border = QColor("#e3a008")
             elif pose_id == self.end_pose_id:
                 border = QColor("#18a558")
             else:
-                border = QColor("#084081")
+                if self.document.consumer_export_version == 3:
+                    item=next(n for n in self.document.pose_details if n['node_id']==pose_id)
+                    border=QColor.fromHsv((item['group_id']*71)%360,150,180)
+                else:
+                    border = QColor("#084081")
             pixmap = self._pixmaps[pose_id]
             width, height = (
                 (card_width, card_height) if not pixmap.isNull() else (82, 58)
@@ -914,7 +958,8 @@ class RoadmapMap(QWidget):
                 width,
                 18,
                 Qt.AlignmentFlag.AlignCenter,
-                f"{'Group' if self.document.consumer_export_version == 2 else 'Pose'} {pose_id}",
+                (f"Pose {pose_id} · {details[pose_id]['observed_frequency_percent']:g}% · Group {details[pose_id]['group_id']}"
+                 if self.document.consumer_export_version == 3 else f"{'Group' if self.document.consumer_export_version == 2 else 'Pose'} {pose_id}"),
             )
 
     def mousePressEvent(self, event) -> None:
@@ -1032,7 +1077,7 @@ class RoadmapTransitionDialog(QDialog):
         layout.addWidget(self.command_preview)
         self.group_coverage_checkbox = QCheckBox("Calibrated for source group")
         self.group_coverage_checkbox.setVisible(
-            self.document.consumer_export_version == 2
+            self.document.consumer_export_version in (2, 3)
         )
         layout.addWidget(self.group_coverage_checkbox)
         self.command_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1046,7 +1091,7 @@ class RoadmapTransitionDialog(QDialog):
         )
         self.coverage_edit.setVisible(
             bool(self.document.member_states)
-            and self.document.consumer_export_version != 2
+            and self.document.consumer_export_version not in (2, 3)
         )
         layout.addWidget(self.coverage_edit)
 
@@ -1166,6 +1211,9 @@ class RoadmapTransitionDialog(QDialog):
         self.pose_selection_label.setText(
             f"Start: Pose {self.start_pose_id}    End: Pose {self.end_pose_id}"
         )
+        if self.document.consumer_export_version == 3 and dict(self.document.pose_group_keys).get(self.start_pose_id) == dict(self.document.pose_group_keys).get(self.end_pose_id):
+            self.path_hint.setText('Target group already satisfied — no motion required.')
+            return
         for route in self.document.route_options(self.start_pose_id, self.end_pose_id):
             self._transitions_by_id.setdefault(route.edge_id, route)
         self._saved_profiles_by_edge = self._find_saved_profiles()
@@ -1175,14 +1223,17 @@ class RoadmapTransitionDialog(QDialog):
                 for item in self._transitions_by_id.values()
                 if item.calibratable
                 and (
-                    self.document.consumer_export_version != 2 or item.source_group_key
+                    self.document.consumer_export_version not in (2, 3) or item.source_group_key
                 )
-                and item.source_pose_id == self.start_pose_id
-                and item.target_pose_id == self.end_pose_id
+                and (not (item.member_context or {}).get('source_pose_specific') or item.source_pose_id == self.start_pose_id)
+                and (dict(self.document.pose_group_keys).get(self.start_pose_id) == item.source_group_key
+                     if self.document.consumer_export_version == 3 else item.source_pose_id == self.start_pose_id)
+                and (dict(self.document.pose_group_keys).get(self.end_pose_id) == (item.member_context or {}).get('target_group_key')
+                     if self.document.consumer_export_version == 3 else item.target_pose_id == self.end_pose_id)
             ),
             key=lambda item: (
                 (item.preference_cost, item.edge_id)
-                if self.document.consumer_export_version == 2
+                if self.document.consumer_export_version in (2, 3)
                 else (item.flip_count, item.edge_id)
             ),
         )
@@ -1252,11 +1303,13 @@ class RoadmapTransitionDialog(QDialog):
             transition.target_pose_id,
         )
         saved = self._saved_profiles_by_edge.get(transition.edge_id, ())
+        context = transition.member_context or {}
+        path_label = " → ".join(
+            f"{'Group' if transition.source_group_key else 'Pose'} {item}" for item in pose_ids)
+        if context.get('source_pose_specific'):
+            path_label = f"Pose {transition.source_pose_id} → Group {context['target_group_id']}"
         values = (
-            " → ".join(
-                f"{'Group' if transition.source_group_key else 'Pose'} {item}"
-                for item in pose_ids
-            ),
+            path_label,
             str(transition.flip_count),
             self._step_summary(transition),
             "Saved: " + ", ".join(path.name for path in saved)

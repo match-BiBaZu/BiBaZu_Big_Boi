@@ -18,6 +18,86 @@ class ProfilePoseContextTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_moved_profile_bundle_restores_start_and_end_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "Dk1i_New"
+            original.mkdir()
+            mesh = original / "source" / "Df1a.stl"
+            mesh.parent.mkdir()
+            mesh.write_text(
+                "solid part\nfacet normal 0 0 1\nouter loop\n"
+                "vertex 0 0 0\nvertex 2 0 0\nvertex 0 1 1\n"
+                "endloop\nendfacet\nendsolid part\n", encoding="utf-8",
+            )
+            payload = existing_tests.RoadmapTransitionGuiTests.roadmap_payload()
+            payload["source"] = "source/Df1a.stl"
+            roadmap_path = original / "Df1a_roadmap.json"
+            roadmap_path.write_text(json.dumps(payload), encoding="utf-8")
+            document = gui.load_roadmap_document(roadmap_path)
+            selection = gui.SelectedRoadmapTransition(
+                roadmap_path, document.part_name, document.transitions[0],
+                document.pose(1), document.pose(2),
+            )
+            profile_path = original / "calibration.json"
+            with patch.object(gui.AdsController, "start"):
+                window = gui.PressureControlWindow()
+            try:
+                window._apply_roadmap_transition(selection)
+                with patch.object(QFileDialog, "getSaveFileName", return_value=(str(profile_path), "")):
+                    window.save_profile()
+                saved_contents = profile_path.read_bytes()
+                moved = root / "Dk1October"
+                original.rename(moved)
+                profile_path = moved / profile_path.name
+                with patch.object(QFileDialog, "getOpenFileName", return_value=(str(profile_path), "")):
+                    window.load_profile()
+                restored = window.selected_roadmap_transition
+                self.assertEqual(restored.roadmap_path, (moved / roadmap_path.name).resolve())
+                self.assertEqual(restored.transition.edge_id, selection.transition.edge_id)
+                self.assertEqual(restored.source_pose.quaternion_xyzw, selection.source_pose.quaternion_xyzw)
+                self.assertEqual(restored.target_pose.quaternion_xyzw, selection.target_pose.quaternion_xyzw)
+                self.assertFalse(window.transition_context_frame.isHidden())
+                for label in (window.transition_source_image, window.transition_target_image):
+                    self.assertFalse(label.pixmap().isNull())
+                self.assertEqual(profile_path.read_bytes(), saved_contents)
+                with patch.object(QFileDialog, "getSaveFileName", return_value=(str(profile_path), "")):
+                    window.save_profile()
+                saved = json.loads(profile_path.read_text(encoding="utf-8"))
+                self.assertEqual(Path(saved["roadmap_transition"]["roadmap_path"]), restored.roadmap_path)
+            finally:
+                window.close()
+
+    def test_moved_profile_does_not_use_unverified_roadmap_with_same_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            roadmap_path = root / "Df1a_roadmap.json"
+            roadmap_path.write_text(
+                json.dumps(existing_tests.RoadmapTransitionGuiTests.roadmap_payload()),
+                encoding="utf-8",
+            )
+            document = gui.load_roadmap_document(roadmap_path)
+            selection = gui.SelectedRoadmapTransition(
+                roadmap_path, document.part_name, document.transitions[0],
+                document.pose(1), document.pose(2),
+            )
+            metadata = gui.roadmap_transition_metadata(selection)
+            metadata["roadmap_path"] = str(root / "missing" / roadmap_path.name)
+            # A regenerated export must not inherit the old numeric pose IDs.
+            roadmap_path.write_text(roadmap_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            for saved_hash in (metadata["roadmap_sha256"], None):
+                with self.subTest(saved_hash=saved_hash), patch(
+                    "roadmap_transition_dialog.default_roadmap_directory", return_value=root / "catalogue"
+                ):
+                    restored = gui.selection_from_pressure_profile(
+                        {"roadmap_transition": dict(metadata, roadmap_sha256=saved_hash)},
+                        root / "calibration.json",
+                    )
+                    self.assertEqual(restored.transition.edge_id, selection.transition.edge_id)
+                    self.assertIsNone(restored.source_pose.mesh_path)
+                    self.assertIsNone(restored.target_pose.mesh_path)
+                    self.assertEqual(restored.roadmap_path, Path(metadata["roadmap_path"]).resolve())
+
     @staticmethod
     def multi_flip_payload():
         payload = existing_tests.RoadmapTransitionGuiTests.roadmap_payload()
