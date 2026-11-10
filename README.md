@@ -3,6 +3,10 @@
 - Software and PLC project for the large BiBaZu pneumatic part-reorientation test stand.
 - Combines conveyor transport, camera-based pose detection, timed nozzle impulses, calibration, and experiment logging.
 
+## Research background
+
+[Aerodynamic Feeding 4.1: Simulation Based Parameter Selection for a Flexible Part Feeding Prototype](https://doi.org/10.1016/j.procir.2025.08.092) (Shieff, Recker and Raatz, 2025) describes simulation studies for selecting prototype parameters. This repository contains the control and measurement software for the large BiBaZu test stand.
+
 ## Applications and tools
 
 - **Pressure Control** (`CSVSaver/PressureControlGUI.py`): configure four nozzle arrays, pressure, pulse duration, delay, and offset.
