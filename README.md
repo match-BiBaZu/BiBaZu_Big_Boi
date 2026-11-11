@@ -11,10 +11,6 @@
 
 [View the full-size figure (PDF)](https://match-bibazu.github.io/assets/bibazu-feeder-annotated.pdf) · [More prototype photos](https://match-bibazu.github.io/#prototype)
 
-## Research background
-
-[Aerodynamic Feeding 4.1: Simulation Based Parameter Selection for a Flexible Part Feeding Prototype](https://doi.org/10.1016/j.procir.2025.08.092) (Shieff, Recker and Raatz, 2025) describes simulation studies for selecting prototype parameters. This repository contains the control and measurement software for the large BiBaZu test stand.
-
 ## Applications and tools
 
 - **Pressure Control** (`CSVSaver/PressureControlGUI.py`): configure four nozzle arrays, pressure, pulse duration, delay, and offset.
