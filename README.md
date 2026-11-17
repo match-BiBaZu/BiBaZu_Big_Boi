@@ -30,17 +30,18 @@ calibration profiles and runtime configuration, and selects only exported routes
 
 ## Hardware and connections
 
-- **TwinCAT controller**: AMS Net ID `10.145.4.14.1.1`, ADS port `851`; PLC task runs every `1 ms`.
+- **TwinCAT controller**: Beckhoff C6043 IPC with Intel Core i9 CPU and NVIDIA 2000 GPU running TwinCAT; AMS Net ID `10.145.4.14.1.1`, ADS port `851`; PLC task runs every `1 ms`.
 - **EtherCAT layout**: Device 1 carries general I/O; Device 2 carries Festo pneumatics; Devices 3 and 4 each carry one conveyor drive.
+- **Air nozzles**: 24 Lechler Series 600.484.56 nozzles in four arrays of six individually controlled nozzles.
 - **Nozzle valves**: four arrays of six; Device 1 terminals 18/19 (`EL2008`) map outputs 1–16, terminals 20/21 (`EL2004`) map outputs 17–24.
-- **Pressure regulation**: two Festo VTEM units exchange process data through Device 2, Box 5 (`CPX-FB38 64Byte`).
-- **Light barriers**: eight SICK WTE11-2P2432 sensors on terminal 22 (`EL1018`), channels 1–8; pairs 1–2, 3–4, 5–6, and 7–8 serve arrays 1–4.
+- **Pressure regulation**: two [Festo Motion Terminal VTEM units](https://www.festo.com/us/en/p/motion-terminal-id_VTEM) exchange process data through Device 2, Box 5 (`CPX-FB38 64Byte`).
+- **Light barriers**: eight Panasonic EX-13EB sensors on terminal 22 (`EL1018`), channels 1–8; pairs 1–2, 3–4, 5–6, and 7–8 serve arrays 1–4.
 - **Analog measurements**: terminal 250 (`EL3068`, 0–10 V), channels 1/2, maps `RawNozzlePressure` / `RawNozzlePressure2` for pressure/force-delay measurements.
 - **Camera trigger**: terminal 27 (`EL2004`), channel 1, maps `CameraRecordTrigger` for a selectable light-barrier recording pulse.
 - **Conveyor motors**: two Beckhoff AM8112 servos, each with a 32:1 gearbox and 50 mm roller; shared velocity commands.
 - **Servo connections**: Device 3 → terminal 6 (`EK1100`) → terminal 7 (`EL7201-0010`); Device 4 → terminal 9 (`EK1100`) → terminal 10 (`EL7201-0010`).
 - **Other configured terminals**: `EL1014-0010` digital inputs, the former `EL7047` stepper stage, and `EL9011` end terminals; the first two have no current PLC mappings.
-- **PC-connected peripherals**: Baumer GigE pose camera, Baumer VCXU-02C USB high-speed camera, two Neewer RGB660 Pro II BLE panels, and a UR16e robot over Ethernet/RTDE.
+- **PC-connected peripherals**: Baumer VLXT-28M.I pose camera with a Ricoh 25 mm, 5 MP lens; Baumer VCXU-02C USB high-speed camera; two Neewer RGB660 Pro II BLE panels; and a UR16e robot over Ethernet/RTDE.
 - **Connection source**: [TwinCAT system project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/TwinCAT%20Projekt3/TwinCAT%20Projekt3.tsproj); PC peripherals are configured in the Python applications.
 
 ## Repository layout

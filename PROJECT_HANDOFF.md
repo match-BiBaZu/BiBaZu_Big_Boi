@@ -170,7 +170,14 @@ Wechsel jeweils vollstaendig geschlossen werden.
 
 ## 4. Hardware und I/O-Zuordnung
 
+Der Steuerungsrechner ist ein Beckhoff C6043 IPC mit Intel Core i9 CPU und
+NVIDIA 2000 GPU. Darauf laeuft TwinCAT. Die Lagekamera ist eine Baumer
+VLXT-28M.I mit einem Ricoh-Objektiv mit 25 mm Brennweite und 5 MP Aufloesung.
+
 ### 4.1 Duesen und digitale Ausgaenge
+
+Die 24 Luftduesen sind Lechler Series 600.484.56, angeordnet in vier Arrays
+mit jeweils sechs einzeln schaltbaren Duesen.
 
 Die ersten 16 Ventile liegen auf zwei EL2008, die acht zusaetzlichen Ventile auf
 zwei EL2004.
@@ -201,7 +208,7 @@ Array als auch mindestens eine seiner sechs Duesen aktiviert ist.
 ### 4.2 VTEM-Druckregelung
 
 Die vier Arraydruecke werden auf `0..6000 mbar` begrenzt und wie folgt an die
-beiden VTEM-Einheiten uebergeben:
+beiden [Festo Motion Terminal VTEM-Einheiten](https://www.festo.com/us/en/p/motion-terminal-id_VTEM) uebergeben:
 
 | Array | SPS-Sollwert | VTEM-Zuordnung |
 | --- | --- | --- |
@@ -219,7 +226,7 @@ TwinCAT-Rechner vorhanden sein.
 
 Die acht Lichtschranken liegen auf Term 16, EL1018, Kanal 1-8 und sind in der
 SPS als `LightBarrierOn1..8` verknuepft. Verwendeter Sensortyp ist nach aktuellem
-Stand SICK WTE11-2P2432.
+Stand Panasonic EX-13EB.
 
 | Paar | Aufgabe | Ausloesende Schranke |
 | --- | --- | --- |
@@ -264,11 +271,11 @@ einstellbar. Fuer eine Geschwindigkeitsmessung sollten beide Sensoren eines
 Paares dieselbe Entprellstrategie verwenden. Unterschiedliche Filterlatenzen
 erzeugen einen konstanten Geschwindigkeitsfehler.
 
-Die SICK-Sensoren muessen auf das reale Objekt und den realen Hintergrund sauber
-geteacht sein. Ein kurzes Ein-/Aus-Flattern beim Eintauchen des Objekts,
-richtungsabhaengige Schaltpunkte oder nur blinkende Ausgaenge sind Hinweise auf
-Teach-, Ausrichtungs-, Kontrast- oder Hystereseprobleme. Nach mechanischen oder
-Teach-Aenderungen sind Abstand und Geschwindigkeitsplausibilitaet neu zu pruefen.
+Sender und Empfaenger der Panasonic EX-13EB-Einweglichtschranken muessen sauber
+aufeinander ausgerichtet sein. Das reale Werkstueck muss den Lichtstrahl
+zuverlaessig unterbrechen. Bei flackernden Signalen sind Ausrichtung, Befestigung
+und freie Sicht zwischen Sender und Empfaenger zu pruefen. Nach mechanischen
+Aenderungen sind Abstand und Geschwindigkeitsplausibilitaet neu zu pruefen.
 
 ### 4.4 Kraftsensoren
 
