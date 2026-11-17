@@ -30,25 +30,31 @@ calibration profiles and runtime configuration, and selects only exported routes
 
 ## Hardware and connections
 
-- **TwinCAT controller**: Beckhoff C6043 IPC with Intel Core i9 CPU and NVIDIA 2000 GPU running TwinCAT; AMS Net ID `10.145.4.14.1.1`, ADS port `851`; PLC task runs every `1 ms`.
-- **EtherCAT layout**: Device 1 carries general I/O; Device 2 carries Festo pneumatics; Devices 3 and 4 each carry one conveyor drive.
-- **Air nozzles**: 24 Lechler Series 600.484.56 nozzles in four arrays of six individually controlled nozzles.
-- **Nozzle valves**: four arrays of six; Device 1 terminals 18/19 (`EL2008`) map outputs 1–16, terminals 20/21 (`EL2004`) map outputs 17–24.
+- **TwinCAT controller**: [Beckhoff C6043 IPC](https://www.beckhoff.com/en-en/products/ipc/pcs/c60xx-ultra-compact-industrial-pcs/c6043-0090.html) with Intel Core i9 CPU and NVIDIA 2000 GPU running [TwinCAT](https://www.beckhoff.com/en-en/products/automation/twincat/); AMS Net ID `10.145.4.14.1.1`, ADS port `851`; PLC task runs every `1 ms`.
+- **[EtherCAT](https://www.beckhoff.com/en-en/products/i-o/ethercat/) layout**: Device 1 carries general I/O; Device 2 carries Festo pneumatics; Devices 3 and 4 each carry one conveyor drive.
+- **Air nozzles**: 24 [Lechler Series 600.484.56](https://www.lechler.com/my-en/products/general-industry/airnozzles/flat-jet-nozzles/series600-484-56) nozzles in four arrays of six.
+- **Fast-switching valves**: 24 [Festo MHJ9-QS-6-HF](https://ftp.festo.com/Public/PNEUMATIC/SOFTWARE_SERVICE/Datasheet/EN_US/567790.pdf) solenoid valves, one per nozzle. Device 1 terminals 18/19 (`EL2008`) map outputs 1–16. Terminals 20/21 (`EL2004`) map outputs 17–24.
 - **Pressure regulation**: two [Festo Motion Terminal VTEM units](https://www.festo.com/us/en/p/motion-terminal-id_VTEM) exchange process data through Device 2, Box 5 (`CPX-FB38 64Byte`).
-- **Light barriers**: eight Panasonic EX-13EB sensors on terminal 22 (`EL1018`), channels 1–8; pairs 1–2, 3–4, 5–6, and 7–8 serve arrays 1–4.
+- **Light barriers**: eight [Panasonic EX-13EB](https://industry.panasonic.com/global/en/products/fasys/sensor/photoelectric/number/ex-13eb) sensors on terminal 22 (`EL1018`), channels 1–8; pairs 1–2, 3–4, 5–6, and 7–8 serve arrays 1–4.
 - **Analog measurements**: terminal 250 (`EL3068`, 0–10 V), channels 1/2, maps `RawNozzlePressure` / `RawNozzlePressure2` for pressure/force-delay measurements.
 - **Camera trigger**: terminal 27 (`EL2004`), channel 1, maps `CameraRecordTrigger` for a selectable light-barrier recording pulse.
-- **Conveyor motors**: two Beckhoff AM8112 servos, each with a 32:1 gearbox and 50 mm roller; shared velocity commands.
+- **Conveyor motors**: two [Beckhoff AM8112](https://www.beckhoff.com/en-en/products/motion/rotary-servomotors/am8100-servomotors-for-compact-drive-technology/am8112.html) servos, each with a 32:1 gearbox and 50 mm roller; shared velocity commands.
 - **Servo connections**: Device 3 → terminal 6 (`EK1100`) → terminal 7 (`EL7201-0010`); Device 4 → terminal 9 (`EK1100`) → terminal 10 (`EL7201-0010`).
 - **Other configured terminals**: `EL1014-0010` digital inputs, the former `EL7047` stepper stage, and `EL9011` end terminals; the first two have no current PLC mappings.
-- **Camera**: Baumer VLXT-28M.I with a Ricoh 25 mm, 5 MP lens.
-- **Other PC-connected peripherals**: two Neewer RGB660 Pro II BLE panels and a UR16e robot over Ethernet/RTDE.
+- **Camera**: [Baumer VLXT-28M.I](https://www.baumer.com/int/en/product-overview/industrial-cameras-image-processing/industrial-cameras/lxseries/vlxtcameras/10-gigecameras-with-copper-cable-10gbase-t-/vlxt-i/vlxt-28m-i/p/42399) with a [Ricoh 25 mm, 5 MP lens](https://www.optowl.com/en/products/metaoptics/falens/5m.html).
+- **Other PC-connected peripherals**: two [Neewer RGB660 Pro II](https://neewer.com/products/neewer-upgraded-660-pro-ii-2-pack-rgb-led-video-light-66601573) BLE panels and a [UR16e robot](https://www.universal-robots.com/products/ur16e/) over Ethernet/RTDE.
 - **Connection source**: [TwinCAT system project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/TwinCAT%20Projekt3/TwinCAT%20Projekt3.tsproj); PC peripherals are configured in the Python applications.
 
 ## Operating specifications
 
-The image recognition model is **YOLO26n**. The maximum tested feed rate is
+The image recognition model is [YOLO26n](https://docs.ultralytics.com/models/yolo26). The maximum tested feed rate is
 **60 parts/min**, with a tested workpiece pitch of **200 mm (20 cm)**.
+
+| Limit | Value |
+| --- | --- |
+| Maximum supply pressure | 6 bar per nozzle |
+| Maximum tested workpiece mass | 74 g |
+| Maximum tested workpiece dimension | 80 mm |
 
 | Belt speed | Workpiece pitch | Calculated feed rate | Status |
 | --- | --- | --- | --- |
