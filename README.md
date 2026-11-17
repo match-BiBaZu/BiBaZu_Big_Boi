@@ -30,8 +30,8 @@ calibration profiles and runtime configuration, and selects only exported routes
 
 ## Hardware and connections
 
-- **Chute surface**: polytetrafluoroethylene (PTFE) plate with 4 mm holes.
-- **Conveyor belt**: polyethylene mesh with a 1 mm grid size.
+- **Chute surface**: two polytetrafluoroethylene (PTFE) plates, each 1,000 × 150 mm with 4 mm holes.
+- **Conveyor belt**: one polyethylene mesh belt, 3,500 mm long with a 1 mm grid size.
 - **TwinCAT controller**: [Beckhoff C6043 IPC](https://www.beckhoff.com/en-en/products/ipc/pcs/c60xx-ultra-compact-industrial-pcs/c6043-0090.html) with Intel Core i9 CPU and NVIDIA 2000 GPU running [TwinCAT](https://www.beckhoff.com/en-en/products/automation/twincat/); AMS Net ID `10.145.4.14.1.1`, ADS port `851`; PLC task runs every `1 ms`.
 - **[EtherCAT](https://www.beckhoff.com/en-en/products/i-o/ethercat/) layout**: Device 1 carries general I/O; Device 2 carries Festo pneumatics; Devices 3 and 4 each carry one conveyor drive.
 - **Air nozzles**: 24 [Lechler Series 600.484.56](https://www.lechler.com/my-en/products/general-industry/airnozzles/flat-jet-nozzles/series600-484-56) nozzles in four arrays of six.
