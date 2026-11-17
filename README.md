@@ -41,20 +41,24 @@ calibration profiles and runtime configuration, and selects only exported routes
 - **Conveyor motors**: two [Beckhoff AM8112](https://www.beckhoff.com/en-en/products/motion/rotary-servomotors/am8100-servomotors-for-compact-drive-technology/am8112.html) servos, each with a 32:1 gearbox and 50 mm roller; shared velocity commands.
 - **Servo connections**: Device 3 → terminal 6 (`EK1100`) → terminal 7 (`EL7201-0010`); Device 4 → terminal 9 (`EK1100`) → terminal 10 (`EL7201-0010`).
 - **Other configured terminals**: `EL1014-0010` digital inputs, the former `EL7047` stepper stage, and `EL9011` end terminals; the first two have no current PLC mappings.
-- **Camera**: [Baumer VLXT-28M.I](https://www.baumer.com/int/en/product-overview/industrial-cameras-image-processing/industrial-cameras/lxseries/vlxtcameras/10-gigecameras-with-copper-cable-10gbase-t-/vlxt-i/vlxt-28m-i/p/42399) with a [Ricoh 25 mm, 5 MP lens](https://www.optowl.com/en/products/metaoptics/falens/5m.html).
+- **Camera**: [Baumer VLXT-28M.I](https://www.baumer.com/int/en/product-overview/industrial-cameras-image-processing/industrial-cameras/lxseries/vlxtcameras/10-gigecameras-with-copper-cable-10gbase-t-/vlxt-i/vlxt-28m-i/p/42399) with a [Ricoh FL-CC2514-5M lens](https://www.optowl.com/en/_assets/data/FL-CC2514-5M.pdf) (25 mm, 5 MP).
 - **Other PC-connected peripherals**: two [Neewer RGB660 Pro II](https://neewer.com/products/neewer-upgraded-660-pro-ii-2-pack-rgb-led-video-light-66601573) BLE panels and a [UR16e robot](https://www.universal-robots.com/products/ur16e/) over Ethernet/RTDE.
 - **Connection source**: [TwinCAT system project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/TwinCAT%20Projekt3/TwinCAT%20Projekt3.tsproj); PC peripherals are configured in the Python applications.
 
 ## Operating specifications
 
-The image recognition model is [YOLO26n](https://docs.ultralytics.com/models/yolo26). The maximum tested feed rate is
-**60 parts/min**, with a tested workpiece pitch of **200 mm (20 cm)**.
+The image recognition model is [YOLO26n](https://docs.ultralytics.com/models/yolo26).
+
+### Performance specifications
 
 | Limit | Value |
 | --- | --- |
 | Maximum supply pressure | 6 bar per nozzle |
 | Maximum tested workpiece mass | 74 g |
 | Maximum tested workpiece dimension | 80 mm |
+| Maximum tested feed rate | 60 parts/min |
+
+### Conveyor settings and calculated feed rates
 
 | Belt speed | Workpiece pitch | Calculated feed rate | Status |
 | --- | --- | --- | --- |
