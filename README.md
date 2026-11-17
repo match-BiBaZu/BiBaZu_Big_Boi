@@ -44,6 +44,19 @@ calibration profiles and runtime configuration, and selects only exported routes
 - **PC-connected peripherals**: Baumer VLXT-28M.I pose camera with a Ricoh 25 mm, 5 MP lens; Baumer VCXU-02C USB high-speed camera; two Neewer RGB660 Pro II BLE panels; and a UR16e robot over Ethernet/RTDE.
 - **Connection source**: [TwinCAT system project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/TwinCAT%20Projekt3/TwinCAT%20Projekt3.tsproj); PC peripherals are configured in the Python applications.
 
+## Operating specifications
+
+The image recognition model is **YOLO26n**. The maximum tested feed rate is
+**60 parts/min**, with a tested workpiece pitch of **200 mm (20 cm)**.
+
+| Belt speed | Workpiece pitch | Calculated feed rate | Status |
+| --- | --- | --- | --- |
+| 100 mm/s | 200 mm (20 cm) | 30 parts/min | Tested |
+| 200 mm/s | 200 mm (20 cm) | 60 parts/min | Tested |
+| 200 mm/s | 100 mm (10 cm) | 120 parts/min | Coming soon |
+
+Rates are calculated as belt speed divided by workpiece pitch, multiplied by 60.
+
 ## Repository layout
 
 - [`CSVSaver/`](CSVSaver/): pressure/conveyor GUIs, ADS communication, calibration, logging, and hardware helpers.
