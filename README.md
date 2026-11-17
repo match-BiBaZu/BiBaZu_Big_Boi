@@ -41,7 +41,8 @@ calibration profiles and runtime configuration, and selects only exported routes
 - **Conveyor motors**: two Beckhoff AM8112 servos, each with a 32:1 gearbox and 50 mm roller; shared velocity commands.
 - **Servo connections**: Device 3 → terminal 6 (`EK1100`) → terminal 7 (`EL7201-0010`); Device 4 → terminal 9 (`EK1100`) → terminal 10 (`EL7201-0010`).
 - **Other configured terminals**: `EL1014-0010` digital inputs, the former `EL7047` stepper stage, and `EL9011` end terminals; the first two have no current PLC mappings.
-- **PC-connected peripherals**: Baumer VLXT-28M.I pose camera with a Ricoh 25 mm, 5 MP lens; Baumer VCXU-02C USB high-speed camera; two Neewer RGB660 Pro II BLE panels; and a UR16e robot over Ethernet/RTDE.
+- **Camera**: Baumer VLXT-28M.I with a Ricoh 25 mm, 5 MP lens.
+- **Other PC-connected peripherals**: two Neewer RGB660 Pro II BLE panels and a UR16e robot over Ethernet/RTDE.
 - **Connection source**: [TwinCAT system project](CSVSaver/TwinCAT%20Projekt3%20-%20Kopie/TwinCAT%20Projekt3/TwinCAT%20Projekt3.tsproj); PC peripherals are configured in the Python applications.
 
 ## Operating specifications
